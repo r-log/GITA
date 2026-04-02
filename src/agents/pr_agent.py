@@ -78,7 +78,7 @@ class PRReviewAgent(BaseAgent):
         log.info(
             "pr_reviewer_start",
             repo=self.repo_full_name,
-            event=context.event_type,
+            webhook_event=context.event_type,
         )
 
         pr_data = context.event_payload.get("pull_request", {})

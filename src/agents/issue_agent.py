@@ -74,7 +74,7 @@ class IssueAnalystAgent(BaseAgent):
         log.info(
             "issue_analyst_start",
             repo=self.repo_full_name,
-            event=context.event_type,
+            webhook_event=context.event_type,
         )
 
         # Extract issue number from the webhook payload

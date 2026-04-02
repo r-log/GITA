@@ -49,7 +49,7 @@ class SupervisorAgent(BaseAgent):
 
         log.info(
             "supervisor_dispatch",
-            event=context.event_type,
+            webhook_event=context.event_type,
             agents=agent_names,
             parallel=run_parallel,
             reasoning=dispatch_plan.get("reasoning"),
@@ -229,29 +229,37 @@ class SupervisorAgent(BaseAgent):
 
         return summary
 
-    async def _log_agent_start(self, agent_name: str, context: AgentContext) -> int:
-        """Log agent run start to DB. Returns the run ID."""
-        async with async_session() as session:
-            run = AgentRun(
-                repo_id=context.repo_id,
-                agent_name=agent_name,
-                event_type=context.event_type,
-                context={
-                    "event_type": context.event_type,
-                    "repo_full_name": context.repo_full_name,
-                    "installation_id": context.installation_id,
-                },
-                status="running",
-            )
-            session.add(run)
-            await session.commit()
-            await session.refresh(run)
-            return run.id
+    async def _log_agent_start(self, agent_name: str, context: AgentContext) -> int | None:
+        """Log agent run start to DB. Returns the run ID, or None if no repo_id."""
+        if not context.repo_id:
+            return None
+        try:
+            async with async_session() as session:
+                run = AgentRun(
+                    repo_id=context.repo_id,
+                    agent_name=agent_name,
+                    event_type=context.event_type,
+                    context={
+                        "event_type": context.event_type,
+                        "repo_full_name": context.repo_full_name,
+                        "installation_id": context.installation_id,
+                    },
+                    status="running",
+                )
+                session.add(run)
+                await session.commit()
+                await session.refresh(run)
+                return run.id
+        except Exception as e:
+            log.warning("log_agent_start_failed", error=str(e))
+            return None
 
     async def _log_agent_complete(
-        self, run_id: int, result: AgentResult, started: float, error: str | None = None
+        self, run_id: int | None, result: AgentResult, started: float, error: str | None = None
     ) -> None:
         """Update agent run record with result."""
+        if not run_id:
+            return
         async with async_session() as session:
             from sqlalchemy import update
             stmt = (

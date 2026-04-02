@@ -24,7 +24,7 @@ def _generate_jwt() -> str:
     payload = {
         "iat": now - 60,              # issued at (60s in the past for clock drift)
         "exp": now + (9 * 60),        # expires in 9 minutes
-        "iss": settings.github_app_id,
+        "iss": str(settings.github_app_id),
     }
     return jwt.encode(
         payload,

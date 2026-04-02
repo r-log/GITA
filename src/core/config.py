@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     # --- AI Provider (OpenRouter) ---
     openrouter_api_key: str
-    ai_default_model: str = "openai/gpt-4o"
+    ai_default_model: str = "anthropic/claude-sonnet-4"
 
     # --- App ---
     log_level: str = "INFO"
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # --- Agent Defaults ---
     agent_max_tool_calls: int = 25       # safety limit per agent run
-    agent_timeout_seconds: int = 120     # max time for a single agent run
+    agent_timeout_seconds: int = 540     # max time for a single agent run
     comment_cooldown_minutes: int = 60   # min time between comments on same target
 
     @property

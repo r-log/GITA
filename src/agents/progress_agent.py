@@ -80,7 +80,7 @@ class ProgressTrackerAgent(BaseAgent):
         log.info(
             "progress_tracker_start",
             repo=self.repo_full_name,
-            event=context.event_type,
+            webhook_event=context.event_type,
         )
 
         # Determine what milestone to focus on from the event
