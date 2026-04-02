@@ -77,8 +77,10 @@ services:
     command: tunnel run
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    network_mode: "service:app"
     depends_on:
       - app
+    restart: unless-stopped
 
 volumes:
   pgdata:

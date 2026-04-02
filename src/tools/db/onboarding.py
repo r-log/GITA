@@ -81,7 +81,7 @@ def make_save_onboarding_run(repo_id: int) -> Tool:
                 "repo_snapshot": {"type": "object", "description": "Summary of the repo scan"},
                 "suggested_plan": {"type": "object", "description": "AI-inferred milestones and tasks"},
                 "existing_state": {"type": "object", "description": "What milestones/issues existed before"},
-                "actions_taken": {"type": "array", "description": "List of actions taken (create/update/skip)"},
+                "actions_taken": {"type": "array", "items": {"type": "object"}, "description": "List of actions taken (create/update/skip)"},
                 "milestones_created": {"type": "integer"},
                 "milestones_updated": {"type": "integer"},
                 "issues_created": {"type": "integer"},

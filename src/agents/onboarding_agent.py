@@ -94,7 +94,7 @@ class OnboardingAgent(BaseAgent):
         log.info(
             "onboarding_start",
             repo=self.repo_full_name,
-            event=context.event_type,
+            webhook_event=context.event_type,
         )
 
         # Build the initial message that kicks off the agent's reasoning

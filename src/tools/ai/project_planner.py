@@ -13,18 +13,19 @@ from src.tools.base import Tool, ToolResult
 _client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=settings.openrouter_api_key,
+    timeout=120.0,
 )
 
 
-async def _infer_project_plan(repo_snapshot: dict) -> ToolResult:
-    """Given a repo snapshot (tree + key files), infer milestones and tasks."""
+async def _infer_project_plan(project_description: str) -> ToolResult:
+    """Given a text description of the project, infer milestones and tasks."""
     try:
         response = await _client.chat.completions.create(
             model=settings.ai_default_model,
             messages=[
                 {
                     "role": "system",
-                    "content": """You are a project planning expert. Given a repository snapshot, infer a structured project plan with milestones and sub-tasks.
+                    "content": """You are a project planning expert. Given a description of a repository, infer a structured project plan with milestones and sub-tasks.
 
 Rules:
 - Each milestone should represent a coherent feature area or deliverable
@@ -56,7 +57,7 @@ Respond with JSON:
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(repo_snapshot, default=str),
+                    "content": project_description[:15000],
                 },
             ],
             temperature=0.3,
@@ -68,7 +69,7 @@ Respond with JSON:
         return ToolResult(success=False, error=str(e))
 
 
-async def _compare_plan_vs_state(suggested_plan: dict, existing_state: dict) -> ToolResult:
+async def _compare_plan_vs_state(suggested_plan: str, existing_state: str) -> ToolResult:
     """Compare AI-suggested plan with existing milestones/issues to produce an action list."""
     try:
         response = await _client.chat.completions.create(
@@ -101,10 +102,7 @@ Respond with JSON:
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {"suggested_plan": suggested_plan, "existing_state": existing_state},
-                        default=str,
-                    ),
+                    "content": f"SUGGESTED PLAN:\n{suggested_plan}\n\nEXISTING STATE:\n{existing_state}",
                 },
             ],
             temperature=0.2,
@@ -147,32 +145,32 @@ async def _fuzzy_match_milestone(title: str, existing_milestones: list[dict]) ->
 def make_infer_project_plan() -> Tool:
     return Tool(
         name="infer_project_plan",
-        description="AI tool: Given a repository snapshot (file tree + key file contents), infer a structured project plan with milestones and sub-tasks.",
+        description="AI tool: Given a text summary of the repository (file tree, README contents, key code snippets you've read), infer a structured project plan with milestones and sub-tasks. Pass everything you've learned as a single text description.",
         parameters={
             "type": "object",
             "properties": {
-                "repo_snapshot": {
-                    "type": "object",
-                    "description": "Object with 'tree' (file list) and 'files' (key file contents) from the repo scan",
+                "project_description": {
+                    "type": "string",
+                    "description": "Text summary of the project: file tree, README content, key files read, architecture observations. Put everything you know about the repo here.",
                 },
             },
-            "required": ["repo_snapshot"],
+            "required": ["project_description"],
         },
-        handler=lambda repo_snapshot: _infer_project_plan(repo_snapshot),
+        handler=lambda project_description: _infer_project_plan(project_description),
     )
 
 
 def make_compare_plan_vs_state() -> Tool:
     return Tool(
         name="compare_plan_vs_state",
-        description="AI tool: Compare a suggested project plan with existing milestones/issues and produce a reconciliation action list.",
+        description="AI tool: Compare a suggested project plan with existing milestones/issues and produce a reconciliation action list. Pass both as text descriptions.",
         parameters={
             "type": "object",
             "properties": {
-                "suggested_plan": {"type": "object", "description": "AI-inferred project plan"},
+                "suggested_plan": {"type": "string", "description": "Text description of the suggested milestones and tasks from infer_project_plan"},
                 "existing_state": {
-                    "type": "object",
-                    "description": "Current state: existing milestones and issues",
+                    "type": "string",
+                    "description": "Text description of existing milestones and issues from get_all_milestones and get_all_issues",
                 },
             },
             "required": ["suggested_plan", "existing_state"],
