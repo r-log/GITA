@@ -36,31 +36,6 @@
 
 GITA is a **multi-agent system**. Instead of one monolithic bot, it has a team of specialist agents — each with its own expertise, tools, and reasoning loop.
 
-```
-                        ┌─────────────────────┐
-                        │   GitHub Webhook     │
-                        └──────────┬──────────┘
-                                   │
-                        ┌──────────▼──────────┐
-                        │  🤖 Supervisor       │
-                        │  Routes & dispatches │
-                        └──┬───┬───┬───┬───┬──┘
-                           │   │   │   │   │
-               ┌───────────┘   │   │   │   └───────────┐
-               ▼               ▼   ▼   ▼               ▼
-           ┌───────┐    ┌─────┐ ┌─────┐ ┌─────┐   ┌───────┐
-           │  🔍   │    │ 📋  │ │ 📊  │ │ 🔀  │   │  🛡️   │
-           │Onboard│    │Issue│ │Prog.│ │ PR  │   │ Risk  │
-           └───────┘    └─────┘ └─────┘ └─────┘   └───────┘
-               │           │       │       │           │
-               └───────────┴───┬───┴───────┴───────────┘
-                               ▼
-                    ┌─────────────────────┐
-                    │   Shared Tool Layer  │
-                    │  GitHub · AI · DB    │
-                    └─────────────────────┘
-```
-
 The **Supervisor** receives every event and decides which agents to dispatch — often running them **in parallel**. Each agent picks from its own scoped toolset, reasons through the problem, and takes action.
 
 Agents share tools, not logic.
