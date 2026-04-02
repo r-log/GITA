@@ -1,0 +1,84 @@
+services:
+  # --- Main Application ---
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://github_assistant:password@db:5432/github_assistant
+      - REDIS_URL=redis://redis:6379
+      - GITHUB_APP_PRIVATE_KEY_PATH=/app/gita-agents.2026-04-02.private-key.pem
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src # hot reload in dev
+      - ./prompts:/app/prompts # edit prompts without rebuild
+      - ./alembic:/app/alembic # migrations
+      - ./alembic.ini:/app/alembic.ini
+      - ./gita-agents.2026-04-02.private-key.pem:/app/gita-agents.2026-04-02.private-key.pem:ro
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # --- Background Worker (agent processing) ---
+  worker:
+    build: .
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://github_assistant:password@db:5432/github_assistant
+      - REDIS_URL=redis://redis:6379
+      - GITHUB_APP_PRIVATE_KEY_PATH=/app/gita-agents.2026-04-02.private-key.pem
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./prompts:/app/prompts
+      - ./gita-agents.2026-04-02.private-key.pem:/app/gita-agents.2026-04-02.private-key.pem:ro
+    command: python -m arq src.workers.settings.WorkerSettings
+
+  # --- PostgreSQL ---
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: github_assistant
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: github_assistant
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U github_assistant"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Redis (task queue) ---
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Cloudflare Tunnel (webhook delivery) ---
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - app
+
+volumes:
+  pgdata:

@@ -1,0 +1,46 @@
+# Secrets — NEVER commit these
+.env
+*.pem
+*.key
+github-app-private-key.pem
+gita-agents*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Claude Code
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Docker
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+comment.md
+prompt.txt
+plan.md
+claude.md
+
+# Alembic — keep versions/ tracked but ignore pycache
+alembic/__pycache__/
+alembic/versions/__pycache__/
