@@ -17,7 +17,6 @@ Work in phases: **scan → investigate → analyze → fetch existing → reconc
 ## How Our Tracking System Works
 
 We use a label-based system with two types of issues:
-
 **Sub-issues** — regular issues for individual tasks:
 ```
 Title: Implement JWT token validation
