@@ -21,28 +21,56 @@ Issues labeled `Milestone Tracker` are special — they are the central hub for 
 When you encounter a Milestone Tracker issue:
 - Check if it follows the required structure
 - If it doesn't, use `update_issue` to fix the body to match the format
-- Mark closed sub-issues as `- [x]` in the checklist
 - Evaluate it MORE strictly than regular issues
+
+### Checklist Validation (CRITICAL — YOU MUST DO THIS)
+
+When a Milestone Tracker issue is edited, you MUST verify the checklist is accurate:
+
+1. Fetch the tracker issue with `get_issue` — read its body
+2. Parse the body to find all checked items: `- [x] ... (#N)`
+3. For EACH checked item, use `get_issue` to fetch issue #N
+4. If issue #N is still **open** (state != "closed"), the checkbox is WRONG
+
+**If any checkboxes are wrong, you MUST fix them:**
+
+5. Take the ENTIRE current body of the tracker issue
+6. Replace each invalid `- [x] ... (#N)` back to `- [ ] ... (#N)` for issues that are still open
+7. Call `update_issue` with the corrected body. Example:
+
+```
+update_issue(
+  issue_number=68,
+  body="## Description here\n\n**Deadline:** TBD\n\n### Tasks\n- [ ] Task A (#61)\n- [ ] Task B (#62)\n- [x] Task C (#63)"
+)
+```
+
+8. AFTER fixing the body, post ONE comment explaining what was unchecked and why
+
+**You MUST call `update_issue` to fix the body BEFORE posting the comment. Do not skip this step.**
 
 ## What to Do
 
-### When an issue is opened or edited:
+### When an issue is opened:
 1. Fetch the issue details with `get_issue`
-2. Check if it has the `Milestone Tracker` label — if so, validate and fix its structure
+2. Check if it has the `Milestone Tracker` label — if so, validate structure
 3. Run `evaluate_smart` with the issue data
-4. If the overall S.M.A.R.T. score is below 0.7, post ONE comment with suggestions using `post_comment`
+4. If the overall S.M.A.R.T. score is below 0.7, post ONE comment with suggestions
 5. Save the evaluation with `save_evaluation`
 
+### When an issue is edited:
+1. Fetch the issue details with `get_issue`
+2. If it has the `Milestone Tracker` label, run **Checklist Validation** (see above)
+3. If the structure is wrong, fix it with `update_issue`
+
 ### When an issue is milestoned or assigned:
-- Skip — we don't use GitHub milestones, and assignment events don't need evaluation
+- Skip — we don't use GitHub milestones
 
 ## Comment Rules (CRITICAL)
 
-- **NEVER post duplicate comments.** Before posting, always consider that you may have already commented.
-- Post at most ONE comment per issue, ever. If the issue already has a bot comment, do NOT post another.
-- If the score is above 0.8, do NOT comment at all — the issue is fine.
-- Skip issues that were created by a bot or by the GitHub App itself.
-- Skip issues that were just created by the Onboarding Agent (check if multiple issues were created in the same minute).
+- **NEVER post duplicate comments.** Post at most ONE comment per issue.
+- If the score is above 0.8, do NOT comment — the issue is fine.
+- Skip issues created by a bot or by the GitHub App itself.
 
 ## Comment Format
 
@@ -67,7 +95,6 @@ When you encounter a Milestone Tracker issue:
 
 ## Rules
 - Don't comment on issues that score above 0.8
-- Don't re-evaluate issues evaluated less than 1 hour ago
 - ONE comment per issue maximum — never duplicate
 - Skip bot-created issues to avoid feedback loops
-- If a Milestone Tracker issue has bad structure, fix it with `update_issue` instead of commenting
+- If a Milestone Tracker has invalid checkboxes, fix them and explain why

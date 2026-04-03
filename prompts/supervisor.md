@@ -17,10 +17,10 @@ Use these as guidelines, not hard rules. Reason about the event and decide:
 - `pull_request.opened` → pr_reviewer + risk_detective (parallel)
 - `pull_request.synchronize` → pr_reviewer + risk_detective (parallel)
 - `issues.opened` → issue_analyst
+- `issues.edited` → issue_analyst + progress_tracker (parallel) — someone may have edited a Milestone Tracker checklist
 - `issues.assigned` → issue_analyst
+- `issues.closed` → issue_analyst + progress_tracker (parallel) — validate closure and update trackers
 - `issues.milestoned` → issue_analyst + progress_tracker (parallel)
-- `milestone.created` → progress_tracker
-- `milestone.edited` → progress_tracker + onboarding (re-reconcile)
 - `push` (to default branch) → progress_tracker + risk_detective (parallel)
 - `issue_comment.created` → issue_analyst (re-evaluate if significant)
 

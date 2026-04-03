@@ -5,6 +5,7 @@ Tools are stateless functions that agents call. They're grouped by domain but sh
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Optional
 
@@ -28,12 +29,15 @@ class Tool:
     name: str
     description: str
     parameters: dict  # JSON schema of inputs
-    handler: Callable[..., Awaitable[ToolResult]]
+    handler: Callable[..., Any]
 
     async def execute(self, **kwargs) -> ToolResult:
-        """Run the tool and return its output."""
+        """Run the tool and return its output. Handles both sync and async handlers."""
         try:
-            return await self.handler(**kwargs)
+            result = self.handler(**kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
