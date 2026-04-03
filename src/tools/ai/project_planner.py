@@ -21,7 +21,7 @@ async def _infer_project_plan(project_description: str) -> ToolResult:
     """Given a text description of the project, infer milestones and tasks."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_project_planner,
             messages=[
                 {
                     "role": "system",
@@ -73,7 +73,7 @@ async def _compare_plan_vs_state(suggested_plan: str, existing_state: str) -> To
     """Compare AI-suggested plan with existing milestones/issues to produce an action list."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_plan_reconciler,
             messages=[
                 {
                     "role": "system",

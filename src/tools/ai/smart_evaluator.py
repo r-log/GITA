@@ -38,7 +38,7 @@ async def _evaluate_smart(issue_data: dict, linked_issues: list[dict] | None = N
             ]
 
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_smart_evaluator,
             messages=[
                 {
                     "role": "system",
@@ -77,7 +77,7 @@ async def _check_milestone_alignment(issue_data: dict, milestone_data: dict) -> 
     """Check if an issue actually belongs to its assigned milestone."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_milestone_alignment,
             messages=[
                 {
                     "role": "system",

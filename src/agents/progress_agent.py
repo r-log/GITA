@@ -41,13 +41,14 @@ class ProgressTrackerAgent(BaseAgent):
     and identifies blockers.
     """
 
-    def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0):
+    def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0, model: str | None = None):
         tools = self._build_tools(installation_id, repo_full_name, repo_id)
 
         super().__init__(
             name="progress_tracker",
             description="Progress analyst — tracks milestone completion %, velocity trends, blockers, and deadline predictions",
             tools=tools,
+            model=model,
             system_prompt_file="progress_tracker.md",
         )
 

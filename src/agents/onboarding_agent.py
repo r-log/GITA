@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from thefuzz import fuzz
 
 from src.agents.base import BaseAgent, AgentContext, AgentResult
+from src.core.config import settings
 from src.tools.base import Tool
 
 # GitHub tools
@@ -51,13 +53,51 @@ MANIFEST_PATTERNS = {
 MAX_PASS2_CHARS = 40000  # char budget for Pass 2 file contents
 
 
+def _extract_json(text: str) -> str:
+    """
+    Extract JSON from LLM response, handling:
+    - Pure JSON
+    - JSON wrapped in ```json ... ``` code fences
+    - JSON embedded in prose text with code fences
+    - JSON with preamble text before the opening brace
+    """
+    text = text.strip()
+
+    # Try direct parse first
+    if text.startswith("{") or text.startswith("["):
+        return text
+
+    # Look for ```json ... ``` block embedded in text
+    import re
+    fence_match = re.search(r"```(?:json)?\s*\n(\{[\s\S]*?\})\s*```", text)
+    if fence_match:
+        return fence_match.group(1).strip()
+
+    # Strip leading/trailing fences only
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+    if text.startswith("{") or text.startswith("["):
+        return text
+
+    # Last resort: find first { and last } in the text
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        return text[first_brace:last_brace + 1]
+
+    return text
+
+
 class OnboardingAgent(BaseAgent):
     """
     Multi-pass onboarding agent. Each pass produces a compressed artifact
     that the next pass consumes via an in-memory scratchpad.
     """
 
-    def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0):
+    def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0, model: str | None = None):
         # Build all tool groups
         self._scan_tools = [
             make_get_repo_tree(installation_id, repo_full_name),
@@ -102,7 +142,7 @@ class OnboardingAgent(BaseAgent):
 
         # Load per-pass prompts
         self._pass_prompts: dict[str, str] = {}
-        for pass_name in ["pass1_structure", "pass2_deepdive", "pass3_milestones", "pass4_issues"]:
+        for pass_name in ["pass1_structure", "pass2_deepdive", "pass3_milestones", "pass3_5_validation", "pass4_issues"]:
             prompt_path = Path("prompts") / f"onboarding_{pass_name}.md"
             if prompt_path.exists():
                 self._pass_prompts[pass_name] = prompt_path.read_text(encoding="utf-8")
@@ -116,23 +156,27 @@ class OnboardingAgent(BaseAgent):
         user_content: str,
         tools: list[Tool],
         max_calls: int = 20,
+        model: str | None = None,
     ) -> tuple[str, list[dict]]:
         """
-        Run a single pass: temporarily swap tools, call run_tool_loop, restore.
+        Run a single pass: temporarily swap tools and model, call run_tool_loop, restore.
         """
         original_tools = self.tools
         original_tool_map = self._tool_map
+        original_model = self.model
 
         try:
             self.tools = tools
             self._tool_map = {t.name: t for t in tools}
+            if model:
+                self.model = model
 
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ]
 
-            log.info("pass_start", agent=self.name, pass_name=pass_name, tools=[t.name for t in tools])
+            log.info("pass_start", agent=self.name, pass_name=pass_name, model=self.model, tools=[t.name for t in tools])
             final_text, tool_call_log = await self.run_tool_loop(messages, max_calls=max_calls)
             log.info("pass_complete", agent=self.name, pass_name=pass_name, tool_calls=len(tool_call_log))
 
@@ -140,11 +184,14 @@ class OnboardingAgent(BaseAgent):
         finally:
             self.tools = original_tools
             self._tool_map = original_tool_map
+            self.model = original_model
 
-    async def _llm_call(self, system_prompt: str, user_content: str) -> str:
+    async def _llm_call(self, system_prompt: str, user_content: str, model: str | None = None) -> str:
         """Direct LLM call without tool loop (for pure reasoning passes)."""
+        use_model = model or self.model
+        log.info("llm_call", agent=self.name, model=use_model)
         response = await self._client.chat.completions.create(
-            model=self.model,
+            model=use_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
@@ -152,7 +199,8 @@ class OnboardingAgent(BaseAgent):
             temperature=0.2,
             response_format={"type": "json_object"},
         )
-        return response.choices[0].message.content or ""
+        raw = response.choices[0].message.content or ""
+        return _extract_json(raw)
 
     def _is_manifest(self, path: str) -> bool:
         """Check if a file path matches a manifest/high-value pattern."""
@@ -221,10 +269,11 @@ class OnboardingAgent(BaseAgent):
         raw = await self._llm_call(
             self._pass_prompts["pass1_structure"],
             context,
+            model=settings.ai_model_onboarding_pass1,
         )
 
         try:
-            result = json.loads(raw)
+            result = json.loads(_extract_json(raw))
         except json.JSONDecodeError:
             log.error("pass1_json_parse_failed", raw=raw[:500])
             raise RuntimeError("Pass 1 failed: LLM returned invalid JSON")
@@ -305,10 +354,11 @@ class OnboardingAgent(BaseAgent):
             context,
             tools=self._read_tools,
             max_calls=30,
+            model=settings.ai_model_onboarding_pass2,
         )
 
         try:
-            result = json.loads(raw)
+            result = json.loads(_extract_json(raw))
         except json.JSONDecodeError:
             log.error("pass2_json_parse_failed", raw=raw[:500])
             raise RuntimeError("Pass 2 failed: LLM returned invalid JSON")
@@ -405,10 +455,11 @@ class OnboardingAgent(BaseAgent):
         raw = await self._llm_call(
             self._pass_prompts["pass3_milestones"],
             context,
+            model=settings.ai_model_onboarding_pass3,
         )
 
         try:
-            result = json.loads(raw)
+            result = json.loads(_extract_json(raw))
         except json.JSONDecodeError:
             log.error("pass3_json_parse_failed", raw=raw[:500])
             raise RuntimeError("Pass 3 failed: LLM returned invalid JSON")
@@ -419,6 +470,163 @@ class OnboardingAgent(BaseAgent):
             confidence=result.get("overall_confidence"),
         )
         return result
+
+    # ── Pass 3.5: Validate Plan ─────────────────────────────────────────
+
+    async def _pass3_5_validate(self, scratchpad: dict) -> dict[str, Any]:
+        """
+        Validate milestone plan before issue creation.
+        Stage A: deterministic checks (file existence, fuzzy dedup).
+        Stage B: LLM spot-check of ambiguous items.
+        """
+        log.info("pass3_5_start")
+
+        milestones_data = scratchpad["milestones"]
+        tree_paths = {
+            f["path"] for f in scratchpad["structure"].get("_tree", [])
+            if f["type"] == "blob"
+        }
+        existing_issues = scratchpad["existing"].get("existing_issues", [])
+
+        # Stage A: Deterministic checks
+        flags: list[dict] = []
+        auto_skipped = 0
+        auto_corrected = 0
+
+        for milestone in milestones_data.get("milestones", []):
+            for task in milestone.get("tasks", []):
+                task_files = task.get("files", [])
+                task_title = task.get("title", "")
+                task_status = task.get("status", "not-started")
+
+                # 1. File existence check
+                if task_files:
+                    files_exist = [f for f in task_files if f in tree_paths]
+                    files_missing = [f for f in task_files if f not in tree_paths]
+
+                    # Task says "not-started" but all referenced files exist
+                    if task_status == "not-started" and files_exist and len(files_exist) == len(task_files):
+                        flags.append({
+                            "milestone_title": milestone.get("title", ""),
+                            "task_title": task_title,
+                            "flag_type": "status_mismatch",
+                            "details": f"Files exist: {files_exist}",
+                            "files_to_check": files_exist[:3],  # limit spot-check
+                        })
+
+                    # Task references files that don't exist at all
+                    if files_missing and not files_exist:
+                        flags.append({
+                            "milestone_title": milestone.get("title", ""),
+                            "task_title": task_title,
+                            "flag_type": "files_missing",
+                            "details": f"None of the referenced files exist: {files_missing}",
+                        })
+
+                # 2. Fuzzy dedup against existing issues
+                if existing_issues:
+                    best_score = 0
+                    best_match = None
+                    for issue in existing_issues:
+                        score = fuzz.ratio(task_title.lower(), issue.get("title", "").lower())
+                        if score > best_score:
+                            best_score = score
+                            best_match = issue
+
+                    if best_score >= 80:
+                        # Clear duplicate — auto-skip
+                        task["_validation"] = "skip"
+                        task["_skip_reason"] = f"Duplicate of #{best_match['number']}: {best_match['title']} (score={best_score})"
+                        auto_skipped += 1
+                        log.info("pass3_5_auto_skip", task=task_title, duplicate_of=best_match["number"], score=best_score)
+                    elif best_score >= 50:
+                        flags.append({
+                            "milestone_title": milestone.get("title", ""),
+                            "task_title": task_title,
+                            "flag_type": "possible_duplicate",
+                            "details": f"Similar to #{best_match['number']}: {best_match['title']} (score={best_score})",
+                            "existing_issue": {"number": best_match["number"], "title": best_match["title"]},
+                        })
+
+        log.info("pass3_5_stage_a_complete", flags=len(flags), auto_skipped=auto_skipped)
+
+        # Stage B: LLM spot-check if there are flagged items
+        if flags:
+            context = json.dumps({
+                "flagged_items": flags,
+                "project_name": scratchpad["structure"].get("project_name", ""),
+            }, indent=2)
+
+            raw, tool_call_log = await self._run_pass(
+                "pass3_5",
+                self._pass_prompts["pass3_5_validation"],
+                context,
+                tools=self._read_tools,
+                max_calls=10,
+                model=settings.ai_model_onboarding_pass3_5,
+            )
+
+            try:
+                validation_result = json.loads(_extract_json(raw))
+                decisions = validation_result.get("decisions", [])
+
+                # Apply LLM decisions
+                for decision in decisions:
+                    d_milestone = decision.get("milestone_title", "")
+                    d_task = decision.get("task_title", "")
+                    action = decision.get("action", "keep")
+
+                    for milestone in milestones_data.get("milestones", []):
+                        if milestone.get("title", "") != d_milestone:
+                            continue
+                        for task in milestone.get("tasks", []):
+                            if task.get("title", "") != d_task:
+                                continue
+
+                            if action == "skip":
+                                task["_validation"] = "skip"
+                                task["_skip_reason"] = decision.get("reason", "LLM determined duplicate/invalid")
+                                auto_skipped += 1
+                            elif action == "update_status":
+                                old_status = task.get("status")
+                                task["status"] = decision.get("new_status", task["status"])
+                                if decision.get("new_labels"):
+                                    task["labels"] = decision["new_labels"]
+                                auto_corrected += 1
+                                log.info("pass3_5_status_corrected", task=d_task, old=old_status, new=task["status"])
+
+                log.info("pass3_5_llm_decisions", decisions=len(decisions))
+            except json.JSONDecodeError:
+                log.error("pass3_5_json_parse_failed", raw=raw[:500])
+
+        # Remove skipped tasks from milestones
+        for milestone in milestones_data.get("milestones", []):
+            original_count = len(milestone.get("tasks", []))
+            milestone["tasks"] = [
+                t for t in milestone.get("tasks", [])
+                if t.get("_validation") != "skip"
+            ]
+            removed = original_count - len(milestone["tasks"])
+            if removed:
+                log.info("pass3_5_tasks_removed", milestone=milestone.get("title"), removed=removed)
+
+        # Remove empty milestones (all tasks skipped)
+        original_milestone_count = len(milestones_data.get("milestones", []))
+        milestones_data["milestones"] = [
+            m for m in milestones_data.get("milestones", [])
+            if m.get("tasks")
+        ]
+        removed_milestones = original_milestone_count - len(milestones_data["milestones"])
+
+        log.info(
+            "pass3_5_complete",
+            tasks_skipped=auto_skipped,
+            tasks_corrected=auto_corrected,
+            milestones_removed=removed_milestones,
+            milestones_remaining=len(milestones_data["milestones"]),
+        )
+
+        return milestones_data
 
     # ── Pass 4: Create Issues ──────────────────────────────────────────
 
@@ -467,6 +675,7 @@ class OnboardingAgent(BaseAgent):
             context,
             tools=self._issue_tools,
             max_calls=80,
+            model=settings.ai_model_onboarding_pass4,
         )
 
         log.info("pass4_complete", tool_calls=len(tool_call_log))
@@ -527,6 +736,13 @@ class OnboardingAgent(BaseAgent):
                 status="failed",
                 data={"error": f"Pass 3 (Milestones) failed: {e}", "scratchpad": scratchpad},
             )
+
+        # Pass 3.5: Validate plan
+        try:
+            scratchpad["milestones"] = await self._pass3_5_validate(scratchpad)
+        except Exception as e:
+            log.error("pass3_5_failed", error=str(e))
+            # Non-fatal: proceed with unvalidated plan
 
         # Pass 4: Create issues
         try:
