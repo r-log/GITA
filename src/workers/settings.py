@@ -26,4 +26,4 @@ class WorkerSettings:
     on_startup = startup
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     max_jobs = 10
-    job_timeout = 600  # 10 minutes max per job
+    job_timeout = 1200  # 20 minutes max per job

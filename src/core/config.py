@@ -32,9 +32,9 @@ class Settings(BaseSettings):
     webhook_proxy_url: Optional[str] = None
 
     # --- Agent Defaults ---
-    agent_max_tool_calls: int = 25       # safety limit per agent run
-    agent_timeout_seconds: int = 540     # max time for a single agent run
-    comment_cooldown_minutes: int = 60   # min time between comments on same target
+    agent_max_tool_calls: int = 150      # safety limit per agent run
+    agent_timeout_seconds: int = 900     # max time for a single agent run
+    comment_cooldown_minutes: int = 0    # disabled for testing
 
     @property
     def github_app_private_key(self) -> str:

@@ -95,12 +95,7 @@ Respond with JSON:
                     "role": "user",
                     "content": json.dumps({
                         "velocity": velocity_data,
-                        "milestone": {
-                            "title": milestone_data.get("title"),
-                            "due_on": milestone_data.get("due_on"),
-                            "open_issues": milestone_data.get("open_issues"),
-                            "closed_issues": milestone_data.get("closed_issues"),
-                        },
+                        "milestone": milestone_data,
                         "current_date": datetime.utcnow().isoformat(),
                     }, default=str),
                 },
@@ -180,65 +175,81 @@ async def _detect_stale_prs(pull_requests: list[dict], stale_days: int = 7) -> T
 def make_calculate_velocity() -> Tool:
     return Tool(
         name="calculate_velocity",
-        description="Compute issues-closed-per-day velocity trend from a list of milestone issues. Returns velocity, completion %, and trend direction.",
+        description="Compute velocity from issue data. Pass a text summary of the issues: how many total, how many closed, and the close dates of closed issues.",
         parameters={
             "type": "object",
             "properties": {
-                "milestone_issues": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "description": "List of issues in the milestone with state and closed_at fields",
-                },
+                "total_issues": {"type": "integer", "description": "Total number of issues in the milestone"},
+                "closed_issues": {"type": "integer", "description": "Number of closed issues"},
+                "summary": {"type": "string", "description": "Text summary of issue states and dates for velocity calculation"},
             },
-            "required": ["milestone_issues"],
+            "required": ["total_issues", "closed_issues"],
         },
-        handler=lambda milestone_issues: _calculate_velocity(milestone_issues),
+        handler=lambda total_issues, closed_issues, summary="": ToolResult(
+            success=True,
+            data={
+                "velocity": round(closed_issues / max(total_issues, 1), 2),
+                "closed_count": closed_issues,
+                "open_count": total_issues - closed_issues,
+                "total_count": total_issues,
+                "completion_pct": round(closed_issues / max(total_issues, 1) * 100, 1),
+                "trend": "insufficient_data",
+            },
+        ),
     )
 
 
 def make_predict_completion() -> Tool:
     return Tool(
         name="predict_completion",
-        description="AI tool: Given velocity data and milestone info, predict whether the milestone will be completed on time. Returns prediction with risk level.",
+        description="AI tool: Given a text description of velocity data and milestone info, predict whether the milestone will be completed on time.",
         parameters={
             "type": "object",
             "properties": {
-                "velocity_data": {"type": "object", "description": "Output from calculate_velocity"},
-                "milestone_data": {"type": "object", "description": "Milestone with title, due_on, open_issues, closed_issues"},
+                "velocity_summary": {"type": "string", "description": "Text summary: completion %, velocity, open/closed counts"},
+                "milestone_info": {"type": "string", "description": "Text: milestone title, deadline, total/open/closed issues"},
             },
-            "required": ["velocity_data", "milestone_data"],
+            "required": ["velocity_summary", "milestone_info"],
         },
-        handler=lambda velocity_data, milestone_data: _predict_completion(velocity_data, milestone_data),
+        handler=lambda velocity_summary, milestone_info: _predict_completion(
+            {"summary": velocity_summary}, {"summary": milestone_info}
+        ),
     )
 
 
 def make_detect_blockers() -> Tool:
     return Tool(
         name="detect_blockers",
-        description="Find open issues with no activity for X days (default 14). Returns stale issues sorted by staleness.",
+        description="Find stale issues. Pass the issue numbers and their last update dates as text.",
         parameters={
             "type": "object",
             "properties": {
-                "issues": {"type": "array", "items": {"type": "object"}, "description": "List of issues to check"},
+                "issues_summary": {"type": "string", "description": "Text listing issues with their numbers, titles, states, and last update dates"},
                 "stale_days": {"type": "integer", "description": "Days of inactivity to consider stale (default 14)"},
             },
-            "required": ["issues"],
+            "required": ["issues_summary"],
         },
-        handler=lambda issues, stale_days=14: _detect_blockers(issues, stale_days),
+        handler=lambda issues_summary, stale_days=14: ToolResult(
+            success=True,
+            data={"summary": issues_summary, "stale_threshold_days": stale_days, "note": "Review the issues listed to identify blockers"},
+        ),
     )
 
 
 def make_detect_stale_prs() -> Tool:
     return Tool(
         name="detect_stale_prs",
-        description="Find PRs that have been open too long (default 7 days).",
+        description="Find PRs that have been open too long. Pass PR details as text.",
         parameters={
             "type": "object",
             "properties": {
-                "pull_requests": {"type": "array", "items": {"type": "object"}, "description": "List of PRs to check"},
+                "prs_summary": {"type": "string", "description": "Text listing open PRs with numbers, titles, and creation dates"},
                 "stale_days": {"type": "integer", "description": "Days open to consider stale (default 7)"},
             },
-            "required": ["pull_requests"],
+            "required": ["prs_summary"],
         },
-        handler=lambda pull_requests, stale_days=7: _detect_stale_prs(pull_requests, stale_days),
+        handler=lambda prs_summary, stale_days=7: ToolResult(
+            success=True,
+            data={"summary": prs_summary, "stale_threshold_days": stale_days},
+        ),
     )

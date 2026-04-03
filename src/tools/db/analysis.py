@@ -7,19 +7,49 @@ from sqlalchemy import select, desc
 
 from src.core.database import async_session
 from src.models.smart_evaluation import SmartEvaluationModel
+from src.models.issue import IssueModel
 from src.models.analysis import Analysis
 from src.tools.base import Tool, ToolResult
 
 
+async def _resolve_issue_db_id(repo_id: int, github_number: int) -> int | None:
+    """Look up the DB issue ID from repo_id + GitHub issue number. Creates if missing."""
+    if not repo_id or not github_number:
+        return None
+    try:
+        async with async_session() as session:
+            stmt = select(IssueModel).where(
+                IssueModel.repo_id == repo_id,
+                IssueModel.github_number == github_number,
+            )
+            result = await session.execute(stmt)
+            record = result.scalar_one_or_none()
+            if record:
+                return record.id
+            # Create a minimal issue record
+            issue = IssueModel(repo_id=repo_id, github_number=github_number)
+            session.add(issue)
+            await session.commit()
+            await session.refresh(issue)
+            return issue.id
+    except Exception:
+        return None
+
+
 async def _save_evaluation(
-    issue_id: int,
+    repo_id: int,
+    github_issue_number: int,
     is_milestone: bool,
     evaluation: dict,
 ) -> ToolResult:
     try:
+        issue_db_id = await _resolve_issue_db_id(repo_id, github_issue_number)
+        if not issue_db_id:
+            return ToolResult(success=False, error="Could not resolve issue DB ID")
+
         async with async_session() as session:
             record = SmartEvaluationModel(
-                issue_id=issue_id,
+                issue_id=issue_db_id,
                 is_milestone=is_milestone,
                 overall_score=evaluation.get("overall_score"),
                 specific_score=evaluation.get("specific", {}).get("score"),
@@ -39,12 +69,16 @@ async def _save_evaluation(
         return ToolResult(success=False, error=str(e))
 
 
-async def _get_previous_evaluation(issue_id: int) -> ToolResult:
+async def _get_previous_evaluation(repo_id: int, github_issue_number: int) -> ToolResult:
     try:
+        issue_db_id = await _resolve_issue_db_id(repo_id, github_issue_number)
+        if not issue_db_id:
+            return ToolResult(success=True, data=None)
+
         async with async_session() as session:
             stmt = (
                 select(SmartEvaluationModel)
-                .where(SmartEvaluationModel.issue_id == issue_id)
+                .where(SmartEvaluationModel.issue_id == issue_db_id)
                 .order_by(desc(SmartEvaluationModel.created_at))
                 .limit(1)
             )
@@ -129,28 +163,37 @@ async def _get_analysis_history(
         return ToolResult(success=False, error=str(e))
 
 
-def make_save_evaluation(issue_db_id: int) -> Tool:
+def make_save_evaluation(repo_id: int) -> Tool:
     return Tool(
         name="save_evaluation",
         description="Save a S.M.A.R.T. evaluation result to the database.",
         parameters={
             "type": "object",
             "properties": {
+                "github_issue_number": {"type": "integer", "description": "The GitHub issue number being evaluated"},
                 "is_milestone": {"type": "boolean"},
                 "evaluation": {"type": "object", "description": "Full evaluation result from evaluate_smart"},
             },
-            "required": ["evaluation"],
+            "required": ["github_issue_number", "evaluation"],
         },
-        handler=lambda evaluation, is_milestone=False: _save_evaluation(issue_db_id, is_milestone, evaluation),
+        handler=lambda github_issue_number, evaluation, is_milestone=False: _save_evaluation(
+            repo_id, github_issue_number, is_milestone, evaluation
+        ),
     )
 
 
-def make_get_previous_evaluation(issue_db_id: int) -> Tool:
+def make_get_previous_evaluation(repo_id: int) -> Tool:
     return Tool(
         name="get_previous_evaluation",
-        description="Fetch the most recent S.M.A.R.T. evaluation for this issue from the database.",
-        parameters={"type": "object", "properties": {}, "required": []},
-        handler=lambda: _get_previous_evaluation(issue_db_id),
+        description="Fetch the most recent S.M.A.R.T. evaluation for an issue from the database.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "github_issue_number": {"type": "integer", "description": "The GitHub issue number"},
+            },
+            "required": ["github_issue_number"],
+        },
+        handler=lambda github_issue_number: _get_previous_evaluation(repo_id, github_issue_number),
     )
 
 
@@ -162,7 +205,7 @@ def make_save_analysis(repo_id: int) -> Tool:
             "type": "object",
             "properties": {
                 "target_type": {"type": "string", "enum": ["issue", "pr", "milestone"]},
-                "target_number": {"type": "integer", "description": "GitHub issue/PR/milestone number"},
+                "target_number": {"type": "integer", "description": "GitHub issue/PR number"},
                 "analysis_type": {"type": "string", "enum": ["smart", "risk", "quality", "progress"]},
                 "result_data": {"type": "object", "description": "Analysis result data"},
                 "score": {"type": "number"},
@@ -179,7 +222,7 @@ def make_save_analysis(repo_id: int) -> Tool:
 def make_get_analysis_history(repo_id: int) -> Tool:
     return Tool(
         name="get_analysis_history",
-        description="Fetch past analysis records for a specific target (issue/PR/milestone) from the database.",
+        description="Fetch past analysis records for a specific target from the database.",
         parameters={
             "type": "object",
             "properties": {
