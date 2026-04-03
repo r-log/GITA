@@ -67,6 +67,29 @@ async def dispatch_event(
                          agents_dispatched=list(result.data.get("agent_results", {}).keys()))
         return
 
+    elif event_type == "installation_repositories":
+        # Repos added/removed from an existing installation
+        repo_list_key = "repositories_added" if action == "added" else "repositories_removed"
+        repos = payload.get(repo_list_key, [])
+        for repo_info in repos:
+            r_name = repo_info.get("full_name", "")
+            r_id = repo_info.get("id", 0)
+            if r_id and r_name:
+                db_repo_id = await upsert_repository(r_id, r_name, installation_id)
+                ctx = AgentContext(
+                    event_type=full_event,
+                    event_payload=payload,
+                    repo_full_name=r_name,
+                    installation_id=installation_id,
+                    repo_id=db_repo_id,
+                )
+                supervisor = _get_supervisor()
+                log.info("dispatch_event", webhook_event=full_event, repo=r_name, repo_id=db_repo_id)
+                result = await supervisor.handle(ctx)
+                log.info("dispatch_complete", webhook_event=full_event, status=result.status,
+                         agents_dispatched=list(result.data.get("agent_results", {}).keys()))
+        return
+
     context = AgentContext(
         event_type=full_event,
         event_payload=payload,
