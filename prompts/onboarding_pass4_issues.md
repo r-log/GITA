@@ -45,9 +45,13 @@ create_label(name="Milestone Tracker", color="0052cc", description="Tracks miles
 
 **Step 2:** For each milestone, first create ALL its sub-issues. Be specific — reference actual files:
 
-For completed features:
+For completed features — create the issue, then immediately close it:
 ```
 create_issue(title="JWT Authentication", body="**Already implemented.**\n\nJWT auth is fully working:\n- Token generation in `src/services/auth_service.py`\n- Validation middleware in `src/middleware/auth.py`\n\nNo action needed.", labels=["done"])
+```
+Then close it:
+```
+update_issue(issue_number=2, state="closed")
 ```
 
 For incomplete features:
@@ -78,4 +82,4 @@ create_issue(
 ## Skip Rules
 
 - If the milestone plan says a task has `existing_issue` set, do NOT create a new issue for it
-- If a task status is "done", still create the issue but with the `done` label
+- If a task status is "done", create the issue with the `done` label, then IMMEDIATELY close it with `update_issue(issue_number=N, state="closed")`

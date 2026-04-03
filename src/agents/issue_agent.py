@@ -43,13 +43,14 @@ class IssueAnalystAgent(BaseAgent):
     and validates Milestone Tracker checklists.
     """
 
-    def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0):
+    def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0, model: str | None = None):
         tools = self._build_tools(installation_id, repo_full_name, repo_id)
 
         super().__init__(
             name="issue_analyst",
             description="Issue quality analyst — evaluates issues with S.M.A.R.T. criteria, validates Milestone Tracker checklists",
             tools=tools,
+            model=model,
             system_prompt_file="issue_analyst.md",
         )
 

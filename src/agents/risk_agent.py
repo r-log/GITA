@@ -40,13 +40,14 @@ class RiskDetectiveAgent(BaseAgent):
     dependency issues, and potential merge conflicts.
     """
 
-    def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0):
+    def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0, model: str | None = None):
         tools = self._build_tools(installation_id, repo_full_name, repo_id)
 
         super().__init__(
             name="risk_detective",
             description="Security and risk analyst — scans for secrets, vulnerabilities, breaking changes, and dependency risks",
             tools=tools,
+            model=model,
             system_prompt_file="risk_detective.md",
         )
 

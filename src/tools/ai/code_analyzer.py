@@ -18,7 +18,7 @@ async def _analyze_diff_quality(diff: str, pr_info: dict) -> ToolResult:
     """Analyze a PR diff for code quality issues."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_diff_analyzer,
             messages=[
                 {
                     "role": "system",
@@ -83,7 +83,7 @@ async def _check_test_coverage(diff: str, files_changed: list[dict]) -> ToolResu
         source_files = [f for f in files_changed if "test" not in f.get("filename", "").lower()]
 
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_test_coverage,
             messages=[
                 {
                     "role": "system",

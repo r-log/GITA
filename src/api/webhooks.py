@@ -82,6 +82,12 @@ async def github_webhook(request: Request):
     if event_type == "ping":
         return {"status": "pong"}
 
+    # Skip events that don't need agent processing
+    skip_actions = {"deleted", "transferred", "pinned", "unpinned"}
+    if action in skip_actions:
+        log.info("webhook_skipped_action", action=action)
+        return {"status": "skipped", "reason": f"action_{action}_ignored"}
+
     # LAYER 1: Skip events triggered by our own bot
     if _is_bot_event(payload):
         log.info("webhook_skipped_bot", action=action)
@@ -105,5 +111,13 @@ async def github_webhook(request: Request):
     )
 
     log.info("webhook_queued")
+
+    # Also enqueue context update for push events (runs in parallel with agent dispatch)
+    if event_type == "push":
+        await pool.enqueue_job(
+            "process_context_update",
+            repo, installation_id, payload,
+        )
+        log.info("context_update_queued")
 
     return {"status": "accepted", "event": event_type, "delivery_id": delivery_id}

@@ -75,7 +75,7 @@ async def _predict_completion(
     """AI tool: given velocity + remaining issues + due date, predict if milestone will be met on time."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_predictor,
             messages=[
                 {
                     "role": "system",

@@ -18,7 +18,7 @@ async def _scan_secrets(diff: str) -> ToolResult:
     """Detect hardcoded secrets, API keys, tokens, passwords in a diff."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_secret_scanner,
             messages=[
                 {
                     "role": "system",
@@ -65,7 +65,7 @@ async def _scan_security_patterns(diff: str) -> ToolResult:
     """Detect SQL injection, XSS, unsafe deserialization, and other security patterns."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_security_scanner,
             messages=[
                 {
                     "role": "system",
@@ -113,7 +113,7 @@ async def _detect_breaking_changes(diff: str, files_changed: list[dict]) -> Tool
     """Detect breaking API changes, schema changes, config changes."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_breaking_changes,
             messages=[
                 {
                     "role": "system",
@@ -165,7 +165,7 @@ async def _check_dependency_changes(diff: str) -> ToolResult:
     """Parse lockfile/manifest diffs for new or changed dependencies."""
     try:
         response = await _client.chat.completions.create(
-            model=settings.ai_default_model,
+            model=settings.ai_model_dependency_checker,
             messages=[
                 {
                     "role": "system",

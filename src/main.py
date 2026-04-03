@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from src.core.logging import setup_logging
 from src.api.health import router as health_router
 from src.api.webhooks import router as webhooks_router
+from src.api.reconcile import router as reconcile_router
 from src.agents.setup import register_all_agents
 from src.agents.registry import registry
 
@@ -28,6 +29,7 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(webhooks_router)
+app.include_router(reconcile_router)
 
 
 @app.on_event("startup")

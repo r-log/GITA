@@ -15,6 +15,8 @@ import structlog
 from dataclasses import asdict
 from datetime import datetime, timedelta
 
+import re
+
 from src.agents.base import BaseAgent, AgentContext, AgentResult
 from src.agents.registry import registry
 from src.tools.base import Tool, ToolResult
@@ -23,6 +25,28 @@ from src.core.database import async_session
 from src.models.agent_run import AgentRun
 
 log = structlog.get_logger()
+
+
+def _extract_json(text: str) -> str:
+    """Extract JSON from LLM response that may include prose or code fences."""
+    text = text.strip()
+    if text.startswith("{") or text.startswith("["):
+        return text
+    fence_match = re.search(r"```(?:json)?\s*\n(\{[\s\S]*?\})\s*```", text)
+    if fence_match:
+        return fence_match.group(1).strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+    if text.startswith("{") or text.startswith("["):
+        return text
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        return text[first_brace:last_brace + 1]
+    return text
 
 
 class SupervisorAgent(BaseAgent):
@@ -37,6 +61,7 @@ class SupervisorAgent(BaseAgent):
             name="supervisor",
             description="Event router that dispatches specialist agents based on webhook events",
             tools=[],
+            model=settings.ai_model_supervisor,
             system_prompt_file="supervisor.md",
         )
 
@@ -111,7 +136,9 @@ class SupervisorAgent(BaseAgent):
         )
 
         try:
-            return json.loads(response.choices[0].message.content)
+            raw = response.choices[0].message.content or ""
+            raw = _extract_json(raw)
+            return json.loads(raw)
         except (json.JSONDecodeError, IndexError):
             log.error("supervisor_parse_error", response=response.choices[0].message.content)
             return {"agents_to_dispatch": [], "reasoning": "Failed to parse LLM response"}
