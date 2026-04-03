@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub Assistant Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>GitHub Assistant</h1>
+    <select id="repo-selector">
+      <option value="">Select repository...</option>
+    </select>
+  </header>
+
+  <nav>
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="runs">Onboarding Runs</button>
+    <button data-tab="agents">Agent Runs</button>
+    <button data-tab="issues">Issues & Milestones</button>
+    <button data-tab="security">Security</button>
+    <button data-tab="context">Context Updates</button>
+  </nav>
+
+  <main>
+    <!-- Overview Tab -->
+    <div id="tab-overview" class="tab-content active">
+      <div class="stats-grid" id="stats-cards"></div>
+      <div class="charts-row">
+        <div class="chart-card">
+          <h3>Agent Activity (last 30 days)</h3>
+          <canvas id="activity-chart" height="200"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3>Runs by Agent</h3>
+          <canvas id="agent-chart" height="200"></canvas>
+        </div>
+      </div>
+      <div class="section-title">Recent Activity</div>
+      <div id="activity-feed"></div>
+    </div>
+
+    <!-- Onboarding Runs Tab -->
+    <div id="tab-runs" class="tab-content">
+      <div class="filters">
+        <select id="runs-status-filter">
+          <option value="">All statuses</option>
+          <option value="success">Success</option>
+          <option value="partial">Partial</option>
+          <option value="failed">Failed</option>
+          <option value="context_update">Context Update</option>
+          <option value="reconciliation">Reconciliation</option>
+        </select>
+      </div>
+      <div id="runs-table"></div>
+    </div>
+
+    <!-- Agent Runs Tab -->
+    <div id="tab-agents" class="tab-content">
+      <div class="filters">
+        <select id="agents-name-filter">
+          <option value="">All agents</option>
+          <option value="onboarding">Onboarding</option>
+          <option value="issue_analyst">Issue Analyst</option>
+          <option value="progress_tracker">Progress Tracker</option>
+          <option value="pr_reviewer">PR Reviewer</option>
+          <option value="risk_detective">Risk Detective</option>
+        </select>
+        <select id="agents-status-filter">
+          <option value="">All statuses</option>
+          <option value="success">Success</option>
+          <option value="failed">Failed</option>
+          <option value="partial">Partial</option>
+        </select>
+      </div>
+      <div id="agents-table"></div>
+    </div>
+
+    <!-- Issues & Milestones Tab -->
+    <div id="tab-issues" class="tab-content">
+      <div id="milestones-list"></div>
+    </div>
+
+    <!-- Security Tab -->
+    <div id="tab-security" class="tab-content">
+      <div id="security-list"></div>
+    </div>
+
+    <!-- Context Updates Tab -->
+    <div id="tab-context" class="tab-content">
+      <div id="context-list"></div>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
