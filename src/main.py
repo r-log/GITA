@@ -5,11 +5,14 @@ FastAPI app factory — includes API routers and agent registry setup.
 
 import structlog
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from src.core.logging import setup_logging
 from src.api.health import router as health_router
 from src.api.webhooks import router as webhooks_router
 from src.api.reconcile import router as reconcile_router
+from src.api.dashboard_api import router as dashboard_router
 from src.agents.setup import register_all_agents
 from src.agents.registry import registry
 
@@ -27,9 +30,20 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# API routers
 app.include_router(health_router)
 app.include_router(webhooks_router)
 app.include_router(reconcile_router)
+app.include_router(dashboard_router)
+
+# Static files for dashboard
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/dashboard")
+async def serve_dashboard():
+    """Serve the monitoring dashboard."""
+    return FileResponse("static/index.html")
 
 
 @app.on_event("startup")
