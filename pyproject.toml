@@ -36,6 +36,9 @@ dependencies = [
     "thefuzz>=0.22.0",           # fuzzy string matching for milestone reconciliation
     "pyyaml>=6.0.0",            # parse .github/assistant.yml repo config
     "pyjwt[crypto]>=2.8.0",     # GitHub App JWT authentication
+
+    # Code indexer (tree-sitter for Go/Java/Rust/C#/Ruby/PHP parsing)
+    "tree-sitter-languages>=1.10.0",
 ]
 
 [project.optional-dependencies]

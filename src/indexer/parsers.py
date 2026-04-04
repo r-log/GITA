@@ -38,6 +38,8 @@ EXTENSION_MAP = {
     ".java": "java",
     ".rb": "ruby",
     ".php": "php",
+    ".cs": "c_sharp",
+    ".kt": "kotlin", ".kts": "kotlin",
     ".vue": "vue",
     ".svelte": "svelte",
 }
@@ -82,16 +84,35 @@ def compute_hash(content: str) -> str:
 
 
 def _extract_todos(content: str) -> list[dict]:
-    """Extract TODO/FIXME comments from any file."""
+    """Extract TODO/FIXME comments from any file.
+
+    Only matches markers that appear inside real comments (lines starting with
+    comment characters), not inside strings or code. Requires the marker to be
+    followed by : or whitespace to avoid matching variable names like 'all_todos'.
+    """
+    import re
+    # Pattern: marker followed by colon, whitespace, or end-of-line
+    marker_re = re.compile(r'\b(TODO|FIXME|HACK|XXX)\b[\s:(-]')
+
     todos = []
     for i, line in enumerate(content.split("\n"), 1):
-        for marker in ("TODO", "FIXME", "HACK", "XXX"):
-            if marker in line:
-                # Extract the comment text after the marker
-                idx = line.index(marker)
-                text = line[idx:].strip()
-                todos.append({"line": i, "text": text[:200]})
-                break
+        stripped = line.lstrip()
+
+        # Only consider lines that are clearly comments (start with comment char)
+        is_comment = (
+            stripped.startswith("#") or
+            stripped.startswith("//") or
+            stripped.startswith("/*") or
+            stripped.startswith("*") or
+            stripped.startswith("<!--")
+        )
+        if not is_comment:
+            continue
+
+        match = marker_re.search(stripped)
+        if match:
+            text = stripped[match.start():].strip()
+            todos.append({"line": i, "text": text[:200]})
     return todos
 
 
@@ -184,10 +205,13 @@ def parse_python(content: str, file_path: str) -> FileIndex:
                 # Detect route decorators
                 for dec in decorators:
                     if any(kw in dec for kw in (".route", ".get", ".post", ".put", ".delete", ".patch")):
-                        # Try to extract the route path
                         route_path = _extract_route_path(node)
+                        method = _guess_http_method(dec)
+                        # For .route() decorators, check methods= kwarg
+                        if method == "ANY":
+                            method = _extract_flask_methods(node) or "ANY"
                         routes.append({
-                            "method": _guess_http_method(dec),
+                            "method": method,
                             "path": route_path or dec,
                             "handler": node.name,
                             "line": node.lineno,
@@ -257,6 +281,22 @@ def _guess_http_method(decorator: str) -> str:
         if f".{method}" in decorator.lower():
             return method.upper()
     return "ANY"
+
+
+def _extract_flask_methods(node) -> str | None:
+    """Extract HTTP method from Flask @bp.route('/path', methods=['POST']) kwarg."""
+    for dec in node.decorator_list:
+        if not isinstance(dec, ast.Call):
+            continue
+        for kw in dec.keywords:
+            if kw.arg == "methods" and isinstance(kw.value, ast.List):
+                methods = []
+                for elt in kw.value.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        methods.append(elt.value.upper())
+                if methods:
+                    return ", ".join(methods)
+    return None
 
 
 def _get_constant_value(node):
@@ -419,6 +459,10 @@ def parse_generic(content: str, file_path: str) -> FileIndex:
 
 # ── Main Parser Dispatcher ────────────────────────────────────────
 
+# Languages that tree-sitter handles (when available)
+TREE_SITTER_LANGUAGES = {"go", "java", "rust", "c_sharp", "ruby", "php"}
+
+
 def parse_file(content: str, file_path: str) -> FileIndex:
     """Parse a file using the appropriate parser based on language."""
     language = detect_language(file_path)
@@ -432,8 +476,33 @@ def parse_file(content: str, file_path: str) -> FileIndex:
             return parse_config(content, file_path)
         elif language == "vue":
             return parse_javascript(content, file_path, override_language="vue")
+        elif language in TREE_SITTER_LANGUAGES:
+            return _parse_with_tree_sitter(content, file_path, language)
         else:
             return parse_generic(content, file_path)
     except Exception as e:
         log.warning("parser_error", file=file_path, error=str(e))
         return parse_generic(content, file_path)
+
+
+def _parse_with_tree_sitter(content: str, file_path: str, language: str) -> FileIndex:
+    """Parse using tree-sitter, fall back to generic if not available."""
+    from src.indexer.tree_sitter_parser import is_available, parse_tree_sitter
+
+    lines = content.split("\n")
+    structure = {}
+
+    if is_available():
+        structure = parse_tree_sitter(content, file_path, language)
+
+    # Always add TODOs (tree-sitter doesn't extract these)
+    structure["todos"] = _extract_todos(content)
+
+    return FileIndex(
+        file_path=file_path,
+        language=language,
+        size_bytes=len(content.encode("utf-8")),
+        line_count=len(lines),
+        content_hash=compute_hash(content),
+        structure=structure,
+    )

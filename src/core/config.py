@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     ai_model_supervisor: str = "anthropic/claude-haiku-4.5"
     # Pass 1 (index) and Pass 2 (deep dive) are now deterministic -- no LLM needed
     ai_model_onboarding_pass3: str = "anthropic/claude-sonnet-4"
+    ai_model_onboarding_pass3_progressive: str = "anthropic/claude-sonnet-4"
     ai_model_onboarding_pass3_5: str = "anthropic/claude-sonnet-4"
     ai_model_onboarding_pass4: str = "anthropic/claude-haiku-4.5"
     ai_model_issue_analyst: str = "anthropic/claude-sonnet-4"

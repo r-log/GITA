@@ -5,7 +5,6 @@ Closes done issues that are still open, updates Milestone Tracker checklists,
 and flags drift. Triggered by ARQ cron job or manual API call.
 """
 
-import re
 from datetime import datetime
 
 import structlog
@@ -17,6 +16,7 @@ from src.models.onboarding_run import OnboardingRun
 from src.models.repository import Repository
 from src.tools.github.issues import _get_all_issues, _update_issue
 from src.tools.db.onboarding import _save_onboarding_run
+from src.utils.checklist import parse_checklist, update_checklist
 
 log = structlog.get_logger()
 
@@ -31,7 +31,7 @@ async def _load_latest_run(repo_id: int) -> OnboardingRun | None:
             select(OnboardingRun)
             .where(
                 OnboardingRun.repo_id == repo_id,
-                OnboardingRun.status.in_(["success", "partial", "context_update"]),
+                OnboardingRun.status.in_(["success", "partial", "context_update", "progressive_update"]),
             )
             .order_by(OnboardingRun.completed_at.desc())
             .limit(1)
@@ -54,46 +54,10 @@ def _match_task_to_issue(task_title: str, issues: list[dict]) -> dict | None:
     return None
 
 
-def _parse_checklist(body: str) -> list[dict]:
-    """Parse markdown checklist items from a Milestone Tracker body."""
-    pattern = re.compile(r"- \[([ xX])\] (.+?)(?:\(#(\d+)\))?$", re.MULTILINE)
-    items = []
-    for match in pattern.finditer(body):
-        items.append({
-            "checked": match.group(1).lower() == "x",
-            "text": match.group(2).strip(),
-            "issue_number": int(match.group(3)) if match.group(3) else None,
-            "full_match": match.group(0),
-        })
-    return items
-
-
-def _update_checklist(body: str, issue_states: dict[int, str]) -> str | None:
-    """
-    Update checklist marks based on current issue states.
-    Returns updated body or None if no changes needed.
-    """
-    updated = body
-    changed = False
-
-    for number, state in issue_states.items():
-        should_be_checked = state == "closed"
-
-        # Match both checked and unchecked patterns for this issue number
-        pattern = re.compile(rf"- \[([ xX])\] (.+?)\(#{number}\)")
-        match = pattern.search(updated)
-        if not match:
-            continue
-
-        currently_checked = match.group(1).lower() == "x"
-        if should_be_checked and not currently_checked:
-            updated = updated[:match.start()] + updated[match.start():match.end()].replace("[ ]", "[x]") + updated[match.end():]
-            changed = True
-        elif not should_be_checked and currently_checked:
-            updated = updated[:match.start()] + updated[match.start():match.end()].replace("[x]", "[ ]").replace("[X]", "[ ]") + updated[match.end():]
-            changed = True
-
-    return updated if changed else None
+# _parse_checklist and _update_checklist moved to src/utils/checklist.py
+# Aliased here for backward compatibility within this module
+_parse_checklist = parse_checklist
+_update_checklist = update_checklist
 
 
 async def reconcile_repo(
