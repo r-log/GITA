@@ -66,11 +66,22 @@ def generate_code_map(records: list[dict], project_name: str = "") -> str:
                 "fields": cls.get("fields", []),
                 "file": path,
             }
-            # Classify: is it a model/schema or a service?
+            # Classify: is it a DB model/schema or a service class?
             lower_path = path.lower()
-            bases_str = " ".join(cls.get("bases", [])).lower()
-            if any(kw in lower_path for kw in ("model", "schema", "entity")) or \
-               any(kw in bases_str for kw in ("base", "model", "db.", "document")):
+            bases_lower = [b.lower() for b in cls.get("bases", [])]
+
+            # DB models: classes in model/schema dirs OR inheriting from DB base classes
+            is_model = (
+                any(kw in lower_path for kw in ("model", "schema", "entity")) or
+                any(b in ("base", "db.model", "document", "basemodel") for b in bases_lower)
+            )
+            # Exclude agent/service classes that happen to have "Base" in parent name
+            is_agent_or_service = any(
+                kw in b for b in bases_lower
+                for kw in ("agent", "service", "handler", "controller", "mixin", "settings")
+            )
+
+            if is_model and not is_agent_or_service:
                 all_models.append(cls_info)
             elif any(kw in lower_path for kw in ("service", "manager", "handler", "controller")):
                 services.append(cls_info)
@@ -84,18 +95,14 @@ def generate_code_map(records: list[dict], project_name: str = "") -> str:
                 "is_async": fn.get("is_async", False),
                 "file": path,
             }
-            # Services: functions in service directories
-            if any(kw in path.lower() for kw in ("service", "handler", "controller", "api")):
+            # Services: functions in service/worker/core dirs (not api — those are in Routes)
+            if any(kw in path.lower() for kw in ("service", "worker", "core", "lib", "utils")):
                 services.append(fn_info)
             all_functions.append(fn_info)
 
         # Collect components (JS/Vue/Svelte)
         for comp in struct.get("components", []):
             all_components.append({"name": comp, "file": path})
-
-        # Collect exports
-        for exp in struct.get("exports", []):
-            all_components.append({"name": exp, "file": path})
 
         # Collect TODOs
         for todo in struct.get("todos", []):
@@ -143,13 +150,15 @@ def generate_code_map(records: list[dict], project_name: str = "") -> str:
         for file, routes in sorted(routes_by_file.items()):
             sections.append(f"**{file}:**")
             for r in routes:
-                sections.append(f"  - {r['method']} {r['path']} → {r['handler']}()")
+                sections.append(f"  - {r['method']} {r['path']} -> {r['handler']}()")
 
     # Models/Schemas
     if all_models:
         sections.append("\n## Models & Schemas")
         for m in all_models:
-            fields_str = ", ".join(m["fields"][:10]) if m["fields"] else ""
+            # Filter out dunder fields (SQLAlchemy internals)
+            real_fields = [f for f in m["fields"] if not f.startswith("_")]
+            fields_str = ", ".join(real_fields[:10]) if real_fields else ""
             methods_str = ", ".join(m["methods"][:8]) if m["methods"] else ""
             bases_str = f" ({', '.join(m['bases'])})" if m["bases"] else ""
             sections.append(f"- **{m['name']}**{bases_str} [{m['file']}]")
@@ -199,9 +208,9 @@ def generate_code_map(records: list[dict], project_name: str = "") -> str:
     for dir_path in sorted(dirs.keys()):
         files = dirs[dir_path]
         if len(files) <= 5:
-            sections.append(f"  {dir_path}/ → {', '.join(files)}")
+            sections.append(f"  {dir_path}/ -> {', '.join(files)}")
         else:
-            sections.append(f"  {dir_path}/ → {len(files)} files ({', '.join(files[:3])}, ...)")
+            sections.append(f"  {dir_path}/ -> {len(files)} files ({', '.join(files[:3])}, ...)")
 
     # Gaps & TODOs
     if all_todos:
