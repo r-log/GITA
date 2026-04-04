@@ -27,6 +27,7 @@ from src.tools.ai.smart_evaluator import make_check_milestone_alignment
 
 # DB tools
 from src.tools.db.analysis import make_save_analysis
+from src.tools.db.code_index import make_query_code_index
 
 log = structlog.get_logger()
 
@@ -73,6 +74,8 @@ class PRReviewAgent(BaseAgent):
             make_check_milestone_alignment(),
             # DB
             make_save_analysis(repo_id),
+            # Code index — query file structure for context on changed files
+            make_query_code_index(repo_id),
         ]
 
     async def handle(self, context: AgentContext) -> AgentResult:
