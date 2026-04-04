@@ -11,12 +11,19 @@ body {
 header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 24px;
+  gap: 24px;
+  padding: 10px 24px;
   background: #161b22;
   border-bottom: 1px solid #30363d;
 }
-header h1 { font-size: 16px; font-weight: 600; color: #f0f6fc; }
+header nav { flex: 1; display: flex; justify-content: center; gap: 2px; }
+.logo {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  color: #58a6ff;
+  letter-spacing: 6px;
+}
 #repo-selector {
   background: #21262d;
   color: #c9d1d9;
@@ -26,25 +33,19 @@ header h1 { font-size: 16px; font-weight: 600; color: #f0f6fc; }
   font-size: 14px;
 }
 
-/* Nav tabs */
-nav {
-  display: flex;
-  gap: 2px;
-  padding: 8px 24px;
-  background: #161b22;
-  border-bottom: 1px solid #30363d;
-}
-nav button {
+/* Nav tabs (inside header) */
+header nav button {
   background: transparent;
   color: #8b949e;
   border: none;
-  padding: 8px 16px;
+  padding: 8px 14px;
   font-size: 13px;
   cursor: pointer;
   border-radius: 6px;
+  white-space: nowrap;
 }
-nav button:hover { color: #c9d1d9; background: #21262d; }
-nav button.active { color: #f0f6fc; background: #21262d; }
+header nav button:hover { color: #c9d1d9; background: #21262d; }
+header nav button.active { color: #f0f6fc; background: #21262d; }
 
 /* Main content */
 main { padding: 24px; max-width: 1400px; margin: 0 auto; }
@@ -54,9 +55,9 @@ main { padding: 24px; max-width: 1400px; margin: 0 auto; }
 /* Stats cards */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(6, 1fr);
   gap: 12px;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 .stat-card {
   background: #161b22;
@@ -68,13 +69,17 @@ main { padding: 24px; max-width: 1400px; margin: 0 auto; }
 .stat-card .value { font-size: 28px; font-weight: 600; color: #f0f6fc; margin-top: 4px; }
 .stat-card .sub { font-size: 12px; color: #8b949e; margin-top: 2px; }
 
-/* Charts */
-.charts-row {
+/* Overview layout */
+.overview-grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 16px;
   margin-bottom: 24px;
 }
+.overview-left { display: flex; flex-direction: column; gap: 12px; }
+.overview-side { display: flex; flex-direction: column; gap: 16px; }
+
+/* Charts */
 .chart-card {
   background: #161b22;
   border: 1px solid #30363d;
@@ -253,3 +258,59 @@ tr.clickable { cursor: pointer; }
 .finding .type { font-weight: 600; color: #f0f6fc; }
 .finding .desc { color: #8b949e; margin-top: 2px; }
 .finding .rec { color: #7ee787; margin-top: 4px; font-size: 12px; }
+
+/* Alerts (compact, inside card) */
+.alert-item {
+  padding: 8px 0;
+  border-bottom: 1px solid #21262d;
+  font-size: 12px;
+}
+.alert-item:last-child { border-bottom: none; }
+.alert-item .alert-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+.alert-dot.critical { background: #f85149; }
+.alert-dot.warning { background: #d29922; }
+.alert-item .alert-msg { color: #c9d1d9; }
+.alert-item .alert-rec { color: #7ee787; font-size: 11px; margin-top: 2px; }
+.alerts-empty { color: #8b949e; font-size: 12px; padding: 12px 0; }
+
+/* Quick actions */
+.actions-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.action-btn {
+  background: #21262d;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.action-btn:hover { background: #282e36; border-color: #58a6ff; color: #f0f6fc; }
+.action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.action-btn.running { border-color: #d29922; color: #d29922; }
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  z-index: 1000;
+  animation: fadeIn 0.2s;
+}
+.toast-success { background: #1b4332; color: #2dc653; border: 1px solid #2dc653; }
+.toast-error { background: #3d1418; color: #f85149; border: 1px solid #f85149; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Cost display — no longer separate, integrated into chart */

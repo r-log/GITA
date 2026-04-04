@@ -3,38 +3,51 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GitHub Assistant Dashboard</title>
+  <title>GITA Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
-    <h1>GitHub Assistant</h1>
+    <h1 class="logo">GITA</h1>
+    <nav>
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="runs">Onboarding Runs</button>
+      <button data-tab="agents">Agent Runs</button>
+      <button data-tab="issues">Issues & Milestones</button>
+      <button data-tab="security">Security</button>
+      <button data-tab="context">Context Updates</button>
+    </nav>
     <select id="repo-selector">
       <option value="">Select repository...</option>
     </select>
   </header>
 
-  <nav>
-    <button data-tab="overview" class="active">Overview</button>
-    <button data-tab="runs">Onboarding Runs</button>
-    <button data-tab="agents">Agent Runs</button>
-    <button data-tab="issues">Issues & Milestones</button>
-    <button data-tab="security">Security</button>
-    <button data-tab="context">Context Updates</button>
-  </nav>
-
   <main>
     <!-- Overview Tab -->
     <div id="tab-overview" class="tab-content active">
       <div class="stats-grid" id="stats-cards"></div>
-      <div class="charts-row">
-        <div class="chart-card">
-          <h3>Agent Activity (last 30 days)</h3>
-          <canvas id="activity-chart" height="200"></canvas>
+      <div class="actions-bar">
+        <button class="action-btn" onclick="triggerAction('reconcile')">Run Reconciliation</button>
+        <button class="action-btn" onclick="triggerAction('rescan')">Full Re-scan</button>
+      </div>
+      <div class="overview-grid">
+        <div class="overview-left">
+          <div class="chart-card">
+            <h3>Activity & Cost (last 30 days)</h3>
+            <canvas id="activity-chart" height="220"></canvas>
+          </div>
         </div>
-        <div class="chart-card">
-          <h3>Runs by Agent</h3>
-          <canvas id="agent-chart" height="200"></canvas>
+        <div class="overview-side">
+          <div class="chart-card">
+            <h3>Runs by Agent</h3>
+            <canvas id="agent-chart" height="160"></canvas>
+          </div>
+          <div class="chart-card" id="alerts-panel">
+            <h3>Alerts</h3>
+            <div id="alerts-content"></div>
+          </div>
         </div>
       </div>
       <div class="section-title">Recent Activity</div>

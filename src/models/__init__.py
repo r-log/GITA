@@ -11,6 +11,7 @@ from src.models.analysis import Analysis
 from src.models.agent_run import AgentRun
 from src.models.onboarding_run import OnboardingRun
 from src.models.file_mapping import FileMapping
+from src.models.code_index import CodeIndex
 
 __all__ = [
     "Repository",
@@ -22,4 +23,5 @@ __all__ = [
     "AgentRun",
     "OnboardingRun",
     "FileMapping",
+    "CodeIndex",
 ]

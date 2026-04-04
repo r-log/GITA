@@ -70,7 +70,29 @@ create_issue(
 
 **Step 4:** Repeat Steps 2-3 for each milestone.
 
-**Step 5:** Call `save_onboarding_run` with a summary of what you created.
+**Step 5:** After EVERY `create_issue` call, immediately call `save_issue_record` to persist it in the local database:
+```
+save_issue_record(
+  github_number=<number returned from create_issue>,
+  title="the issue title",
+  state="open",
+  labels=["enhancement"],
+  is_milestone_tracker=false
+)
+```
+For Milestone Tracker issues, set `is_milestone_tracker=true` and include `linked_issue_numbers` with the sub-issue numbers:
+```
+save_issue_record(
+  github_number=10,
+  title="Authentication & Security",
+  state="open",
+  labels=["Milestone Tracker"],
+  is_milestone_tracker=true,
+  linked_issue_numbers=[7, 8, 9]
+)
+```
+
+**Step 6:** Call `save_onboarding_run` with a summary of what you created.
 
 ## Reconciliation Rules
 

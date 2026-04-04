@@ -167,6 +167,7 @@ class SupervisorAgent(BaseAgent):
                     timeout=settings.agent_timeout_seconds,
                 )
                 result.data["agent_run_id"] = run_id
+                result.data["usage"] = dict(agent._usage)
                 await self._log_agent_complete(run_id, result, started)
                 return result
 

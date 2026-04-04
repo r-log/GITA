@@ -189,6 +189,14 @@ Respond with JSON:
         )
         raw = _extract_json(response.choices[0].message.content or "")
         updates = json.loads(raw)
+        # Capture token usage
+        usage = {}
+        if response.usage:
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens or 0,
+                "completion_tokens": response.usage.completion_tokens or 0,
+                "llm_calls": 1,
+            }
     except Exception as e:
         log.error("context_update_llm_failed", error=str(e))
         return {"status": "failed", "error": str(e)}
@@ -229,6 +237,7 @@ Respond with JSON:
             "files_changed": list(changed_files),
             "files_removed": list(removed_files),
             "files_read": list(file_contents.keys()),
+            "usage": usage,
         }],
         confidence=latest_run.confidence or 0.0,
     )

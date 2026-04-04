@@ -95,13 +95,63 @@ function loadTabData(tab) {
   }
 }
 
+// ── Toast Notification ────────────────────────────────────────────
+function showToast(message, type = 'success') {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+
+// ── Quick Actions ─────────────────────────────────────────────────
+async function triggerAction(action) {
+  if (!currentRepoId) return;
+  const btn = event.target;
+  btn.disabled = true;
+  btn.classList.add('running');
+  const origText = btn.textContent;
+  btn.textContent = 'Running...';
+
+  try {
+    const res = await fetch('/api/dashboard/trigger', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({repo_id: currentRepoId, action}),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast(`${action} completed successfully`);
+      loadOverview();
+    } else {
+      showToast(data.message || 'Action failed', 'error');
+    }
+  } catch (e) {
+    showToast(`Error: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('running');
+    btn.textContent = origText;
+  }
+}
+
 // ── Overview Tab ──────────────────────────────────────────────────
 async function loadOverview() {
-  const [stats, activity, agents] = await Promise.all([
+  const [stats, activity, agents, alerts, costs] = await Promise.all([
     api(`/stats?repo_id=${currentRepoId}`),
     api(`/activity?repo_id=${currentRepoId}&days=30`),
     api(`/agents?repo_id=${currentRepoId}&limit=20`),
+    api(`/alerts?repo_id=${currentRepoId}`),
+    api(`/costs?repo_id=${currentRepoId}&days=30`),
   ]);
+
+  // Alerts (compact sidebar)
+  renderAlerts(alerts);
+
+  // Cost line is integrated into activity chart
+  renderActivityChart(activity, costs);
 
   // Stats cards
   const issues = stats.issues_in_plan;
@@ -131,13 +181,11 @@ async function loadOverview() {
       <div class="value" style="font-size:16px">${timeAgo(stats.last_onboarding)}</div>
     </div>
     <div class="stat-card">
-      <div class="label">Last Context Update</div>
-      <div class="value" style="font-size:16px">${timeAgo(stats.last_context_update)}</div>
+      <div class="label">Est. Cost (30d)</div>
+      <div class="value" style="font-size:20px;color:#d29922">$${costs.total_cost_usd.toFixed(4)}</div>
+      <div class="sub">${costs.total_llm_calls} LLM calls</div>
     </div>
   `;
-
-  // Activity chart
-  renderActivityChart(activity);
 
   // Agent distribution chart
   renderAgentChart(stats.agent_run_counts);
@@ -154,26 +202,57 @@ async function loadOverview() {
   `).join('');
 }
 
-function renderActivityChart(data) {
+function renderActivityChart(data, costs) {
   const ctx = document.getElementById('activity-chart').getContext('2d');
   if (activityChart) activityChart.destroy();
+
+  // Build cost data aligned to activity dates
+  const dailyCosts = costs?.daily || {};
+  const costData = data.map(d => dailyCosts[d.date]?.cost_usd || 0);
+  const hasCostData = costData.some(c => c > 0);
+
+  const datasets = [
+    { label: 'Total Runs', data: data.map(d => d.total), borderColor: '#58a6ff', fill: false, tension: 0.3, yAxisID: 'y' },
+    { label: 'Success', data: data.map(d => d.success), borderColor: '#2dc653', fill: false, tension: 0.3, yAxisID: 'y' },
+    { label: 'Failed', data: data.map(d => d.failed), borderColor: '#f85149', fill: false, tension: 0.3, yAxisID: 'y' },
+  ];
+
+  if (hasCostData) {
+    datasets.push({
+      label: 'Cost ($)',
+      data: costData,
+      borderColor: '#d29922',
+      backgroundColor: 'rgba(210, 153, 34, 0.1)',
+      fill: true,
+      tension: 0.3,
+      yAxisID: 'cost',
+      borderDash: [4, 4],
+    });
+  }
+
+  const scales = {
+    x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+    y: { position: 'left', ticks: { color: '#8b949e' }, grid: { color: '#21262d' }, beginAtZero: true, title: { display: true, text: 'Runs', color: '#8b949e' } },
+  };
+
+  if (hasCostData) {
+    scales.cost = {
+      position: 'right',
+      ticks: { color: '#d29922', callback: v => '$' + v.toFixed(3) },
+      grid: { drawOnChartArea: false },
+      beginAtZero: true,
+      title: { display: true, text: 'Cost (USD)', color: '#d29922' },
+    };
+  }
+
   activityChart = new Chart(ctx, {
     type: 'line',
-    data: {
-      labels: data.map(d => d.date),
-      datasets: [
-        { label: 'Total', data: data.map(d => d.total), borderColor: '#58a6ff', fill: false, tension: 0.3 },
-        { label: 'Success', data: data.map(d => d.success), borderColor: '#2dc653', fill: false, tension: 0.3 },
-        { label: 'Failed', data: data.map(d => d.failed), borderColor: '#f85149', fill: false, tension: 0.3 },
-      ],
-    },
+    data: { labels: data.map(d => d.date), datasets },
     options: {
       responsive: true,
-      plugins: { legend: { labels: { color: '#8b949e' } } },
-      scales: {
-        x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
-        y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' }, beginAtZero: true },
-      },
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#8b949e', usePointStyle: true, pointStyle: 'line' } } },
+      scales,
     },
   });
 }
@@ -194,6 +273,33 @@ function renderAgentChart(counts) {
       plugins: { legend: { position: 'bottom', labels: { color: '#8b949e', padding: 12 } } },
     },
   });
+}
+
+// ── Alerts Panel (compact sidebar) ────────────────────────────────
+function renderAlerts(alerts) {
+  const content = document.getElementById('alerts-content');
+  if (alerts.total === 0) {
+    content.innerHTML = '<div class="alerts-empty">No alerts — all clear</div>';
+    return;
+  }
+
+  const items = [];
+  alerts.critical.forEach(a => {
+    items.push(`<div class="alert-item">
+      <span class="alert-dot critical"></span>
+      <span class="alert-msg">${a.message.substring(0, 120)}</span>
+      ${a.recommendation ? `<div class="alert-rec">${a.recommendation.substring(0, 100)}</div>` : ''}
+    </div>`);
+  });
+  alerts.warnings.slice(0, 5).forEach(a => {
+    items.push(`<div class="alert-item">
+      <span class="alert-dot warning"></span>
+      <span class="alert-msg">${a.message.substring(0, 120)}</span>
+    </div>`);
+  });
+
+  const more = alerts.warnings.length > 5 ? `<div class="alerts-empty">+${alerts.warnings.length - 5} more warnings</div>` : '';
+  content.innerHTML = items.join('') + more;
 }
 
 // ── Onboarding Runs Tab ───────────────────────────────────────────

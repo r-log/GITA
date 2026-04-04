@@ -87,6 +87,7 @@ class BaseAgent(ABC):
         self.description = description
         self.tools = tools
         self.model = model or settings.ai_default_model
+        self._usage = {"prompt_tokens": 0, "completion_tokens": 0, "llm_calls": 0, "by_model": {}}
         self._tool_map = {t.name: t for t in tools}
 
         # Load system prompt from file or use provided string
@@ -140,6 +141,19 @@ class BaseAgent(ABC):
                 tools=tool_schemas,
                 temperature=0.2,
             )
+            # Track token usage per model
+            if response.usage:
+                pt = response.usage.prompt_tokens or 0
+                ct = response.usage.completion_tokens or 0
+                self._usage["prompt_tokens"] += pt
+                self._usage["completion_tokens"] += ct
+                self._usage["llm_calls"] += 1
+                m = self.model
+                if m not in self._usage["by_model"]:
+                    self._usage["by_model"][m] = {"prompt_tokens": 0, "completion_tokens": 0}
+                self._usage["by_model"][m]["prompt_tokens"] += pt
+                self._usage["by_model"][m]["completion_tokens"] += ct
+
             choice = response.choices[0]
 
             # If the model returns a final text answer (no tool calls), we're done
