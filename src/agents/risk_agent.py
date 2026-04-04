@@ -30,6 +30,7 @@ from src.tools.ai.risk_scanner import (
 
 # DB tools
 from src.tools.db.analysis import make_save_analysis
+from src.tools.db.code_index import make_query_code_index
 
 log = structlog.get_logger()
 
@@ -75,6 +76,8 @@ class RiskDetectiveAgent(BaseAgent):
             make_check_dependency_changes(),
             # DB
             make_save_analysis(repo_id),
+            # Code index — query import graph for blast radius analysis
+            make_query_code_index(repo_id),
         ]
 
     async def handle(self, context: AgentContext) -> AgentResult:

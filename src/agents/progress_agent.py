@@ -31,6 +31,7 @@ from src.tools.ai.predictor import (
 
 # DB tools
 from src.tools.db.analysis import make_save_analysis, make_get_analysis_history
+from src.tools.db.code_index import make_query_code_index, make_get_code_map
 
 log = structlog.get_logger()
 
@@ -75,6 +76,9 @@ class ProgressTrackerAgent(BaseAgent):
             # DB
             make_save_analysis(repo_id),
             make_get_analysis_history(repo_id),
+            # Code index — project structure for progress reports
+            make_query_code_index(repo_id),
+            make_get_code_map(repo_id),
         ]
 
     async def handle(self, context: AgentContext) -> AgentResult:
