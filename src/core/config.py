@@ -29,8 +29,7 @@ class Settings(BaseSettings):
     # --- Per-Agent Model Overrides (OpenRouter model IDs) ---
     # Each agent/pass can use a different model. Override via env vars.
     ai_model_supervisor: str = "anthropic/claude-haiku-4.5"
-    ai_model_onboarding_pass1: str = "anthropic/claude-haiku-4.5"
-    ai_model_onboarding_pass2: str = "anthropic/claude-sonnet-4"
+    # Pass 1 (index) and Pass 2 (deep dive) are now deterministic -- no LLM needed
     ai_model_onboarding_pass3: str = "anthropic/claude-sonnet-4"
     ai_model_onboarding_pass3_5: str = "anthropic/claude-sonnet-4"
     ai_model_onboarding_pass4: str = "anthropic/claude-haiku-4.5"
@@ -55,6 +54,20 @@ class Settings(BaseSettings):
 
     # --- Reconciliation ---
     reconciliation_interval_hours: int = 6
+
+    # --- Cost Tracking (USD per 1M tokens via OpenRouter, per model) ---
+    ai_cost_per_million_input: float = 3.0    # fallback if model not in pricing table
+    ai_cost_per_million_output: float = 15.0
+
+    @property
+    def model_pricing(self) -> dict:
+        """Per-model pricing: {model_id: (input_per_M, output_per_M)}"""
+        return {
+            "anthropic/claude-haiku-4.5": (0.80, 4.0),
+            "anthropic/claude-sonnet-4": (3.0, 15.0),
+            "anthropic/claude-sonnet-4.5": (3.0, 15.0),
+            "anthropic/claude-opus-4.5": (15.0, 75.0),
+        }
 
     # --- App ---
     log_level: str = "INFO"

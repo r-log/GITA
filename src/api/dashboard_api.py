@@ -3,12 +3,14 @@ Dashboard API endpoints — serves data for the monitoring dashboard.
 All endpoints are read-only queries against the existing DB models.
 """
 
+import json
 from datetime import datetime, timedelta
 
 import structlog
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from sqlalchemy import select, func, case, desc
 
+from src.core.config import settings
 from src.core.database import async_session
 from src.models.repository import Repository
 from src.models.onboarding_run import OnboardingRun
@@ -382,3 +384,218 @@ async def get_issues_from_plan(repo_id: int = Query(...)):
         })
 
     return {"milestones": formatted}
+
+
+# ── Alerts ─────────────────────────────────────────────────────────
+
+@router.get("/alerts")
+async def get_alerts(repo_id: int = Query(...)):
+    """Aggregate alert-worthy items: security findings, failed agents, stale issues."""
+    critical = []
+    warnings = []
+    info_count = 0
+
+    async with async_session() as session:
+        # 1. Security findings from analyses
+        analyses_result = await session.execute(
+            select(Analysis)
+            .where(
+                Analysis.repo_id == repo_id,
+                Analysis.risk_level.in_(["critical", "warning"]),
+            )
+            .order_by(desc(Analysis.created_at))
+            .limit(20)
+        )
+        for a in analyses_result.scalars().all():
+            findings = a.result or {}
+            for f in findings.get("findings", {}).get("critical", []):
+                critical.append({
+                    "type": "security",
+                    "message": f.get("description", f.get("type", "Unknown")),
+                    "source": f"analysis #{a.id}",
+                    "recommendation": f.get("recommendation", ""),
+                    "created_at": _serialize_datetime(a.created_at),
+                })
+            for f in findings.get("findings", {}).get("warning", []):
+                warnings.append({
+                    "type": "security",
+                    "message": f.get("description", f.get("type", "Unknown")),
+                    "source": f"analysis #{a.id}",
+                    "recommendation": f.get("recommendation", ""),
+                    "created_at": _serialize_datetime(a.created_at),
+                })
+            info_count += len(findings.get("findings", {}).get("info", []))
+
+        # 2. Failed agent runs in last 7 days
+        cutoff = datetime.utcnow() - timedelta(days=7)
+        failed_result = await session.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.repo_id == repo_id,
+                AgentRun.status == "failed",
+                AgentRun.started_at >= cutoff,
+            )
+            .order_by(desc(AgentRun.started_at))
+            .limit(10)
+        )
+        for r in failed_result.scalars().all():
+            error = r.error_message or "Unknown error"
+            warnings.append({
+                "type": "agent_failure",
+                "message": f"{r.agent_name} failed: {error[:200]}",
+                "source": f"agent_run #{r.id}",
+                "created_at": _serialize_datetime(r.started_at),
+            })
+
+    return {
+        "critical": critical,
+        "warnings": warnings,
+        "info_count": info_count,
+        "total": len(critical) + len(warnings),
+    }
+
+
+# ── Costs ──────────────────────────────────────────────────────────
+
+@router.get("/costs")
+async def get_costs(
+    repo_id: int = Query(...),
+    days: int = Query(30),
+):
+    """Token usage and estimated costs from agent runs."""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    async with async_session() as session:
+        # Get agent runs with result data (usage is stored in result JSONB)
+        result = await session.execute(
+            select(AgentRun.agent_name, AgentRun.result, AgentRun.started_at)
+            .where(AgentRun.repo_id == repo_id, AgentRun.started_at >= cutoff)
+            .order_by(desc(AgentRun.started_at))
+        )
+        rows = result.all()
+
+    pricing = settings.model_pricing
+    fallback_input = settings.ai_cost_per_million_input
+    fallback_output = settings.ai_cost_per_million_output
+
+    def _calc_cost_for_usage(usage: dict) -> float:
+        """Calculate cost using per-model pricing from by_model breakdown."""
+        by_model = usage.get("by_model", {})
+        if by_model:
+            cost = 0.0
+            for model_id, model_usage in by_model.items():
+                ip, op = pricing.get(model_id, (fallback_input, fallback_output))
+                cost += (model_usage.get("prompt_tokens", 0) * ip + model_usage.get("completion_tokens", 0) * op) / 1_000_000
+            return cost
+        # Fallback: no per-model data, use default rates
+        return (usage.get("prompt_tokens", 0) * fallback_input + usage.get("completion_tokens", 0) * fallback_output) / 1_000_000
+
+    total_prompt = 0
+    total_completion = 0
+    total_calls = 0
+    total_cost = 0.0
+    by_agent = {}
+    daily = {}
+
+    for agent_name, res, started_at in rows:
+        usage = (res or {}).get("usage") or (res or {}).get("data", {}).get("usage") or {}
+        pt = usage.get("prompt_tokens", 0)
+        ct = usage.get("completion_tokens", 0)
+        lc = usage.get("llm_calls", 0)
+        run_cost = _calc_cost_for_usage(usage)
+
+        total_prompt += pt
+        total_completion += ct
+        total_calls += lc
+        total_cost += run_cost
+
+        if agent_name not in by_agent:
+            by_agent[agent_name] = {"prompt_tokens": 0, "completion_tokens": 0, "llm_calls": 0, "runs": 0, "cost_usd": 0.0}
+        by_agent[agent_name]["prompt_tokens"] += pt
+        by_agent[agent_name]["completion_tokens"] += ct
+        by_agent[agent_name]["llm_calls"] += lc
+        by_agent[agent_name]["runs"] += 1
+        by_agent[agent_name]["cost_usd"] += run_cost
+
+        day = str(started_at.date()) if started_at else "unknown"
+        if day not in daily:
+            daily[day] = {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0}
+        daily[day]["prompt_tokens"] += pt
+        daily[day]["completion_tokens"] += ct
+        daily[day]["cost_usd"] += run_cost
+
+    # Round costs
+    for agent in by_agent.values():
+        agent["cost_usd"] = round(agent["cost_usd"], 4)
+    for day in daily.values():
+        day["cost_usd"] = round(day["cost_usd"], 4)
+
+    return {
+        "total_prompt_tokens": total_prompt,
+        "total_completion_tokens": total_completion,
+        "total_llm_calls": total_calls,
+        "total_cost_usd": round(total_cost, 4),
+        "by_agent": by_agent,
+        "daily": dict(sorted(daily.items())),
+        "period_days": days,
+    }
+
+
+# ── Quick Actions ──────────────────────────────────────────────────
+
+@router.post("/trigger")
+async def trigger_action(request: Request):
+    """Trigger an action: reconcile or full rescan."""
+    body = {}
+    raw = await request.body()
+    if raw:
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"status": "error", "message": "Invalid JSON"}
+
+    repo_id = body.get("repo_id")
+    action = body.get("action", "reconcile")
+
+    if not repo_id:
+        return {"status": "error", "message": "repo_id required"}
+
+    # Look up repo
+    async with async_session() as session:
+        result = await session.execute(
+            select(Repository).where(Repository.id == repo_id)
+        )
+        repo = result.scalar_one_or_none()
+
+    if not repo:
+        return {"status": "error", "message": f"Repository not found: {repo_id}"}
+
+    if action == "reconcile":
+        from src.workers.reconciliation import reconcile_repo
+        try:
+            result = await reconcile_repo(repo.id, repo.full_name, repo.installation_id)
+            return {"status": "ok", "action": "reconcile", "result": result}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    elif action == "rescan":
+        from src.agents.base import AgentContext
+        from src.agents.supervisor import SupervisorAgent
+
+        context = AgentContext(
+            event_type="installation_repositories.added",
+            event_payload={"action": "added", "repositories_added": [
+                {"id": repo.github_id, "full_name": repo.full_name}
+            ]},
+            repo_full_name=repo.full_name,
+            installation_id=repo.installation_id,
+            repo_id=repo.id,
+        )
+        try:
+            supervisor = SupervisorAgent()
+            result = await supervisor.handle(context)
+            return {"status": "ok", "action": "rescan", "agent_status": result.status}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    return {"status": "error", "message": f"Unknown action: {action}"}
