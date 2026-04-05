@@ -1,73 +1,56 @@
 """
 Supervisor Agent — the event router.
 
-Receives every webhook event, classifies it, and dispatches to the right
-specialist agent(s). Can run multiple agents in parallel.
-Never does analysis itself — delegates everything.
+Receives every webhook event, classifies it via a static routing table,
+and dispatches to the right specialist agent(s). Can run multiple agents
+in parallel. Never does analysis itself — delegates everything.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import structlog
-from dataclasses import asdict
 from datetime import datetime, timedelta
 
-import re
-
-from src.agents.base import BaseAgent, AgentContext, AgentResult
+from src.agents.base import AgentContext, AgentResult
 from src.agents.registry import registry
-from src.tools.base import Tool, ToolResult
 from src.core.config import settings
 from src.core.database import async_session
 from src.models.agent_run import AgentRun
 
 log = structlog.get_logger()
 
-
-def _extract_json(text: str) -> str:
-    """Extract JSON from LLM response that may include prose or code fences."""
-    text = text.strip()
-    if text.startswith("{") or text.startswith("["):
-        return text
-    fence_match = re.search(r"```(?:json)?\s*\n(\{[\s\S]*?\})\s*```", text)
-    if fence_match:
-        return fence_match.group(1).strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    text = text.strip()
-    if text.startswith("{") or text.startswith("["):
-        return text
-    first_brace = text.find("{")
-    last_brace = text.rfind("}")
-    if first_brace != -1 and last_brace > first_brace:
-        return text[first_brace:last_brace + 1]
-    return text
+# Static routing: event_type → (agent_names, parallel)
+ROUTING_TABLE: dict[str, tuple[list[str], bool]] = {
+    "installation.created":            (["onboarding"], False),
+    "installation_repositories.added": (["onboarding"], False),
+    "pull_request.opened":             (["pr_reviewer", "risk_detective"], True),
+    "pull_request.synchronize":        (["pr_reviewer", "risk_detective"], True),
+    "issues.opened":                   (["issue_analyst"], False),
+    "issues.edited":                   (["issue_analyst", "progress_tracker"], True),
+    "issues.assigned":                 (["issue_analyst"], False),
+    "issues.closed":                   (["issue_analyst", "progress_tracker"], True),
+    "issues.milestoned":               (["issue_analyst", "progress_tracker"], True),
+    "push":                            (["progress_tracker", "risk_detective"], True),
+    "issue_comment.created":           (["issue_analyst"], False),
+}
 
 
-class SupervisorAgent(BaseAgent):
+class SupervisorAgent:
     """
     The Supervisor classifies incoming webhook events and dispatches
     specialist agents. It doesn't do analysis — it routes.
     """
 
+    name = "supervisor"
+
     def __init__(self):
-        # Supervisor has no tools — it only reasons about routing
-        super().__init__(
-            name="supervisor",
-            description="Event router that dispatches specialist agents based on webhook events",
-            tools=[],
-            model=settings.ai_model_supervisor,
-            system_prompt_file="supervisor.md",
-        )
+        pass
 
     async def handle(self, context: AgentContext) -> AgentResult:
         started_at = time.time()
-        dispatch_plan = await self._classify_and_plan(context)
+        dispatch_plan = self._classify_and_plan(context)
 
         agent_names = dispatch_plan.get("agents_to_dispatch", [])
         run_parallel = dispatch_plan.get("parallel", False)
@@ -110,38 +93,17 @@ class SupervisorAgent(BaseAgent):
 
         return merged
 
-    async def _classify_and_plan(self, context: AgentContext) -> dict:
-        """Use the LLM to classify the event and decide which agents to dispatch."""
-        available_agents = registry.list_agents()
+    def _classify_and_plan(self, context: AgentContext) -> dict:
+        """Look up the routing table and return a dispatch plan."""
+        agents, parallel = ROUTING_TABLE.get(context.event_type, ([], False))
 
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {
-                "role": "user",
-                "content": json.dumps({
-                    "event_type": context.event_type,
-                    "action": context.event_payload.get("action"),
-                    "repo": context.repo_full_name,
-                    "available_agents": available_agents,
-                    "payload_summary": self._summarize_payload(context.event_payload),
-                }, indent=2),
-            },
-        ]
-
-        response = await self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
-
-        try:
-            raw = response.choices[0].message.content or ""
-            raw = _extract_json(raw)
-            return json.loads(raw)
-        except (json.JSONDecodeError, IndexError):
-            log.error("supervisor_parse_error", response=response.choices[0].message.content)
-            return {"agents_to_dispatch": [], "reasoning": "Failed to parse LLM response"}
+        return {
+            "event_summary": f"Routing {context.event_type} for {context.repo_full_name}",
+            "agents_to_dispatch": list(agents),
+            "reasoning": "static routing table",
+            "parallel": parallel,
+            "priority": "normal",
+        }
 
     async def _dispatch_agents(
         self,
@@ -222,40 +184,6 @@ class SupervisorAgent(BaseAgent):
             should_notify=should_notify,
             comment_body="\n\n---\n\n".join(comment_parts) if comment_parts else None,
         )
-
-    def _summarize_payload(self, payload: dict) -> dict:
-        """Extract the important parts of a webhook payload for the LLM."""
-        summary = {}
-        # Common fields
-        for key in ("action", "sender", "repository"):
-            if key in payload:
-                if key == "sender":
-                    summary[key] = payload[key].get("login")
-                elif key == "repository":
-                    summary[key] = payload[key].get("full_name")
-                else:
-                    summary[key] = payload[key]
-
-        # Event-specific fields
-        for key in ("issue", "pull_request", "milestone", "comment"):
-            if key in payload:
-                obj = payload[key]
-                summary[key] = {
-                    "number": obj.get("number"),
-                    "title": obj.get("title"),
-                    "state": obj.get("state"),
-                    "user": obj.get("user", {}).get("login"),
-                }
-                if key == "pull_request":
-                    summary[key]["base"] = obj.get("base", {}).get("ref")
-                    summary[key]["head"] = obj.get("head", {}).get("ref")
-
-        if "ref" in payload:
-            summary["ref"] = payload["ref"]
-        if "commits" in payload:
-            summary["commits_count"] = len(payload["commits"])
-
-        return summary
 
     async def _log_agent_start(self, agent_name: str, context: AgentContext) -> int | None:
         """Log agent run start to DB. Returns the run ID, or None if no repo_id."""
