@@ -45,9 +45,6 @@ class SupervisorAgent:
 
     name = "supervisor"
 
-    def __init__(self):
-        pass
-
     async def handle(self, context: AgentContext) -> AgentResult:
         started_at = time.time()
         dispatch_plan = self._classify_and_plan(context)
