@@ -28,7 +28,6 @@ class Settings(BaseSettings):
 
     # --- Per-Agent Model Overrides (OpenRouter model IDs) ---
     # Each agent/pass can use a different model. Override via env vars.
-    ai_model_supervisor: str = "anthropic/claude-haiku-4.5"
     # Pass 1 (index) and Pass 2 (deep dive) are now deterministic -- no LLM needed
     ai_model_onboarding_pass3: str = "anthropic/claude-sonnet-4"
     ai_model_onboarding_pass3_progressive: str = "anthropic/claude-sonnet-4"
@@ -51,7 +50,6 @@ class Settings(BaseSettings):
     ai_model_breaking_changes: str = "anthropic/claude-sonnet-4"
     ai_model_dependency_checker: str = "anthropic/claude-sonnet-4"
     ai_model_predictor: str = "anthropic/claude-haiku-4.5"
-    ai_model_context_updater: str = "anthropic/claude-haiku-4.5"
 
     # --- Reconciliation ---
     reconciliation_interval_hours: int = 6
