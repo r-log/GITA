@@ -2,9 +2,12 @@
 DB/GitHub tools for per-repo configuration via .github/assistant.yml.
 """
 
+import structlog
 import yaml
 from src.core.github_auth import GitHubClient
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 # Default config values
 DEFAULT_CONFIG = {
@@ -56,8 +59,9 @@ async def _get_repo_config(installation_id: int, repo_full_name: str) -> ToolRes
         # Deep merge with defaults
         merged = _deep_merge(DEFAULT_CONFIG, repo_config)
         return ToolResult(success=True, data=merged)
-    except Exception:
+    except Exception as e:
         # File doesn't exist or can't be parsed — use defaults
+        log.info("repo_config_fallback", error=str(e))
         return ToolResult(success=True, data=DEFAULT_CONFIG)
 
 

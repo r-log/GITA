@@ -8,7 +8,7 @@ FRESH (no existing Milestone Trackers):
   Step 2: Fetch State -- existing issues + collaborators (no LLM)
   Step 3: Milestones -- LLM reads code map -> milestone plan
   Step 3.5: Validation -- deterministic checks + optional LLM spot-check
-  Step 4: Issues -- LLM creates sub-issues + Milestone Tracker issues
+  Step 4: Issues -- deterministic issue creation from plan (no LLM cost)
 
 PROGRESSIVE (existing Milestone Trackers found):
   Step 1: Index -- same
@@ -36,17 +36,14 @@ from src.indexer.indexer import index_repository
 
 # GitHub tools
 from src.tools.github.repos import _get_collaborators
-from src.tools.github.issues import make_create_issue, make_update_issue, _get_all_issues, _create_issue, _update_issue
-from src.tools.github.labels import make_add_label, make_create_label
-from src.tools.github.comments import make_post_comment, _post_comment
+from src.tools.github.issues import _get_all_issues, _create_issue, _update_issue
+from src.tools.github.labels import _create_label
+from src.tools.github.comments import _post_comment
 from src.utils.checklist import parse_checklist, add_checklist_items
 
-# AI tools
-from src.tools.ai.project_planner import make_compare_plan_vs_state
-
 # DB tools
-from src.tools.db.onboarding import make_save_onboarding_run, make_save_file_mapping, _save_onboarding_run
-from src.tools.db.code_index import make_query_code_index, make_save_issue_record
+from src.tools.db.onboarding import _save_onboarding_run
+from src.tools.db.code_index import make_query_code_index, _save_issue_record
 
 log = structlog.get_logger()
 
@@ -96,37 +93,15 @@ class OnboardingAgent(BaseAgent):
     """
 
     def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0, model: str | None = None):
-        # Validation tools (query code index instead of reading files from GitHub)
+        # Validation tools (only pass that still uses an LLM tool loop)
         self._validation_tools = [
             make_query_code_index(repo_id),
         ]
-        self._plan_tools = [
-            make_compare_plan_vs_state(),
-        ]
-        self._issue_tools = [
-            make_create_issue(installation_id, repo_full_name),
-            make_update_issue(installation_id, repo_full_name),
-            make_create_label(installation_id, repo_full_name),
-            make_add_label(installation_id, repo_full_name),
-            make_post_comment(installation_id, repo_full_name),
-            make_save_onboarding_run(repo_id),
-            make_save_file_mapping(repo_id),
-            make_save_issue_record(repo_id),
-        ]
-
-        # Initialize with all tools (base class needs them for registration)
-        all_tools = self._validation_tools + self._plan_tools + self._issue_tools
-        seen = set()
-        unique_tools = []
-        for t in all_tools:
-            if t.name not in seen:
-                seen.add(t.name)
-                unique_tools.append(t)
 
         super().__init__(
             name="onboarding",
             description="Project setup specialist -- scans repos, creates Milestone Tracker issues with linked sub-issues",
-            tools=unique_tools,
+            tools=self._validation_tools,
             system_prompt_file="onboarding.md",
         )
 
@@ -136,7 +111,7 @@ class OnboardingAgent(BaseAgent):
 
         # Load per-pass prompts (only the passes that still use LLM)
         self._pass_prompts: dict[str, str] = {}
-        for pass_name in ["pass3_milestones", "pass3_5_validation", "pass4_issues", "pass3_progressive"]:
+        for pass_name in ["pass3_milestones", "pass3_5_validation", "pass3_progressive"]:
             prompt_path = Path("prompts") / f"onboarding_{pass_name}.md"
             if prompt_path.exists():
                 self._pass_prompts[pass_name] = prompt_path.read_text(encoding="utf-8")
@@ -461,45 +436,124 @@ class OnboardingAgent(BaseAgent):
 
     async def _step4_issues(self, scratchpad: dict) -> tuple[str, list[dict]]:
         """
-        Create sub-issues and Milestone Tracker issues using the tool loop.
-        Now also calls save_issue_record to persist each created issue in the DB.
+        Create sub-issues and Milestone Tracker issues deterministically.
+        No LLM cost — executes the pass 3 plan directly in Python.
         """
         log.info("step4_start")
 
-        milestones = scratchpad["milestones"]
-        existing = scratchpad["existing"]
+        milestones_data = scratchpad["milestones"]
+        existing_titles = {
+            i.get("title", "").lower()
+            for i in scratchpad["existing"].get("existing_issues", [])
+        }
+        tool_call_log: list[dict] = []
 
-        # Build context for the issue-creation LLM
-        context_parts = [
-            f"# Milestone Plan for {self.repo_full_name}\n\n",
-            f"## Project Summary\n{milestones.get('project_summary', 'N/A')}\n\n",
-            f"## Milestones to Create\n\n{json.dumps(milestones.get('milestones', []), indent=2)}\n\n",
-        ]
-
-        # Include existing issues for dedup
-        issues = existing.get("existing_issues", [])
-        if issues:
-            context_parts.append(f"\n## Existing Issues (DO NOT duplicate)\n")
-            for issue in issues:
-                labels = ", ".join(l.get("name", "") for l in issue.get("labels", []))
-                context_parts.append(
-                    f"- #{issue.get('number', '?')} {issue.get('title', '?')} [{labels}]\n"
-                )
-
-        context = "".join(context_parts)
-        log.info("step4_context_size", chars=len(context))
-
-        final_text, tool_call_log = await self._run_pass(
-            "pass4",
-            self._pass_prompts["pass4_issues"],
-            context,
-            tools=self._issue_tools,
-            max_calls=80,
-            model=settings.ai_model_onboarding_pass4,
+        # Ensure the Milestone Tracker label exists
+        await _create_label(
+            self.installation_id, self.repo_full_name,
+            name="Milestone Tracker", color="0052cc",
+            description="Tracks milestone progress via linked sub-issues",
         )
 
+        for milestone in milestones_data.get("milestones", []):
+            ms_title = milestone.get("title", "Untitled Milestone")
+            tasks = milestone.get("tasks", [])
+            task_numbers: list[tuple[str, int, str]] = []  # (title, number, status)
+
+            # Create sub-issues for each task
+            for task in tasks:
+                title = task.get("title", "")
+                if not title:
+                    continue
+
+                # Skip if existing issue already covers this
+                if task.get("existing_issue"):
+                    log.info("step4_skip_existing", title=title, existing=task["existing_issue"])
+                    continue
+                if title.lower() in existing_titles:
+                    log.info("step4_skip_duplicate", title=title)
+                    continue
+
+                status = task.get("status", "not-started")
+                labels = task.get("labels", ["enhancement"])
+                files = task.get("files", [])
+
+                # Build issue body
+                if status == "done":
+                    body = f"**Already implemented.**\n\n{task.get('description', '')}"
+                    if files:
+                        body += f"\n\n**Files:** {', '.join(f'`{f}`' for f in files)}"
+                    if "done" not in labels:
+                        labels.append("done")
+                else:
+                    body = task.get("description", "")
+                    if files:
+                        body += f"\n\n**Files to modify:** {', '.join(f'`{f}`' for f in files)}"
+
+                result = await _create_issue(
+                    self.installation_id, self.repo_full_name,
+                    title=title, body=body, labels=labels,
+                )
+                if not result.success:
+                    log.warning("step4_create_failed", title=title, error=result.error)
+                    continue
+
+                num = result.data.get("number", 0)
+                task_numbers.append((title, num, status))
+                tool_call_log.append({
+                    "tool": "create_issue", "result": {"success": True},
+                    "args": {"title": title},
+                })
+                log.info("step4_issue_created", title=title, number=num)
+
+                # Persist in local DB
+                await _save_issue_record(
+                    self.repo_id, github_number=num, title=title,
+                    state="open", labels=labels,
+                )
+
+                # Close done tasks immediately
+                if status == "done" and num:
+                    await _update_issue(
+                        self.installation_id, self.repo_full_name,
+                        num, state="closed",
+                    )
+
+            # Create the Milestone Tracker issue
+            if task_numbers:
+                checklist = "\n".join(
+                    f"- [{'x' if s == 'done' else ' '}] {t} (#{n})"
+                    for t, n, s in task_numbers
+                )
+                tracker_body = (
+                    f"## {milestone.get('description', ms_title)}\n\n"
+                    f"**Deadline:** TBD\n\n"
+                    f"### Tasks\n{checklist}"
+                )
+                result = await _create_issue(
+                    self.installation_id, self.repo_full_name,
+                    title=ms_title, body=tracker_body,
+                    labels=["Milestone Tracker"],
+                )
+                if result.success:
+                    tracker_num = result.data.get("number", 0)
+                    linked = [n for _, n, _ in task_numbers]
+                    tool_call_log.append({
+                        "tool": "create_issue", "result": {"success": True},
+                        "args": {"title": ms_title, "labels": ["Milestone Tracker"]},
+                    })
+                    log.info("step4_tracker_created", title=ms_title, number=tracker_num)
+
+                    # Persist tracker in local DB
+                    await _save_issue_record(
+                        self.repo_id, github_number=tracker_num, title=ms_title,
+                        state="open", labels=["Milestone Tracker"],
+                        is_milestone_tracker=True, linked_issue_numbers=linked,
+                    )
+
+        summary = f"Created {len(tool_call_log)} issues across {len(milestones_data.get('milestones', []))} milestones"
         log.info("step4_complete", tool_calls=len(tool_call_log))
-        return final_text, tool_call_log
+        return summary, tool_call_log
 
     # -- Progressive Flow ---------------------------------------------------
 

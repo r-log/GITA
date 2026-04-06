@@ -2,8 +2,12 @@
 GitHub tools for repository operations: tree, file reading, collaborators.
 """
 
+import structlog
+
 from src.core.github_auth import GitHubClient
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 
 async def _get_repo_tree(installation_id: int, repo_full_name: str, ref: str = "HEAD") -> ToolResult:
@@ -21,6 +25,7 @@ async def _get_repo_tree(installation_id: int, repo_full_name: str, ref: str = "
         ]
         return ToolResult(success=True, data=tree)
     except Exception as e:
+        log.warning("get_repo_tree_failed", operation="get_repo_tree", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -36,6 +41,7 @@ async def _read_file(installation_id: int, repo_full_name: str, path: str, ref: 
         content = base64.b64decode(data["content"]).decode("utf-8")
         return ToolResult(success=True, data={"path": path, "content": content, "size": data.get("size", 0)})
     except Exception as e:
+        log.warning("read_file_failed", operation="read_file", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -50,6 +56,7 @@ async def _get_collaborators(installation_id: int, repo_full_name: str) -> ToolR
         ]
         return ToolResult(success=True, data=collaborators)
     except Exception as e:
+        log.warning("get_collaborators_failed", operation="get_collaborators", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

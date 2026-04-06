@@ -1,5 +1,6 @@
 # Secrets — NEVER commit these
 .env
+.claude
 *.pem
 *.key
 github-app-private-key.pem

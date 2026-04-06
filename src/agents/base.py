@@ -5,12 +5,11 @@ Every specialist agent extends BaseAgent and implements the handle() method.
 
 from __future__ import annotations
 
-import time
 import json
 import structlog
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import List, Optional
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -30,6 +29,7 @@ class AgentContext:
     installation_id: int
     repo_id: int = 0  # DB primary key, resolved by webhook handler
     additional_data: dict = field(default_factory=dict)
+    delivery_id: Optional[str] = None  # Webhook delivery ID for trace correlation
 
 
 @dataclass

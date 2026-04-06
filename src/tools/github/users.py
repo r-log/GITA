@@ -3,8 +3,12 @@ GitHub tools for user tagging (mentioning users in comments).
 This is a convenience tool — it wraps post_comment with @mentions.
 """
 
+import structlog
+
 from src.core.github_auth import GitHubClient
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 
 async def _tag_user(
@@ -25,6 +29,7 @@ async def _tag_user(
         )
         return ToolResult(success=True, data={"id": data["id"], "html_url": data["html_url"]})
     except Exception as e:
+        log.warning("tag_user_failed", operation="tag_user", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

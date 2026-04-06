@@ -2,8 +2,12 @@
 GitHub tools for label operations.
 """
 
+import structlog
+
 from src.core.github_auth import GitHubClient
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 
 async def _add_label(installation_id: int, repo_full_name: str, issue_number: int, labels: list[str]) -> ToolResult:
@@ -15,6 +19,7 @@ async def _add_label(installation_id: int, repo_full_name: str, issue_number: in
         )
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("add_label_failed", operation="add_label", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -29,6 +34,7 @@ async def _create_label(
         )
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("create_label_failed", operation="create_label", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

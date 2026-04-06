@@ -2,8 +2,12 @@
 GitHub tools for milestone operations.
 """
 
+import structlog
+
 from src.core.github_auth import GitHubClient
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 
 async def _get_all_milestones(installation_id: int, repo_full_name: str, state: str = "open") -> ToolResult:
@@ -15,6 +19,7 @@ async def _get_all_milestones(installation_id: int, repo_full_name: str, state: 
         )
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("get_all_milestones_failed", operation="get_all_milestones", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -24,6 +29,7 @@ async def _get_milestone(installation_id: int, repo_full_name: str, milestone_nu
         data = await client.get(f"/repos/{repo_full_name}/milestones/{milestone_number}")
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("get_milestone_failed", operation="get_milestone", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -43,6 +49,7 @@ async def _create_milestone(
         data = await client.post(f"/repos/{repo_full_name}/milestones", json=payload)
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("create_milestone_failed", operation="create_milestone", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -69,6 +76,7 @@ async def _update_milestone(
         data = await client.patch(f"/repos/{repo_full_name}/milestones/{milestone_number}", json=payload)
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("update_milestone_failed", operation="update_milestone", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

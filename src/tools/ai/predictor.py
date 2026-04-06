@@ -3,11 +3,14 @@ AI tools for progress prediction: velocity calculation, completion forecasting, 
 """
 
 import json
+import structlog
 from datetime import datetime
 from openai import AsyncOpenAI
 
 from src.core.config import settings
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 _client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -65,6 +68,7 @@ async def _calculate_velocity(milestone_issues: list[dict]) -> ToolResult:
             "trend": trend,
         })
     except Exception as e:
+        log.warning("predictor_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -106,6 +110,7 @@ Respond with JSON:
         result = json.loads(response.choices[0].message.content)
         return ToolResult(success=True, data=result)
     except Exception as e:
+        log.warning("predictor_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -138,6 +143,7 @@ async def _detect_blockers(issues: list[dict], stale_days: int = 14) -> ToolResu
             "stale_threshold_days": stale_days,
         })
     except Exception as e:
+        log.warning("predictor_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -169,6 +175,7 @@ async def _detect_stale_prs(pull_requests: list[dict], stale_days: int = 7) -> T
             "stale_threshold_days": stale_days,
         })
     except Exception as e:
+        log.warning("predictor_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

@@ -4,11 +4,14 @@ These tools call the LLM to do the heavy reasoning.
 """
 
 import json
+import structlog
 from openai import AsyncOpenAI
 from thefuzz import fuzz
 
 from src.core.config import settings
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 _client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -66,6 +69,7 @@ Respond with JSON:
         plan = json.loads(response.choices[0].message.content)
         return ToolResult(success=True, data=plan)
     except Exception as e:
+        log.warning("project_planner_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -111,6 +115,7 @@ Respond with JSON:
         result = json.loads(response.choices[0].message.content)
         return ToolResult(success=True, data=result)
     except Exception as e:
+        log.warning("project_planner_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

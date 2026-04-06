@@ -2,8 +2,12 @@
 GitHub tools for issue operations.
 """
 
+import structlog
+
 from src.core.github_auth import GitHubClient
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 
 async def _get_issue(installation_id: int, repo_full_name: str, issue_number: int) -> ToolResult:
@@ -12,6 +16,7 @@ async def _get_issue(installation_id: int, repo_full_name: str, issue_number: in
         data = await client.get(f"/repos/{repo_full_name}/issues/{issue_number}")
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("get_issue_failed", operation="get_issue", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -36,6 +41,7 @@ async def _get_all_issues(installation_id: int, repo_full_name: str, state: str 
             page += 1
         return ToolResult(success=True, data=all_issues)
     except Exception as e:
+        log.warning("get_all_issues_failed", operation="get_all_issues", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -60,6 +66,7 @@ async def _create_issue(
         data = await client.post(f"/repos/{repo_full_name}/issues", json=payload)
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("create_issue_failed", operation="create_issue", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -92,6 +99,7 @@ async def _update_issue(
         data = await client.patch(f"/repos/{repo_full_name}/issues/{issue_number}", json=payload)
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("update_issue_failed", operation="update_issue", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

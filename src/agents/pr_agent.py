@@ -1,8 +1,10 @@
 """
 PR Review Agent — analyzes pull requests for quality and milestone alignment.
 
-Checks diff quality, test coverage, linked issues, and creates check runs.
-Triggered on pull_request.opened and pull_request.synchronize events.
+Architecture: gather-then-reason.
+  1. Python gathers all data (PR files, diff, blast radius, AI analysis)
+  2. LLM receives assembled context and reasons about findings
+  3. LLM uses output tools (post_comment, create_check_run) to report
 """
 
 from __future__ import annotations
@@ -13,21 +15,30 @@ import structlog
 from src.agents.base import BaseAgent, AgentContext, AgentResult
 from src.tools.base import Tool
 
-# GitHub tools
-from src.tools.github.pull_requests import make_get_pr, make_get_pr_diff, make_get_pr_files, make_get_open_prs
+# GitHub tools — raw functions for data gathering
+from src.tools.github.pull_requests import (
+    make_get_pr, make_get_open_prs,
+    _get_pr_diff, _get_pr_files,
+)
 from src.tools.github.issues import make_get_issue, make_get_all_issues
 from src.tools.github.milestones import make_get_milestone
+
+# GitHub tools — output (LLM decides when to use these)
 from src.tools.github.comments import make_post_comment
 from src.tools.github.checks import make_create_check_run
 from src.tools.github.users import make_tag_user
 
-# AI tools
-from src.tools.ai.code_analyzer import make_analyze_diff_quality, make_check_test_coverage
+# AI tools — raw functions for analysis
+from src.tools.ai.code_analyzer import _analyze_diff_quality, _check_test_coverage
+
+# AI tools — LLM-callable
 from src.tools.ai.smart_evaluator import make_check_milestone_alignment
 
 # DB tools
 from src.tools.db.analysis import make_save_analysis
-from src.tools.db.code_index import make_query_code_index
+from src.tools.db.graph_queries import (
+    _get_blast_radius, _get_file_ownership, _get_focused_code_map,
+)
 
 log = structlog.get_logger()
 
@@ -39,6 +50,7 @@ class PRReviewAgent(BaseAgent):
     """
 
     def __init__(self, installation_id: int, repo_full_name: str, repo_id: int = 0, model: str | None = None):
+        # LLM only gets output + lookup tools — no gathering tools
         tools = self._build_tools(installation_id, repo_full_name, repo_id)
 
         super().__init__(
@@ -54,29 +66,81 @@ class PRReviewAgent(BaseAgent):
         self.repo_id = repo_id
 
     def _build_tools(self, installation_id: int, repo_full_name: str, repo_id: int) -> list[Tool]:
+        """LLM only gets output and lookup tools — gathering is done in Python."""
         return [
-            # GitHub — PR
+            # Lookup (LLM may need to fetch a linked issue or milestone)
             make_get_pr(installation_id, repo_full_name),
-            make_get_pr_diff(installation_id, repo_full_name),
-            make_get_pr_files(installation_id, repo_full_name),
-            make_get_open_prs(installation_id, repo_full_name),
-            # GitHub — issues & milestones
             make_get_issue(installation_id, repo_full_name),
             make_get_all_issues(installation_id, repo_full_name),
             make_get_milestone(installation_id, repo_full_name),
-            # GitHub — output
+            make_get_open_prs(installation_id, repo_full_name),
+            # AI reasoning
+            make_check_milestone_alignment(),
+            # Output (LLM decides what to post)
             make_post_comment(installation_id, repo_full_name),
             make_create_check_run(installation_id, repo_full_name),
             make_tag_user(installation_id, repo_full_name),
-            # AI
-            make_analyze_diff_quality(),
-            make_check_test_coverage(),
-            make_check_milestone_alignment(),
             # DB
             make_save_analysis(repo_id),
-            # Code index — query file structure for context on changed files
-            make_query_code_index(repo_id),
         ]
+
+    async def _gather_context(self, pr_number: int, shared_data: dict | None = None) -> dict:
+        """
+        Gather all PR data in Python before the LLM call.
+        Uses shared_data from Supervisor if available (avoids duplicate API calls
+        when running in parallel with Risk Detective).
+        """
+        gathered = {}
+
+        # Use shared data from Supervisor if available, otherwise fetch
+        if shared_data and shared_data.get("files"):
+            gathered["files"] = shared_data["files"]
+            gathered["diff"] = shared_data.get("diff", "")
+            gathered["blast_radius"] = shared_data.get("blast_radius", {})
+        else:
+            # Fallback: fetch independently
+            files_result = await _get_pr_files(
+                self.installation_id, self.repo_full_name, pr_number, self.repo_id,
+            )
+            gathered["files"] = files_result.data if files_result.success else []
+
+            diff_result = await _get_pr_diff(self.installation_id, self.repo_full_name, pr_number)
+            gathered["diff"] = diff_result.data.get("diff", "") if diff_result.success else ""
+
+            file_paths = [f["filename"] for f in gathered["files"]] if gathered["files"] else []
+            if file_paths:
+                blast_result = await _get_blast_radius(self.repo_id, file_paths, depth=2)
+                gathered["blast_radius"] = blast_result.data if blast_result.success else {}
+            else:
+                gathered["blast_radius"] = {}
+
+        diff_text = gathered["diff"][:30000]  # Cap for LLM context
+
+        # PR-specific gathering (not shared — only PR Reviewer needs these)
+        file_paths = [f["filename"] for f in gathered["files"]] if gathered["files"] else []
+        if file_paths:
+            ownership_result = await _get_file_ownership(self.repo_id, file_paths)
+            gathered["file_ownership"] = ownership_result.data if ownership_result.success else {}
+
+            code_map_result = await _get_focused_code_map(self.repo_id, file_paths, depth=1)
+            gathered["focused_code_map"] = code_map_result.data if code_map_result.success else ""
+        else:
+            gathered["file_ownership"] = {}
+            gathered["focused_code_map"] = ""
+
+        # AI analysis
+        pr_info = {"files": gathered["files"], "file_count": len(gathered["files"])}
+        if diff_text:
+            quality_result = await _analyze_diff_quality(diff_text, pr_info)
+            gathered["quality_analysis"] = quality_result.data if quality_result.success else {}
+
+            coverage_result = await _check_test_coverage(diff_text, gathered["files"])
+            gathered["test_coverage"] = coverage_result.data if coverage_result.success else {}
+        else:
+            gathered["quality_analysis"] = {}
+            gathered["test_coverage"] = {}
+
+        return gathered
 
     async def handle(self, context: AgentContext) -> AgentResult:
         log.info(
@@ -88,18 +152,24 @@ class PRReviewAgent(BaseAgent):
         pr_data = context.event_payload.get("pull_request", {})
         pr_number = pr_data.get("number", 0)
 
+        # Phase 1: Gather all data in Python (no LLM tool calls needed)
+        # Check for shared data from Supervisor (avoids duplicate API calls with Risk Detective)
+        shared_data = context.additional_data.get("pr_gathered")
+        log.info("pr_reviewer_gathering", pr=pr_number, shared=bool(shared_data))
+        gathered = await self._gather_context(pr_number, shared_data)
+
+        # Phase 2: Send everything to LLM for reasoning + output decisions
         messages = [
             {"role": "system", "content": self.system_prompt},
             {
                 "role": "user",
                 "content": json.dumps({
-                    "task": "Review this pull request",
-                    "event": context.event_type,
+                    "task": "Review this pull request and report findings",
                     "repo": self.repo_full_name,
                     "pr_number": pr_number,
                     "pr_summary": {
                         "title": pr_data.get("title"),
-                        "body": (pr_data.get("body") or "")[:1000],
+                        "body": (pr_data.get("body") or "")[:2000],
                         "author": pr_data.get("user", {}).get("login"),
                         "base": pr_data.get("base", {}).get("ref"),
                         "head": pr_data.get("head", {}).get("ref"),
@@ -108,12 +178,22 @@ class PRReviewAgent(BaseAgent):
                         "deletions": pr_data.get("deletions"),
                         "changed_files": pr_data.get("changed_files"),
                     },
+                    "gathered_data": {
+                        "files_changed": gathered["files"],
+                        "diff": gathered["diff"],
+                        "blast_radius": gathered.get("blast_radius", {}),
+                        "file_ownership": gathered.get("file_ownership", {}),
+                        "quality_analysis": gathered.get("quality_analysis", {}),
+                        "test_coverage": gathered.get("test_coverage", {}),
+                    },
+                    "focused_code_map": gathered.get("focused_code_map", ""),
                     "instructions": (
-                        f"A '{context.event_type}' event occurred on PR #{pr_number} in {self.repo_full_name}. "
-                        "Follow your instructions to review the diff, check quality and tests, "
-                        "verify linked issues, and create a check run."
+                        f"All data has been gathered for PR #{pr_number}. "
+                        "Review the quality analysis, test coverage, blast radius, and file ownership above. "
+                        "Create a check run with your verdict and post a comment if there are findings. "
+                        "If the PR body references an issue (fixes #N, closes #N), fetch it with get_issue to verify linkage."
                     ),
-                }),
+                }, default=str),
             },
         ]
 

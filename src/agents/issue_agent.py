@@ -13,7 +13,7 @@ import json
 import structlog
 
 from src.agents.base import BaseAgent, AgentContext, AgentResult
-from src.tools.base import Tool, ToolResult
+from src.tools.base import Tool
 from src.core.github_auth import GitHubClient
 
 # GitHub tools — raw functions for deterministic checks

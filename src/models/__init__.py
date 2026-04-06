@@ -12,6 +12,9 @@ from src.models.agent_run import AgentRun
 from src.models.onboarding_run import OnboardingRun
 from src.models.file_mapping import FileMapping
 from src.models.code_index import CodeIndex
+from src.models.graph_node import GraphNode
+from src.models.graph_edge import GraphEdge
+from src.models.pr_file_change import PrFileChange
 
 __all__ = [
     "Repository",
@@ -24,4 +27,7 @@ __all__ = [
     "OnboardingRun",
     "FileMapping",
     "CodeIndex",
+    "GraphNode",
+    "GraphEdge",
+    "PrFileChange",
 ]

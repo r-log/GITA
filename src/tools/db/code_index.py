@@ -6,8 +6,11 @@ instead of reading files from GitHub every time.
 """
 
 import json
+import structlog
 
 from sqlalchemy import select
+
+log = structlog.get_logger()
 
 from src.core.database import async_session
 from src.models.code_index import CodeIndex
@@ -63,6 +66,7 @@ async def _query_code_index(
 
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("code_index_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -122,6 +126,7 @@ async def _get_code_map(repo_id: int) -> ToolResult:
         code_map = generate_code_map(records_for_map)
         return ToolResult(success=True, data=code_map)
     except Exception as e:
+        log.warning("code_index_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -186,6 +191,7 @@ async def _save_issue_record(
 
         return ToolResult(success=True, data={"issue_id": record.id, "github_number": github_number})
     except Exception as e:
+        log.warning("code_index_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

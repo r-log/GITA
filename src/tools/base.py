@@ -9,6 +9,10 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Optional
 
+import structlog
+
+log = structlog.get_logger()
+
 
 @dataclass
 class ToolResult:
@@ -39,6 +43,7 @@ class Tool:
                 return await result
             return result
         except Exception as e:
+            log.warning("tool_execute_failed", tool_name=self.name, error=str(e), exc_info=True)
             return ToolResult(success=False, error=str(e))
 
     def to_schema(self) -> dict:

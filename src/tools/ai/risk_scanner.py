@@ -3,10 +3,14 @@ AI tools for risk detection: secrets, security patterns, breaking changes, depen
 """
 
 import json
+
+import structlog
 from openai import AsyncOpenAI
 
 from src.core.config import settings
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 _client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -58,6 +62,7 @@ Respond with JSON:
         result = json.loads(response.choices[0].message.content)
         return ToolResult(success=True, data=result)
     except Exception as e:
+        log.warning("scan_secrets_failed", operation="scan_secrets", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -106,6 +111,7 @@ Respond with JSON:
         result = json.loads(response.choices[0].message.content)
         return ToolResult(success=True, data=result)
     except Exception as e:
+        log.warning("scan_security_patterns_failed", operation="scan_security_patterns", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -158,6 +164,7 @@ Respond with JSON:
         result = json.loads(response.choices[0].message.content)
         return ToolResult(success=True, data=result)
     except Exception as e:
+        log.warning("detect_breaking_changes_failed", operation="detect_breaking_changes", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -197,6 +204,7 @@ Respond with JSON:
         result = json.loads(response.choices[0].message.content)
         return ToolResult(success=True, data=result)
     except Exception as e:
+        log.warning("check_dependency_changes_failed", operation="check_dependency_changes", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
