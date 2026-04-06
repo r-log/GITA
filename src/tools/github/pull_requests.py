@@ -2,8 +2,16 @@
 GitHub tools for pull request operations.
 """
 
+import structlog
+from sqlalchemy import select
+
 from src.core.github_auth import GitHubClient
+from src.core.database import async_session
+from src.models.pull_request import PullRequestModel
+from src.models.pr_file_change import PrFileChange
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 
 async def _get_pr(installation_id: int, repo_full_name: str, pr_number: int) -> ToolResult:
@@ -12,6 +20,7 @@ async def _get_pr(installation_id: int, repo_full_name: str, pr_number: int) -> 
         data = await client.get(f"/repos/{repo_full_name}/pulls/{pr_number}")
         return ToolResult(success=True, data=data)
     except Exception as e:
+        log.warning("get_pr_failed", operation="get_pr", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -38,11 +47,14 @@ async def _get_pr_diff(installation_id: int, repo_full_name: str, pr_number: int
                 diff = diff[:50000] + "\n\n... [diff truncated, too large] ..."
             return ToolResult(success=True, data={"diff": diff, "size": len(response.text)})
     except Exception as e:
+        log.warning("get_pr_diff_failed", operation="get_pr_diff", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
-async def _get_pr_files(installation_id: int, repo_full_name: str, pr_number: int) -> ToolResult:
-    """List changed files with stats."""
+async def _get_pr_files(
+    installation_id: int, repo_full_name: str, pr_number: int, repo_id: int = 0,
+) -> ToolResult:
+    """List changed files with stats. Persists to pr_file_changes when repo_id is provided."""
     client = GitHubClient(installation_id)
     try:
         data = await client.get(f"/repos/{repo_full_name}/pulls/{pr_number}/files")
@@ -56,9 +68,58 @@ async def _get_pr_files(installation_id: int, repo_full_name: str, pr_number: in
             }
             for f in data
         ]
+
+        # Side-effect: persist file changes for graph impact analysis
+        if repo_id and files:
+            try:
+                await _persist_pr_file_changes(repo_id, pr_number, files)
+            except Exception as e:
+                log.warning("pr_file_persist_failed", pr=pr_number, error=str(e))
+
         return ToolResult(success=True, data=files)
     except Exception as e:
         return ToolResult(success=False, error=str(e))
+
+
+async def _persist_pr_file_changes(repo_id: int, pr_number: int, files: list[dict]) -> None:
+    """Persist PR file changes to the database for graph queries."""
+    async with async_session() as session:
+        # Resolve pr_id from repo_id + pr_number
+        result = await session.execute(
+            select(PullRequestModel.id).where(
+                PullRequestModel.repo_id == repo_id,
+                PullRequestModel.github_number == pr_number,
+            )
+        )
+        pr_id = result.scalar_one_or_none()
+        if not pr_id:
+            return
+
+        for f in files:
+            # Upsert: check if record exists
+            existing = await session.execute(
+                select(PrFileChange).where(
+                    PrFileChange.pr_id == pr_id,
+                    PrFileChange.file_path == f["filename"],
+                )
+            )
+            record = existing.scalar_one_or_none()
+
+            if record:
+                record.change_type = f["status"]
+                record.additions = f["additions"]
+                record.deletions = f["deletions"]
+            else:
+                session.add(PrFileChange(
+                    repo_id=repo_id,
+                    pr_id=pr_id,
+                    file_path=f["filename"],
+                    change_type=f["status"],
+                    additions=f["additions"],
+                    deletions=f["deletions"],
+                ))
+
+        await session.commit()
 
 
 async def _get_open_prs(installation_id: int, repo_full_name: str) -> ToolResult:
@@ -104,7 +165,7 @@ def make_get_pr_diff(installation_id: int, repo_full_name: str) -> Tool:
     )
 
 
-def make_get_pr_files(installation_id: int, repo_full_name: str) -> Tool:
+def make_get_pr_files(installation_id: int, repo_full_name: str, repo_id: int = 0) -> Tool:
     return Tool(
         name="get_pr_files",
         description="List files changed in a pull request with additions/deletions stats.",
@@ -115,7 +176,7 @@ def make_get_pr_files(installation_id: int, repo_full_name: str) -> Tool:
             },
             "required": ["pr_number"],
         },
-        handler=lambda pr_number: _get_pr_files(installation_id, repo_full_name, pr_number),
+        handler=lambda pr_number: _get_pr_files(installation_id, repo_full_name, pr_number, repo_id),
     )
 
 

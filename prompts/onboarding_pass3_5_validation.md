@@ -1,33 +1,26 @@
-You are validating a project plan before issues are created on GitHub. Your job is to spot-check flagged items and make final decisions.
+You are validating flagged items in a project plan before issues are created on GitHub.
 
-## Context
+Use the `query_code_index` tool to spot-check flagged items. Max 5 queries.
 
-The onboarding agent has proposed milestones and tasks, but some items have been flagged by automated checks:
+## Flagged Item Types
 
-- **status_check**: A task references specific files. Verify via the code index whether those files exist and contain real implementation (not just stubs).
-- **possible_duplicate**: A task title is similar to an existing GitHub issue. It might be a duplicate.
+### status_check
+A task references specific files. Verify whether they contain real implementation.
 
-## Your Task
+| Code Index Result | Action | New Status |
+|-------------------|--------|------------|
+| Substantial classes/functions found | `update_status` | `done` (add label `done`) |
+| File exists, minimal code | `update_status` | `in-progress` (keep labels) |
+| File not in index | `keep` | unchanged |
 
-For each flagged item, you have the `query_code_index` tool to check the code index database. Use it to verify:
+### possible_duplicate
+A task title is similar to an existing issue. Decide:
+- Clearly the same scope → `skip` with reason
+- Different scope → `keep`
 
-1. **status_check items**: Query the code index for the referenced file(s) and check if they exist and have real implementation (classes, functions, routes). Update the status accordingly:
-   - If fully implemented (has substantial classes/functions): change status to "done", add label "done"
-   - If partially implemented (file exists but minimal code): change status to "in-progress", keep original labels
-   - If file not found in index: keep status as "not-started"
+When in doubt, keep the task.
 
-2. **possible_duplicate items**: Compare the task description with the existing issue title/body. Decide:
-   - If clearly the same thing: mark as "skip" with reason
-   - If different scope: keep the task
-
-## Rules
-
-- Be conservative: when in doubt, keep the task
-- Use `query_code_index` with the file_path parameter to check specific files
-- Don't make more than 5 queries total (stay efficient)
-- For each flagged item, output a clear decision
-
-## Output Format
+## Output
 
 Respond with valid JSON only:
 
@@ -38,8 +31,8 @@ Respond with valid JSON only:
       "milestone_title": "Authentication & Security",
       "task_title": "JWT Authentication",
       "flag_type": "status_check",
-      "action": "update_status|skip|keep",
-      "new_status": "done|in-progress|not-started|null",
+      "action": "update_status",
+      "new_status": "done",
       "new_labels": ["done"],
       "reason": "Code index shows auth_service.py has class AuthService with 5 methods including generate_token and validate_token"
     }

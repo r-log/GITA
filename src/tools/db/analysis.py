@@ -11,6 +11,10 @@ from src.models.issue import IssueModel
 from src.models.analysis import Analysis
 from src.tools.base import Tool, ToolResult
 
+import structlog
+
+log = structlog.get_logger()
+
 
 async def _resolve_issue_db_id(repo_id: int, github_number: int) -> int | None:
     """Look up the DB issue ID from repo_id + GitHub issue number. Creates if missing."""
@@ -32,7 +36,8 @@ async def _resolve_issue_db_id(repo_id: int, github_number: int) -> int | None:
             await session.commit()
             await session.refresh(issue)
             return issue.id
-    except Exception:
+    except Exception as e:
+        log.warning("resolve_issue_db_id_failed", repo_id=repo_id, github_number=github_number, error=str(e), exc_info=True)
         return None
 
 
@@ -66,6 +71,7 @@ async def _save_evaluation(
             await session.refresh(record)
             return ToolResult(success=True, data={"evaluation_id": record.id})
     except Exception as e:
+        log.warning("save_evaluation_failed", operation="save_evaluation", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -97,6 +103,7 @@ async def _get_previous_evaluation(repo_id: int, github_issue_number: int) -> To
                 "created_at": record.created_at.isoformat() if record.created_at else None,
             })
     except Exception as e:
+        log.warning("get_previous_evaluation_failed", operation="get_previous_evaluation", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -125,6 +132,7 @@ async def _save_analysis(
             await session.refresh(record)
             return ToolResult(success=True, data={"analysis_id": record.id})
     except Exception as e:
+        log.warning("save_analysis_failed", operation="save_analysis", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -160,6 +168,7 @@ async def _get_analysis_history(
                 for r in records
             ])
     except Exception as e:
+        log.warning("get_analysis_history_failed", operation="get_analysis_history", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

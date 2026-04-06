@@ -2,10 +2,18 @@
 DB tools for onboarding persistence.
 """
 
+import structlog
 from datetime import datetime
+
+from sqlalchemy import select
+
 from src.core.database import async_session
 from src.models.onboarding_run import OnboardingRun
+
+log = structlog.get_logger()
 from src.models.file_mapping import FileMapping
+from src.models.graph_node import GraphNode
+from src.models.graph_edge import GraphEdge
 from src.tools.base import Tool, ToolResult
 
 
@@ -43,6 +51,7 @@ async def _save_onboarding_run(
             await session.refresh(run)
             return ToolResult(success=True, data={"onboarding_run_id": run.id})
     except Exception as e:
+        log.warning("onboarding_db_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
@@ -63,10 +72,45 @@ async def _save_file_mapping(
                 confidence=confidence,
             )
             session.add(mapping)
+            await session.flush()
+
+            # Also create graph edges for the mapping
+            file_node_result = await session.execute(
+                select(GraphNode.id).where(
+                    GraphNode.repo_id == repo_id,
+                    GraphNode.file_path == file_path,
+                    GraphNode.node_type == "file",
+                )
+            )
+            file_node_id = file_node_result.scalar_one_or_none()
+
+            if file_node_id:
+                if milestone_id:
+                    session.add(GraphEdge(
+                        repo_id=repo_id,
+                        source_node_id=file_node_id,
+                        target_node_id=None,
+                        edge_type="belongs_to_milestone",
+                        target_entity_type="milestone",
+                        target_entity_id=milestone_id,
+                        confidence=confidence,
+                    ))
+                if issue_id:
+                    session.add(GraphEdge(
+                        repo_id=repo_id,
+                        source_node_id=file_node_id,
+                        target_node_id=None,
+                        edge_type="belongs_to_issue",
+                        target_entity_type="issue",
+                        target_entity_id=issue_id,
+                        confidence=confidence,
+                    ))
+
             await session.commit()
             await session.refresh(mapping)
             return ToolResult(success=True, data={"file_mapping_id": mapping.id})
     except Exception as e:
+        log.warning("onboarding_db_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

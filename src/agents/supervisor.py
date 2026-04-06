@@ -18,6 +18,8 @@ from src.agents.registry import registry
 from src.core.config import settings
 from src.core.database import async_session
 from src.models.agent_run import AgentRun
+from src.tools.github.pull_requests import _get_pr_diff, _get_pr_files
+from src.tools.db.graph_queries import _get_blast_radius
 
 log = structlog.get_logger()
 
@@ -81,6 +83,11 @@ class SupervisorAgent:
                         data={"dispatch_plan": dispatch_plan, "message": "All agents on cooldown"},
                     )
 
+        # Pre-gather shared data for PR events (avoids duplicate API calls
+        # when PR Reviewer and Risk Detective both need the same diff/files/blast radius)
+        if context.event_type.startswith("pull_request.") and len(agent_names) > 1:
+            await self._pre_gather_pr_data(context)
+
         # Dispatch agents
         results = await self._dispatch_agents(agent_names, context, run_parallel)
 
@@ -89,6 +96,53 @@ class SupervisorAgent:
         merged.data["duration_ms"] = int((time.time() - started_at) * 1000)
 
         return merged
+
+    async def _pre_gather_pr_data(self, context: AgentContext) -> None:
+        """
+        Pre-gather common PR data that multiple agents need.
+        Stores in context.additional_data["pr_gathered"] so both
+        PR Reviewer and Risk Detective can read from it instead of
+        making duplicate API calls.
+        """
+        pr_data = context.event_payload.get("pull_request", {})
+        pr_number = pr_data.get("number", 0)
+        if not pr_number:
+            return
+
+        log.info("supervisor_pre_gather", pr=pr_number)
+        gathered = {}
+
+        try:
+            # Fetch changed files (also persists to pr_file_changes via side-effect)
+            files_result = await _get_pr_files(
+                context.installation_id, context.repo_full_name,
+                pr_number, context.repo_id,
+            )
+            gathered["files"] = files_result.data if files_result.success else []
+
+            # Fetch diff
+            diff_result = await _get_pr_diff(
+                context.installation_id, context.repo_full_name, pr_number,
+            )
+            gathered["diff"] = diff_result.data.get("diff", "") if diff_result.success else ""
+
+            # Blast radius
+            file_paths = [f["filename"] for f in gathered["files"]] if gathered["files"] else []
+            if file_paths and context.repo_id:
+                blast_result = await _get_blast_radius(context.repo_id, file_paths, depth=2)
+                gathered["blast_radius"] = blast_result.data if blast_result.success else {}
+            else:
+                gathered["blast_radius"] = {}
+
+            context.additional_data["pr_gathered"] = gathered
+            log.info(
+                "supervisor_pre_gather_complete",
+                pr=pr_number,
+                files=len(gathered["files"]),
+                diff_size=len(gathered["diff"]),
+            )
+        except Exception as e:
+            log.warning("supervisor_pre_gather_failed", pr=pr_number, error=str(e))
 
     def _classify_and_plan(self, context: AgentContext) -> dict:
         """Look up the routing table and return a dispatch plan."""

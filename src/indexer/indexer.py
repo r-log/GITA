@@ -16,6 +16,7 @@ from src.models.code_index import CodeIndex
 from src.indexer.downloader import download_repo_files, download_specific_files
 from src.indexer.parsers import parse_file
 from src.indexer.code_map import generate_code_map
+from src.indexer.graph_builder import build_graph_for_repo, update_graph_for_files
 
 log = structlog.get_logger()
 
@@ -70,7 +71,10 @@ async def index_repository(
 
     log.info("index_stored", repo=repo_full_name, records=len(parsed))
 
-    # 4. Generate code map
+    # 4. Build code knowledge graph
+    await build_graph_for_repo(repo_id, parsed)
+
+    # 5. Generate code map
     records_for_map = [
         {
             "file_path": fi.file_path,
@@ -164,6 +168,9 @@ async def reindex_files(
                 ))
 
         await session.commit()
+
+    # 4. Update code knowledge graph
+    await update_graph_for_files(repo_id, parsed, removed_files)
 
     log.info(
         "reindex_complete",

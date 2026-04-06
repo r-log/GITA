@@ -2,8 +2,12 @@
 GitHub tools for check run operations.
 """
 
+import structlog
+
 from src.core.github_auth import GitHubClient
 from src.tools.base import Tool, ToolResult
+
+log = structlog.get_logger()
 
 
 async def _create_check_run(
@@ -33,6 +37,7 @@ async def _create_check_run(
         data = await client.post(f"/repos/{repo_full_name}/check-runs", json=payload)
         return ToolResult(success=True, data={"id": data["id"], "html_url": data.get("html_url")})
     except Exception as e:
+        log.warning("create_check_run_failed", operation="create_check_run", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
