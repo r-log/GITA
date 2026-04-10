@@ -43,7 +43,7 @@ from src.utils.checklist import parse_checklist, add_checklist_items
 
 # DB tools
 from src.tools.db.onboarding import _save_onboarding_run
-from src.tools.db.code_index import make_query_code_index, _save_issue_record
+from src.tools.db.code_index import make_query_code_index, _save_issue_record, _query_code_index
 
 log = structlog.get_logger()
 
@@ -295,6 +295,107 @@ class OnboardingAgent(BaseAgent):
 
     # -- Step 3.5: Validate Plan -------------------------------------------
 
+    async def _gather_task_evidence(self, task_title: str, task_files: list[str]) -> dict:
+        """
+        Query the code_index to build an evidence-based completeness scorecard
+        for a single task. Returns structured evidence the LLM can reason over.
+        """
+        evidence = {
+            "files_found": [],
+            "files_missing": [],
+            "total_functions": 0,
+            "total_classes": 0,
+            "total_routes": 0,
+            "total_lines": 0,
+            "has_tests": False,
+            "test_files": [],
+            "has_error_handling": False,
+            "has_validation": False,
+            "completeness_signals": 0,
+            "completeness_gaps": [],
+        }
+
+        for file_path in task_files[:5]:  # cap to avoid huge queries
+            try:
+                result = await _query_code_index(self.repo_id, file_path=file_path)
+                if not result.success or not result.data:
+                    evidence["files_missing"].append(file_path)
+                    continue
+
+                for record in result.data:
+                    structure = record.get("structure", {})
+                    functions = structure.get("functions", [])
+                    classes = structure.get("classes", [])
+                    routes = structure.get("routes", [])
+                    lines = record.get("line_count", 0)
+
+                    evidence["files_found"].append({
+                        "path": record["file_path"],
+                        "language": record["language"],
+                        "lines": lines,
+                        "functions": [f.get("name") for f in functions],
+                        "classes": [c.get("name") for c in classes],
+                        "routes": [f"{r.get('method', '')} {r.get('path', '')}" for r in routes],
+                    })
+                    evidence["total_functions"] += len(functions)
+                    evidence["total_classes"] += len(classes)
+                    evidence["total_routes"] += len(routes)
+                    evidence["total_lines"] += lines
+
+                    # Check for error handling patterns
+                    func_names = [f.get("name", "").lower() for f in functions]
+                    if any("error" in n or "exception" in n or "handler" in n for n in func_names):
+                        evidence["has_error_handling"] = True
+
+                    # Check for validation patterns
+                    if any("valid" in n or "sanitiz" in n or "check" in n for n in func_names):
+                        evidence["has_validation"] = True
+
+            except Exception:
+                evidence["files_missing"].append(file_path)
+
+        # Check for test files covering these files
+        for file_path in task_files[:5]:
+            # Derive likely test file paths
+            filename = file_path.split("/")[-1].replace(".py", "")
+            test_patterns = [f"test_{filename}", f"test_{filename}.py", f"tests/test_{filename}"]
+            for pattern in test_patterns:
+                try:
+                    test_result = await _query_code_index(self.repo_id, file_path=f"%{pattern}%")
+                    if test_result.success and test_result.data:
+                        evidence["has_tests"] = True
+                        for tr in test_result.data:
+                            evidence["test_files"].append(tr["file_path"])
+                        break
+                except Exception:
+                    pass
+
+        # Score completeness signals
+        if evidence["files_found"]:
+            evidence["completeness_signals"] += 1  # implementation exists
+        if evidence["total_functions"] >= 3:
+            evidence["completeness_signals"] += 1  # substantial code
+        if evidence["total_routes"] >= 1:
+            evidence["completeness_signals"] += 1  # API routes present
+        if evidence["has_tests"]:
+            evidence["completeness_signals"] += 1  # tests exist
+        if evidence["has_error_handling"]:
+            evidence["completeness_signals"] += 1  # error handling
+        if evidence["has_validation"]:
+            evidence["completeness_signals"] += 1  # validation logic
+
+        # Identify gaps
+        if not evidence["has_tests"]:
+            evidence["completeness_gaps"].append("No test files found for this feature")
+        if not evidence["has_error_handling"]:
+            evidence["completeness_gaps"].append("No error handling functions detected")
+        if not evidence["has_validation"]:
+            evidence["completeness_gaps"].append("No input validation logic detected")
+        if evidence["files_missing"]:
+            evidence["completeness_gaps"].append(f"Referenced files not found: {evidence['files_missing']}")
+
+        return evidence
+
     async def _step3_5_validate(self, scratchpad: dict) -> dict[str, Any]:
         """
         Validate milestone plan before issue creation.
@@ -340,16 +441,16 @@ class OnboardingAgent(BaseAgent):
                             "existing_issue": {"number": best_match["number"], "title": best_match["title"]},
                         })
 
-                # Check status vs referenced files (query code_index instead of tree)
+                # Check status vs referenced files — gather EVIDENCE from code_index
                 task_files = task.get("files", [])
                 task_status = task.get("status", "not-started")
                 if task_files and task_status == "not-started":
+                    evidence = await self._gather_task_evidence(task_title, task_files)
                     flags.append({
                         "milestone_title": milestone.get("title", ""),
                         "task_title": task_title,
                         "flag_type": "status_check",
-                        "details": f"Task references files: {task_files}. Verify via code index if they exist and are implemented.",
-                        "files_to_check": task_files[:3],
+                        "evidence": evidence,
                     })
 
         log.info("step3_5_stage_a_complete", flags=len(flags), auto_skipped=auto_skipped)
@@ -551,6 +652,15 @@ class OnboardingAgent(BaseAgent):
                         is_milestone_tracker=True, linked_issue_numbers=linked,
                     )
 
+                    # If ALL sub-issues are done, close the tracker too
+                    all_done = all(s == "done" for _, _, s in task_numbers)
+                    if all_done and tracker_num:
+                        await _update_issue(
+                            self.installation_id, self.repo_full_name,
+                            tracker_num, state="closed",
+                        )
+                        log.info("step4_tracker_closed_all_done", title=ms_title, number=tracker_num)
+
         summary = f"Created {len(tool_call_log)} issues across {len(milestones_data.get('milestones', []))} milestones"
         log.info("step4_complete", tool_calls=len(tool_call_log))
         return summary, tool_call_log
@@ -745,6 +855,7 @@ class OnboardingAgent(BaseAgent):
             await _post_comment(
                 self.installation_id, self.repo_full_name, issue_num,
                 f"Closing: {reason}\n\n*-- GITA Progressive Update*",
+                repo_id=self.repo_id,
             )
             result = await _update_issue(
                 self.installation_id, self.repo_full_name, issue_num,
@@ -795,6 +906,7 @@ class OnboardingAgent(BaseAgent):
             await _post_comment(
                 self.installation_id, self.repo_full_name, issue_num,
                 f"**Stale check:** {reason}\n\nPlease review if this issue is still relevant.\n\n*-- GITA Progressive Update*",
+                repo_id=self.repo_id,
             )
             tool_call_log.append({"tool": "flag_stale", "result": {"success": True}, "args": {"issue_number": issue_num}})
             log.info("progressive_issue_flagged", number=issue_num, reason=reason)
@@ -802,6 +914,150 @@ class OnboardingAgent(BaseAgent):
         summary = progressive.get("summary", "Progressive update complete")
         log.info("step4_progressive_complete", tool_calls=len(tool_call_log))
         return summary, tool_call_log
+
+    # -- Step 5: Reply to recent comments -----------------------------------
+
+    async def _step5_reply_to_comments(self, scratchpad: dict) -> list[dict]:
+        """
+        Scan existing issues for recent human comments that GITA hasn't replied to.
+        Picks the 10 most recent human comments across all issues and replies if useful.
+        """
+        from src.core.github_auth import GitHubClient
+
+        log.info("step5_comments_start")
+        tool_call_log = []
+
+        existing_issues = scratchpad.get("existing", {}).get("existing_issues", [])
+        if not existing_issues:
+            log.info("step5_no_issues")
+            return tool_call_log
+
+        # Collect recent human comments across all issues
+        client = GitHubClient(self.installation_id)
+        all_comments = []
+
+        for issue in existing_issues[:20]:  # cap to avoid too many API calls
+            issue_num = issue.get("number", 0)
+            if not issue_num:
+                continue
+            try:
+                comments = await client.get(
+                    f"/repos/{self.repo_full_name}/issues/{issue_num}/comments",
+                    params={"per_page": 5, "sort": "created", "direction": "desc"},
+                )
+                for c in (comments or []):
+                    user = c.get("user", {})
+                    login = user.get("login", "")
+                    is_bot = user.get("type") == "Bot" or login.endswith("[bot]")
+                    if not is_bot and c.get("body", "").strip():
+                        all_comments.append({
+                            "issue_number": issue_num,
+                            "issue_title": issue.get("title", ""),
+                            "comment_id": c.get("id"),
+                            "author": login,
+                            "body": c.get("body", "")[:1000],
+                            "created_at": c.get("created_at", ""),
+                        })
+            except Exception:
+                continue
+
+        if not all_comments:
+            log.info("step5_no_human_comments")
+            return tool_call_log
+
+        # Sort by recency and take top 10
+        all_comments.sort(key=lambda c: c.get("created_at", ""), reverse=True)
+        top_comments = all_comments[:10]
+
+        log.info("step5_found_comments", count=len(top_comments))
+
+        # Check which ones already have a GITA reply after them
+        comments_to_reply = []
+        for comment in top_comments:
+            issue_num = comment["issue_number"]
+            try:
+                issue_comments = await client.get(
+                    f"/repos/{self.repo_full_name}/issues/{issue_num}/comments",
+                    params={"per_page": 20},
+                )
+                # Check if GITA already replied after this comment
+                found_comment = False
+                gita_replied = False
+                for ic in (issue_comments or []):
+                    if ic.get("id") == comment["comment_id"]:
+                        found_comment = True
+                        continue
+                    if found_comment:
+                        ic_user = ic.get("user", {})
+                        if ic_user.get("type") == "Bot" or ic_user.get("login", "").endswith("[bot]"):
+                            gita_replied = True
+                            break
+
+                if not gita_replied:
+                    comments_to_reply.append(comment)
+            except Exception:
+                comments_to_reply.append(comment)  # if we can't check, try anyway
+
+        if not comments_to_reply:
+            log.info("step5_all_replied")
+            return tool_call_log
+
+        log.info("step5_replying", count=len(comments_to_reply))
+
+        # Use the LLM to generate replies
+        for comment in comments_to_reply[:5]:  # cap at 5 replies per onboarding
+            try:
+                context = json.dumps({
+                    "task": "Reply to this comment on a project issue",
+                    "repo": self.repo_full_name,
+                    "issue_number": comment["issue_number"],
+                    "issue_title": comment["issue_title"],
+                    "comment_author": comment["author"],
+                    "comment_body": comment["body"],
+                    "instructions": (
+                        f"@{comment['author']} commented on issue #{comment['issue_number']} "
+                        f"(\"{comment['issue_title']}\"): \"{comment['body'][:300]}\"\n\n"
+                        "Write a brief, helpful reply. Be conversational and constructive. "
+                        "If you can offer specific advice related to the issue, do so. "
+                        "If the comment is a question, answer it. "
+                        "If it's a suggestion, acknowledge and respond. "
+                        "Keep it under 200 words. End with the GITA signature."
+                    ),
+                })
+
+                raw, calls = await self._run_pass(
+                    "step5_comment_reply",
+                    "You are GITA, a helpful AI assistant for this GitHub project. "
+                    "You are replying to a comment on an issue you created. Be helpful, "
+                    "concise, and reference the issue context. Always end with: "
+                    "---\\n*Generated by GitHub Assistant*",
+                    context,
+                    tools=[],
+                    max_calls=0,
+                    model=settings.ai_model_issue_analyst,
+                )
+
+                if raw and raw.strip():
+                    reply_body = raw.strip()
+                    if "Generated by GitHub Assistant" not in reply_body:
+                        reply_body += "\n\n---\n*Generated by GitHub Assistant*"
+
+                    result = await _post_comment(
+                        self.installation_id, self.repo_full_name,
+                        comment["issue_number"], reply_body,
+                        repo_id=self.repo_id,
+                    )
+                    if result.success:
+                        tool_call_log.append({
+                            "tool": "reply_to_comment",
+                            "result": {"success": True},
+                            "args": {"issue_number": comment["issue_number"], "reply_to": comment["author"]},
+                        })
+                        log.info("step5_replied", issue=comment["issue_number"], author=comment["author"])
+            except Exception as e:
+                log.warning("step5_reply_failed", issue=comment["issue_number"], error=str(e))
+
+        return tool_call_log
 
     # -- Main Handle -------------------------------------------------------
 
@@ -894,6 +1150,13 @@ class OnboardingAgent(BaseAgent):
             run_status = status
             confidence = scratchpad.get("milestones", {}).get("overall_confidence", 0.0)
             plan_data = scratchpad.get("milestones", {})
+
+        # Step 5: Respond to recent human comments on existing issues
+        try:
+            comment_replies = await self._step5_reply_to_comments(scratchpad)
+            all_tool_calls.extend(comment_replies)
+        except Exception as e:
+            log.error("step5_comments_failed", error=str(e))
 
         # Persist onboarding run
         try:

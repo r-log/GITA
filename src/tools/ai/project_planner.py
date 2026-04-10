@@ -3,27 +3,20 @@ AI tools for project planning: infer milestones/tasks from repo, compare plan vs
 These tools call the LLM to do the heavy reasoning.
 """
 
-import json
 import structlog
-from openai import AsyncOpenAI
 from thefuzz import fuzz
 
 from src.core.config import settings
+from src.core.llm_client import llm_json_call
 from src.tools.base import Tool, ToolResult
 
 log = structlog.get_logger()
-
-_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=settings.openrouter_api_key,
-    timeout=120.0,
-)
 
 
 async def _infer_project_plan(project_description: str) -> ToolResult:
     """Given a text description of the project, infer milestones and tasks."""
     try:
-        response = await _client.chat.completions.create(
+        plan = await llm_json_call(
             model=settings.ai_model_project_planner,
             messages=[
                 {
@@ -63,10 +56,11 @@ Respond with JSON:
                     "content": project_description[:15000],
                 },
             ],
+            caller="infer_project_plan",
             temperature=0.3,
-            response_format={"type": "json_object"},
         )
-        plan = json.loads(response.choices[0].message.content)
+        if plan is None:
+            return ToolResult(success=False, error="Project planning failed after retries")
         return ToolResult(success=True, data=plan)
     except Exception as e:
         log.warning("project_planner_failed", error=str(e), exc_info=True)
@@ -76,7 +70,7 @@ Respond with JSON:
 async def _compare_plan_vs_state(suggested_plan: str, existing_state: str) -> ToolResult:
     """Compare AI-suggested plan with existing milestones/issues to produce an action list."""
     try:
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_plan_reconciler,
             messages=[
                 {
@@ -109,10 +103,10 @@ Respond with JSON:
                     "content": f"SUGGESTED PLAN:\n{suggested_plan}\n\nEXISTING STATE:\n{existing_state}",
                 },
             ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            caller="compare_plan_vs_state",
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="Plan reconciliation failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
         log.warning("project_planner_failed", error=str(e), exc_info=True)

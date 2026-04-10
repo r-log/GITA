@@ -5,17 +5,11 @@ AI tools for progress prediction: velocity calculation, completion forecasting, 
 import json
 import structlog
 from datetime import datetime
-from openai import AsyncOpenAI
-
 from src.core.config import settings
+from src.core.llm_client import llm_json_call
 from src.tools.base import Tool, ToolResult
 
 log = structlog.get_logger()
-
-_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=settings.openrouter_api_key,
-)
 
 
 async def _calculate_velocity(milestone_issues: list[dict]) -> ToolResult:
@@ -78,7 +72,7 @@ async def _predict_completion(
 ) -> ToolResult:
     """AI tool: given velocity + remaining issues + due date, predict if milestone will be met on time."""
     try:
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_predictor,
             messages=[
                 {
@@ -104,10 +98,10 @@ Respond with JSON:
                     }, default=str),
                 },
             ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            caller="predict_completion",
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="Prediction failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
         log.warning("predictor_failed", error=str(e), exc_info=True)

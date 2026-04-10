@@ -22,9 +22,19 @@ class Settings(BaseSettings):
     # --- Redis ---
     redis_url: str = "redis://redis:6379"
 
-    # --- AI Provider (OpenRouter) ---
-    openrouter_api_key: str
+    # --- AI Provider ---
+    # Supports any OpenAI-compatible API: OpenRouter, Anthropic, Ollama, Together, Kimi, etc.
+    # Legacy: openrouter_api_key still works as fallback for llm_api_key
+    openrouter_api_key: str = ""
+    llm_api_key: str = ""
+    llm_base_url: str = "https://openrouter.ai/api/v1"
+    llm_timeout: float = 120.0
     ai_default_model: str = "anthropic/claude-sonnet-4"
+
+    @property
+    def effective_api_key(self) -> str:
+        """LLM_API_KEY takes priority, falls back to OPENROUTER_API_KEY for backwards compat."""
+        return self.llm_api_key or self.openrouter_api_key
 
     # --- Per-Agent Model Overrides (OpenRouter model IDs) ---
     # Each agent/pass can use a different model. Override via env vars.

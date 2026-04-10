@@ -87,6 +87,7 @@ function loadTabData(tab) {
   if (!currentRepoId) return;
   switch (tab) {
     case 'overview': loadOverview(); break;
+    case 'timeline': loadTimeline(); break;
     case 'runs': loadRuns(); break;
     case 'agents': loadAgents(); break;
     case 'issues': loadIssues(); break;
@@ -554,6 +555,94 @@ async function loadContext() {
     `;
   }).join('');
 }
+
+// ── Timeline ─────────────────────────────────────────────────────
+
+function eventIcon(eventType) {
+  const icons = {
+    'push': '&#x1F4E6;',         // package
+    'issues': '&#x1F4CB;',       // clipboard
+    'pull_request': '&#x1F500;', // merge
+    'issue_comment': '&#x1F4AC;',// speech
+    'installation': '&#x1F527;', // wrench
+    'installation_repositories': '&#x1F527;',
+    'check_suite': '&#x2705;',   // checkmark
+  };
+  return icons[eventType] || '&#x26A1;';
+}
+
+function statusDot(status) {
+  const colors = {
+    'success': '#3fb950',
+    'failed': '#f85149',
+    'partial': '#d29922',
+    'no_action': '#484f58',
+  };
+  const color = colors[status] || '#484f58';
+  return `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px"></span>`;
+}
+
+async function loadTimeline() {
+  const data = await api(`/timeline?repo_id=${currentRepoId}&limit=40`);
+  const container = document.getElementById('timeline-container');
+
+  if (!data.timeline || data.timeline.length === 0) {
+    container.innerHTML = '<p style="color:#8b949e;text-align:center;padding:40px">No events yet. Install GITA on a repo to see activity.</p>';
+    return;
+  }
+
+  container.innerHTML = data.timeline.map(entry => {
+    const agentsHtml = entry.agents.map(agent => {
+      const actionsHtml = agent.actions.length > 0
+        ? agent.actions.map(a =>
+            `<div class="tl-action ${a.success ? '' : 'tl-action-failed'}">${a.success ? '&#x2713;' : '&#x2717;'} ${a.action}</div>`
+          ).join('')
+        : '<div class="tl-action" style="color:#484f58">No write actions (read-only analysis)</div>';
+
+      return `
+        <div class="tl-agent">
+          <div class="tl-agent-header">
+            ${statusDot(agent.status)}
+            <strong>${agent.agent}</strong>
+            <span class="tl-meta">${agent.tools_used} tools, ${formatDuration(agent.duration_ms)}</span>
+            ${agent.confidence ? `<span class="tl-meta">${Math.round(agent.confidence * 100)}% confidence</span>` : ''}
+            ${agent.error ? `<span class="tl-error">${agent.error}</span>` : ''}
+          </div>
+          <div class="tl-actions">${actionsHtml}</div>
+          ${agent.summary ? `<div class="tl-summary">${agent.summary.substring(0, 200)}${agent.summary.length > 200 ? '...' : ''}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    const noAgents = entry.agents_dispatched === 0
+      ? '<div class="tl-no-agents">No agents dispatched (event type not in routing table)</div>'
+      : '';
+
+    return `
+      <div class="tl-entry">
+        <div class="tl-header" onclick="this.parentElement.classList.toggle('tl-expanded')">
+          <div class="tl-icon">${eventIcon(entry.event_type)}</div>
+          <div class="tl-content">
+            <div class="tl-title">${entry.description}</div>
+            <div class="tl-meta-row">
+              <span class="tl-time">${timeAgo(entry.timestamp)}</span>
+              <span class="tl-event-type">${entry.event_key}</span>
+              ${entry.agents_dispatched > 0
+                ? `<span class="tl-agents-count">${statusDot(entry.overall_status)}${entry.agents_dispatched} agent${entry.agents_dispatched > 1 ? 's' : ''}, ${formatDuration(entry.total_duration_ms)}</span>`
+                : '<span class="tl-agents-count" style="color:#484f58">no agents</span>'
+              }
+            </div>
+          </div>
+        </div>
+        <div class="tl-detail">
+          ${agentsHtml}
+          ${noAgents}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 
 // ── Init ──────────────────────────────────────────────────────────
 loadRepos();

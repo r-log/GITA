@@ -12,9 +12,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
 from src.core.config import settings
+from src.core.llm_client import get_llm_client
 from src.tools.base import Tool, ToolResult
 
 log = structlog.get_logger()
@@ -102,10 +101,7 @@ class BaseAgent(ABC):
         else:
             self.system_prompt = f"You are {name}. {description}"
 
-        self._client = AsyncOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=settings.openrouter_api_key,
-        )
+        self._client = get_llm_client()
 
     @abstractmethod
     async def handle(self, context: AgentContext) -> AgentResult:

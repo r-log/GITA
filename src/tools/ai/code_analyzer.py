@@ -4,23 +4,17 @@ AI tools for code analysis: diff quality, test coverage checking.
 
 import json
 import structlog
-from openai import AsyncOpenAI
-
 from src.core.config import settings
+from src.core.llm_client import llm_json_call
 from src.tools.base import Tool, ToolResult
 
 log = structlog.get_logger()
-
-_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=settings.openrouter_api_key,
-)
 
 
 async def _analyze_diff_quality(diff: str, pr_info: dict) -> ToolResult:
     """Analyze a PR diff for code quality issues."""
     try:
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_diff_analyzer,
             messages=[
                 {
@@ -65,14 +59,14 @@ Respond with JSON:
                             "body": pr_info.get("body", "")[:2000],
                             "files_changed": pr_info.get("files_changed"),
                         },
-                        "diff": diff[:40000],  # Truncate for token limits
+                        "diff": diff[:40000],
                     }),
                 },
             ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            caller="analyze_diff_quality",
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="Diff analysis failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
         log.warning("code_analyzer_failed", error=str(e), exc_info=True)
@@ -82,11 +76,10 @@ Respond with JSON:
 async def _check_test_coverage(diff: str, files_changed: list[dict]) -> ToolResult:
     """Check if new code paths in the diff have corresponding tests."""
     try:
-        # Separate test files from source files
         test_files = [f for f in files_changed if "test" in f.get("filename", "").lower()]
         source_files = [f for f in files_changed if "test" not in f.get("filename", "").lower()]
 
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_test_coverage,
             messages=[
                 {
@@ -112,10 +105,10 @@ Respond with JSON:
                     }),
                 },
             ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            caller="check_test_coverage",
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="Test coverage check failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
         log.warning("code_analyzer_failed", error=str(e), exc_info=True)

@@ -5,23 +5,17 @@ AI tools for risk detection: secrets, security patterns, breaking changes, depen
 import json
 
 import structlog
-from openai import AsyncOpenAI
-
 from src.core.config import settings
+from src.core.llm_client import llm_json_call
 from src.tools.base import Tool, ToolResult
 
 log = structlog.get_logger()
-
-_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=settings.openrouter_api_key,
-)
 
 
 async def _scan_secrets(diff: str) -> ToolResult:
     """Detect hardcoded secrets, API keys, tokens, passwords in a diff."""
     try:
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_secret_scanner,
             messages=[
                 {
@@ -56,20 +50,21 @@ Respond with JSON:
                 },
                 {"role": "user", "content": diff[:40000]},
             ],
+            caller="scan_secrets",
             temperature=0.1,
-            response_format={"type": "json_object"},
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="Secret scan failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
-        log.warning("scan_secrets_failed", operation="scan_secrets", error=str(e), exc_info=True)
+        log.warning("scan_secrets_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
 async def _scan_security_patterns(diff: str) -> ToolResult:
     """Detect SQL injection, XSS, unsafe deserialization, and other security patterns."""
     try:
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_security_scanner,
             messages=[
                 {
@@ -105,20 +100,21 @@ Respond with JSON:
                 },
                 {"role": "user", "content": diff[:40000]},
             ],
+            caller="scan_security_patterns",
             temperature=0.1,
-            response_format={"type": "json_object"},
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="Security scan failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
-        log.warning("scan_security_patterns_failed", operation="scan_security_patterns", error=str(e), exc_info=True)
+        log.warning("scan_security_patterns_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
 async def _detect_breaking_changes(diff: str, files_changed: list[dict]) -> ToolResult:
     """Detect breaking API changes, schema changes, config changes."""
     try:
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_breaking_changes,
             messages=[
                 {
@@ -158,20 +154,20 @@ Respond with JSON:
                     }),
                 },
             ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            caller="detect_breaking_changes",
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="Breaking change detection failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
-        log.warning("detect_breaking_changes_failed", operation="detect_breaking_changes", error=str(e), exc_info=True)
+        log.warning("detect_breaking_changes_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 
 async def _check_dependency_changes(diff: str) -> ToolResult:
     """Parse lockfile/manifest diffs for new or changed dependencies."""
     try:
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_dependency_checker,
             messages=[
                 {
@@ -198,13 +194,13 @@ Respond with JSON:
                 },
                 {"role": "user", "content": diff[:30000]},
             ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            caller="check_dependency_changes",
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="Dependency check failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
-        log.warning("check_dependency_changes_failed", operation="check_dependency_changes", error=str(e), exc_info=True)
+        log.warning("check_dependency_changes_failed", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
 
 

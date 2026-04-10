@@ -1,6 +1,11 @@
 """
 Agent registration — shared between FastAPI app and ARQ worker.
+
+Models are resolved from plans/model_assignments.yml via the ModelRegistry.
+Env vars (AI_MODEL_*) still work as fallback if the YAML is missing.
 """
+
+import structlog
 
 from src.agents.registry import registry
 from src.agents.base import AgentContext
@@ -9,11 +14,14 @@ from src.agents.issue_agent import IssueAnalystAgent
 from src.agents.progress_agent import ProgressTrackerAgent
 from src.agents.pr_agent import PRReviewAgent
 from src.agents.risk_agent import RiskDetectiveAgent
-from src.core.config import settings
+from src.core.model_registry import model_registry
+
+log = structlog.get_logger()
 
 
-def _make_factory(cls, model: str | None = None):
+def _make_factory(cls, agent_name: str):
     def factory(context: AgentContext):
+        model = model_registry.model_for(agent_name)
         return cls(
             installation_id=context.installation_id,
             repo_full_name=context.repo_full_name,
@@ -27,16 +35,18 @@ def register_all_agents():
     """Register all agent factories. Call from both app startup and worker startup."""
     agents = [
         ("onboarding", "Project setup specialist — scans repos, creates milestones and issues, reconciles existing state",
-         OnboardingAgent, None),  # onboarding uses per-pass models internally
+         OnboardingAgent),
         ("issue_analyst", "Issue quality analyst — evaluates issues with S.M.A.R.T. criteria, checks milestone alignment",
-         IssueAnalystAgent, settings.ai_model_issue_analyst),
+         IssueAnalystAgent),
         ("progress_tracker", "Progress analyst — tracks milestone completion %, velocity trends, blockers, deadline predictions",
-         ProgressTrackerAgent, settings.ai_model_progress_tracker),
+         ProgressTrackerAgent),
         ("pr_reviewer", "PR reviewer — analyzes diffs for quality, checks test coverage, verifies linked issues",
-         PRReviewAgent, settings.ai_model_pr_reviewer),
+         PRReviewAgent),
         ("risk_detective", "Security and risk analyst — scans for secrets, vulnerabilities, breaking changes",
-         RiskDetectiveAgent, settings.ai_model_risk_detective),
+         RiskDetectiveAgent),
     ]
 
-    for name, description, cls, model in agents:
-        registry.register_factory(name=name, description=description, factory=_make_factory(cls, model))
+    for name, description, cls in agents:
+        registry.register_factory(name=name, description=description, factory=_make_factory(cls, name))
+
+    log.info("agents_registered", models=model_registry.summary())

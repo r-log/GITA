@@ -10,6 +10,7 @@ import structlog
 
 from src.core.repo_manager import upsert_repository
 from src.indexer.indexer import reindex_files
+from src.tools.db.entity_sync import persist_commits
 
 log = structlog.get_logger()
 
@@ -40,7 +41,12 @@ async def update_context_on_push(
     """
     log.info("context_update_start", repo=repo_full_name)
 
-    # 1. Extract changed files from commits
+    # 1. Persist commit records for RAG
+    commits_data = payload.get("commits", [])
+    if commits_data:
+        await persist_commits(repo_id, commits_data)
+
+    # 2. Extract changed files from commits
     changed_files, removed_files = _extract_changed_files(payload)
     if not changed_files and not removed_files:
         log.info("context_update_skip", reason="no_file_changes")
