@@ -61,11 +61,12 @@ async def build_graph_for_repo(repo_id: int, parsed_files: list[FileIndex]) -> d
 
         # Build module path lookups for import resolution
         module_lookup = _build_module_lookup(parsed_files, node_lookup)
+        name_lookup = _build_name_lookup(node_lookup)
 
         # Phase 2: Create all edges
         edge_count = 0
         for fi in parsed_files:
-            edges = _build_edges_for_file(repo_id, fi, node_lookup, module_lookup, file_path_to_node)
+            edges = _build_edges_for_file(repo_id, fi, node_lookup, module_lookup, file_path_to_node, name_lookup)
             for edge in edges:
                 session.add(edge)
             edge_count += len(edges)
@@ -159,12 +160,13 @@ async def update_graph_for_files(
         # Use existing nodes + changed files to build a partial lookup.
         module_lookup = _build_module_lookup_from_nodes(existing_nodes)
         module_lookup.update(_build_module_lookup(changed_files, node_lookup))
+        name_lookup = _build_name_lookup(node_lookup)
 
         # Recreate edges for changed files
         edge_count = 0
         for fi in changed_files:
             edges = _build_edges_for_file(
-                repo_id, fi, node_lookup, module_lookup, file_path_to_node
+                repo_id, fi, node_lookup, module_lookup, file_path_to_node, name_lookup
             )
             for edge in edges:
                 session.add(edge)
@@ -252,11 +254,18 @@ def _build_nodes_for_file(repo_id: int, fi: FileIndex) -> list[GraphNode]:
                 ))
 
     # Top-level functions
+    seen_func_names: set[str] = set()
     for func in structure.get("functions", []):
         func_name = func.get("name", "")
         if not func_name:
             continue
+        # Disambiguate duplicate function names (e.g. inner functions like 'decorated')
+        # by appending the line number
         qname = f"{fi.file_path}::{func_name}"
+        if qname in seen_func_names:
+            line = func.get("line", 0)
+            qname = f"{fi.file_path}::{func_name}@L{line}"
+        seen_func_names.add(qname)
         nodes.append(GraphNode(
             repo_id=repo_id,
             node_type="function",
@@ -318,6 +327,7 @@ def _build_edges_for_file(
     node_lookup: dict[str, int],
     module_lookup: dict[str, int],
     file_path_to_node: dict[str, int],
+    name_lookup: dict[str, int] | None = None,
 ) -> list[GraphEdge]:
     """Create all graph edges for a single parsed file."""
     edges = []
@@ -353,7 +363,7 @@ def _build_edges_for_file(
 
             # Inheritance edges: class -> base class
             for base in cls.get("bases", []):
-                base_id = _resolve_symbol(base, fi, node_lookup, module_lookup)
+                base_id = _resolve_symbol(base, fi, node_lookup, module_lookup, name_lookup)
                 if base_id:
                     edges.append(GraphEdge(
                         repo_id=repo_id,
@@ -460,6 +470,7 @@ def _resolve_symbol(
     fi: FileIndex,
     node_lookup: dict[str, int],
     module_lookup: dict[str, int],
+    name_lookup: dict[str, int] | None = None,
 ) -> int | None:
     """Resolve a symbol name (like a base class) to a node ID."""
     # Try as qualified name in same file first
@@ -467,10 +478,9 @@ def _resolve_symbol(
     if qname in node_lookup:
         return node_lookup[qname]
 
-    # Try as just the symbol name across all nodes (best-effort)
-    for qualified, node_id in node_lookup.items():
-        if qualified.endswith(f"::{symbol_name}"):
-            return node_id
+    # Try reverse name index (O(1) instead of O(n) scan)
+    if name_lookup and symbol_name in name_lookup:
+        return name_lookup[symbol_name]
 
     # Try module lookup
     if symbol_name in module_lookup:
@@ -480,6 +490,24 @@ def _resolve_symbol(
 
 
 # ── Lookup Builders ───────────────────────────────────────────────
+
+
+def _build_name_lookup(node_lookup: dict[str, int]) -> dict[str, int]:
+    """
+    Build a reverse index: short symbol name -> node ID.
+
+    Extracts the name after '::' from qualified names like 'path/file.py::ClassName'.
+    First match wins — this is a best-effort lookup for unqualified symbol resolution.
+    """
+    lookup: dict[str, int] = {}
+    for qualified_name, node_id in node_lookup.items():
+        sep = qualified_name.rfind("::")
+        if sep != -1:
+            short_name = qualified_name[sep + 2:]
+            # Don't overwrite — first registered wins (same file preference)
+            if short_name not in lookup:
+                lookup[short_name] = node_id
+    return lookup
 
 
 def _build_module_lookup(

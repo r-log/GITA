@@ -16,6 +16,7 @@ from src.models.repository import Repository
 from src.models.onboarding_run import OnboardingRun
 from src.models.agent_run import AgentRun
 from src.models.analysis import Analysis
+from src.models.event import EventModel
 
 log = structlog.get_logger()
 
@@ -539,6 +540,204 @@ async def get_costs(
         "daily": dict(sorted(daily.items())),
         "period_days": days,
     }
+
+
+# ── GITA Timeline (event-centric view) ────────────────────────
+
+
+def _summarize_tool_calls(tools_called: list) -> list[dict]:
+    """Condense tool call log into readable actions."""
+    if not tools_called:
+        return []
+    actions = []
+    for tc in tools_called:
+        tool = tc.get("tool", "unknown")
+        args = tc.get("args", {})
+        success = tc.get("result", {}).get("success", True)
+
+        # Build a human-readable summary
+        if tool == "post_comment":
+            target = args.get("issue_number", "?")
+            actions.append({"action": f"Commented on #{target}", "tool": tool, "success": success})
+        elif tool == "upsert_progress_comment":
+            target = args.get("issue_number", "?")
+            actions.append({"action": f"Updated progress on #{target}", "tool": tool, "success": success})
+        elif tool == "update_issue":
+            target = args.get("issue_number", "?")
+            state = args.get("state", "")
+            if state == "closed":
+                actions.append({"action": f"Closed #{target}", "tool": tool, "success": success})
+            elif state == "open":
+                actions.append({"action": f"Reopened #{target}", "tool": tool, "success": success})
+            else:
+                actions.append({"action": f"Updated #{target}", "tool": tool, "success": success})
+        elif tool == "create_check_run":
+            conclusion = args.get("conclusion", "?")
+            actions.append({"action": f"Check run: {conclusion}", "tool": tool, "success": success})
+        elif tool == "save_analysis":
+            atype = args.get("analysis_type", "?")
+            target = args.get("target_number", "?")
+            actions.append({"action": f"Saved {atype} analysis for #{target}", "tool": tool, "success": success})
+        elif tool == "save_evaluation":
+            actions.append({"action": "Saved S.M.A.R.T. evaluation", "tool": tool, "success": success})
+        elif tool == "tag_user":
+            actions.append({"action": "Tagged users", "tool": tool, "success": success})
+        elif tool == "create_issue":
+            title = args.get("title", "?")
+            actions.append({"action": f"Created issue: {title}", "tool": tool, "success": success})
+        elif tool in ("get_issue", "get_pr", "get_issue_full", "search_comments", "search_events", "get_previous_evaluation", "predict_completion"):
+            # Read-only tools — skip in summary
+            continue
+        else:
+            actions.append({"action": f"{tool}({', '.join(f'{k}={v}' for k, v in list(args.items())[:2])})", "tool": tool, "success": success})
+    return actions
+
+
+def _describe_event(event_type: str, action: str, payload: dict) -> str:
+    """Generate a one-line human-readable description of what triggered GITA."""
+    if event_type == "push":
+        commits = payload.get("commits", [])
+        pusher = payload.get("pusher", {}).get("name", "someone")
+        files = set()
+        for c in commits:
+            files.update(c.get("added", []))
+            files.update(c.get("modified", []))
+        msg = commits[0].get("message", "").split("\n")[0] if commits else ""
+        return f"{pusher} pushed {len(commits)} commit(s) touching {len(files)} files: \"{msg}\""
+
+    elif event_type == "issues":
+        issue = payload.get("issue", {})
+        who = issue.get("user", {}).get("login", "someone")
+        title = issue.get("title", "")
+        num = issue.get("number", "?")
+        return f"{who} {action} issue #{num}: \"{title}\""
+
+    elif event_type == "pull_request":
+        pr = payload.get("pull_request", {})
+        who = pr.get("user", {}).get("login", "someone")
+        title = pr.get("title", "")
+        num = pr.get("number", "?")
+        return f"{who} {action} PR #{num}: \"{title}\""
+
+    elif event_type == "issue_comment":
+        comment = payload.get("comment", {})
+        issue = payload.get("issue", {})
+        who = comment.get("user", {}).get("login", "someone")
+        num = issue.get("number", "?")
+        body_preview = (comment.get("body", "") or "")[:100]
+        return f"{who} commented on #{num}: \"{body_preview}\""
+
+    elif event_type in ("installation", "installation_repositories"):
+        return f"App {action} on repository"
+
+    else:
+        return f"{event_type}.{action}"
+
+
+@router.get("/timeline")
+async def get_timeline(
+    repo_id: int = Query(...),
+    limit: int = Query(30),
+):
+    """
+    Event-centric timeline: each entry is a webhook event with the full chain.
+
+    Returns:
+    - What triggered GITA (the event)
+    - What GITA decided to do (supervisor routing)
+    - What each agent saw and did (tool calls, actions taken)
+    - The outcome (success/failed, what changed)
+    """
+    async with async_session() as session:
+        # Get recent events (exclude noise events that GITA doesn't act on)
+        noise_events = {"check_suite", "check_run", "workflow_run", "workflow_job", "status", "deployment", "deployment_status", "create", "delete", "fork", "watch", "star"}
+        events_result = await session.execute(
+            select(EventModel)
+            .where(
+                EventModel.repo_id == repo_id,
+                EventModel.event_type.notin_(noise_events),
+            )
+            .order_by(desc(EventModel.received_at))
+            .limit(limit)
+        )
+        events = events_result.scalars().all()
+
+        if not events:
+            return {"timeline": []}
+
+        # Get all agent runs for this repo in the same time window
+        oldest_event = min(e.received_at for e in events)
+        runs_result = await session.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.repo_id == repo_id,
+                AgentRun.started_at >= oldest_event,
+            )
+            .order_by(AgentRun.started_at)
+        )
+        all_runs = runs_result.scalars().all()
+
+    # Match agent runs to events by event_type and time proximity
+    # Events and runs are correlated by: event_type matches, started within 5s of event
+    timeline = []
+
+    for event in events:
+        event_key = f"{event.event_type}.{event.action}" if event.action else event.event_type
+
+        # Find agent runs triggered by this event (within 5 seconds)
+        matched_runs = []
+        for run in all_runs:
+            if run.event_type == event_key:
+                time_diff = abs((run.started_at - event.received_at).total_seconds()) if run.started_at and event.received_at else 999
+                if time_diff < 5:
+                    matched_runs.append(run)
+
+        # Build the chain
+        agents_chain = []
+        for run in matched_runs:
+            tool_actions = _summarize_tool_calls(run.tools_called or [])
+            tools_count = len(run.tools_called) if isinstance(run.tools_called, list) else 0
+
+            # Extract the final text / comment from result
+            result_data = run.result or {}
+            final_text = result_data.get("final_response", "")
+            comment_body = result_data.get("comment_body", "")
+
+            agents_chain.append({
+                "agent": run.agent_name,
+                "status": run.status,
+                "duration_ms": run.duration_ms,
+                "tools_used": tools_count,
+                "actions": tool_actions,
+                "confidence": run.confidence,
+                "error": run.error_message,
+                "summary": final_text[:300] if final_text else (comment_body[:300] if comment_body else None),
+            })
+
+        # Build the timeline entry
+        entry = {
+            "id": event.id,
+            "timestamp": _serialize_datetime(event.received_at),
+            "event_type": event.event_type,
+            "action": event.action,
+            "event_key": event_key,
+            "sender": event.sender_login,
+            "target_type": event.target_type,
+            "target_number": event.target_number,
+            "description": _describe_event(event.event_type, event.action or "", event.payload),
+            "agents_dispatched": len(matched_runs),
+            "agents": agents_chain,
+            "overall_status": (
+                "success" if all(r["status"] == "success" for r in agents_chain)
+                else "failed" if any(r["status"] == "failed" for r in agents_chain)
+                else "partial" if agents_chain
+                else "no_action"
+            ),
+            "total_duration_ms": sum(r["duration_ms"] or 0 for r in agents_chain),
+        }
+        timeline.append(entry)
+
+    return {"timeline": timeline}
 
 
 # ── Quick Actions ──────────────────────────────────────────────────

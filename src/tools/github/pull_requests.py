@@ -10,6 +10,7 @@ from src.core.database import async_session
 from src.models.pull_request import PullRequestModel
 from src.models.pr_file_change import PrFileChange
 from src.tools.base import Tool, ToolResult
+from src.tools.db.entity_sync import persist_diff, get_cached_diff, persist_reviews, persist_pr_from_payload
 
 log = structlog.get_logger()
 
@@ -24,8 +25,17 @@ async def _get_pr(installation_id: int, repo_full_name: str, pr_number: int) -> 
         return ToolResult(success=False, error=str(e))
 
 
-async def _get_pr_diff(installation_id: int, repo_full_name: str, pr_number: int) -> ToolResult:
-    """Fetch the full diff for a PR."""
+async def _get_pr_diff(
+    installation_id: int, repo_full_name: str, pr_number: int,
+    repo_id: int = 0, head_sha: str = "",
+) -> ToolResult:
+    """Fetch the full diff for a PR. Uses DB cache when repo_id and head_sha are provided."""
+    # Check cache first
+    if repo_id and head_sha:
+        cached = await get_cached_diff(repo_id, pr_number, head_sha)
+        if cached is not None:
+            return ToolResult(success=True, data={"diff": cached, "size": len(cached), "cached": True})
+
     client = GitHubClient(installation_id)
     try:
         # Use the accept header for diff format
@@ -41,11 +51,20 @@ async def _get_pr_diff(installation_id: int, repo_full_name: str, pr_number: int
                 },
             )
             response.raise_for_status()
+            raw_size = len(response.text)
             diff = response.text
             # Truncate very large diffs to avoid overwhelming the LLM
             if len(diff) > 50000:
                 diff = diff[:50000] + "\n\n... [diff truncated, too large] ..."
-            return ToolResult(success=True, data={"diff": diff, "size": len(response.text)})
+
+            # Cache the diff for future use
+            if repo_id and head_sha:
+                try:
+                    await persist_diff(repo_id, pr_number, head_sha, diff, raw_size)
+                except Exception:
+                    pass
+
+            return ToolResult(success=True, data={"diff": diff, "size": raw_size})
     except Exception as e:
         log.warning("get_pr_diff_failed", operation="get_pr_diff", error=str(e), exc_info=True)
         return ToolResult(success=False, error=str(e))
@@ -93,7 +112,11 @@ async def _persist_pr_file_changes(repo_id: int, pr_number: int, files: list[dic
         )
         pr_id = result.scalar_one_or_none()
         if not pr_id:
-            return
+            # Create a minimal PR record so file changes can be linked
+            pr_record = PullRequestModel(repo_id=repo_id, github_number=pr_number)
+            session.add(pr_record)
+            await session.flush()
+            pr_id = pr_record.id
 
         for f in files:
             # Upsert: check if record exists
@@ -178,6 +201,120 @@ def make_get_pr_files(installation_id: int, repo_full_name: str, repo_id: int = 
         },
         handler=lambda pr_number: _get_pr_files(installation_id, repo_full_name, pr_number, repo_id),
     )
+
+
+async def _get_push_diff(installation_id: int, repo_full_name: str, before: str, after: str) -> ToolResult:
+    """Fetch the diff between two commits (for push events that have no PR)."""
+    client = GitHubClient(installation_id)
+    try:
+        data = await client.get(f"/repos/{repo_full_name}/compare/{before}...{after}")
+        files = [
+            {
+                "filename": f["filename"],
+                "status": f["status"],
+                "additions": f["additions"],
+                "deletions": f["deletions"],
+                "patch": f.get("patch", "")[:5000],  # cap per-file patch size
+            }
+            for f in data.get("files", [])
+        ]
+        # Build a combined diff summary
+        diff_text = ""
+        for f in files:
+            if f["patch"]:
+                diff_text += f"--- {f['filename']} ({f['status']}: +{f['additions']}/-{f['deletions']})\n"
+                diff_text += f["patch"] + "\n\n"
+
+        # Truncate total diff
+        if len(diff_text) > 30000:
+            diff_text = diff_text[:30000] + "\n\n... [diff truncated] ..."
+
+        return ToolResult(success=True, data={
+            "diff": diff_text,
+            "files": files,
+            "total_commits": data.get("total_commits", 0),
+            "ahead_by": data.get("ahead_by", 0),
+        })
+    except Exception as e:
+        log.warning("get_push_diff_failed", error=str(e))
+        return ToolResult(success=False, error=str(e))
+
+
+async def _create_audit_pr(
+    installation_id: int, repo_full_name: str,
+    before_sha: str, after_sha: str, branch_name: str,
+    title: str, body: str,
+) -> ToolResult:
+    """
+    Create a retroactive PR for a direct push.
+    Creates a branch at the before-commit, then opens a PR showing the diff.
+    """
+    client = GitHubClient(installation_id)
+    try:
+        # 1. Create a branch pointing at the BEFORE commit
+        ref_result = await client.post(
+            f"/repos/{repo_full_name}/git/refs",
+            json={"ref": f"refs/heads/{branch_name}", "sha": before_sha},
+        )
+
+        # 2. Open a PR: head=default branch (has the new code), base=audit branch (old state)
+        # This shows exactly what the push changed
+        default_branch = repo_full_name.split("/")[-1]  # fallback
+        try:
+            repo_data = await client.get(f"/repos/{repo_full_name}")
+            default_branch = repo_data.get("default_branch", "main")
+        except Exception:
+            default_branch = "main"
+
+        pr_result = await client.post(
+            f"/repos/{repo_full_name}/pulls",
+            json={
+                "title": title,
+                "body": body,
+                "head": default_branch,
+                "base": branch_name,
+            },
+        )
+
+        return ToolResult(success=True, data={
+            "pr_number": pr_result.get("number"),
+            "pr_url": pr_result.get("html_url"),
+            "branch": branch_name,
+        })
+    except Exception as e:
+        log.warning("create_audit_pr_failed", error=str(e))
+        return ToolResult(success=False, error=str(e))
+
+
+async def _get_pr_reviews(
+    installation_id: int, repo_full_name: str, pr_number: int, repo_id: int = 0,
+) -> ToolResult:
+    """Fetch PR reviews from GitHub and persist them for RAG."""
+    client = GitHubClient(installation_id)
+    try:
+        data = await client.get(f"/repos/{repo_full_name}/pulls/{pr_number}/reviews")
+        reviews = [
+            {
+                "id": r["id"],
+                "user": r.get("user"),
+                "state": r.get("state", "COMMENTED"),
+                "body": r.get("body"),
+                "submitted_at": r.get("submitted_at"),
+            }
+            for r in data
+        ]
+
+        # Side-effect: persist reviews for RAG
+        if repo_id and reviews:
+            try:
+                await persist_reviews(repo_id, pr_number, reviews)
+            except Exception:
+                pass
+
+        return ToolResult(success=True, data=reviews)
+    except Exception as e:
+        log.warning("get_pr_reviews_failed", pr=pr_number, error=str(e))
+        return ToolResult(success=False, error=str(e))
 
 
 def make_get_open_prs(installation_id: int, repo_full_name: str) -> Tool:

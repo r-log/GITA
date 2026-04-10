@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import Integer, String, Boolean, DateTime, ForeignKey, UniqueConstraint, func
+from sqlalchemy import Integer, String, Boolean, Text, DateTime, ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +23,10 @@ class IssueModel(Base):
     labels: Mapped[dict] = mapped_column(JSONB, default=list)
     is_milestone_tracker: Mapped[bool] = mapped_column(Boolean, default=False)
     linked_issue_numbers: Mapped[dict] = mapped_column(JSONB, default=list)
+    body: Mapped[Optional[str]] = mapped_column(Text)
+    author: Mapped[Optional[str]] = mapped_column(String(100))
+    github_created_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     last_activity_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

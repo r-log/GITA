@@ -4,17 +4,11 @@ AI tools for S.M.A.R.T. evaluation and milestone alignment checking.
 
 import json
 import structlog
-from openai import AsyncOpenAI
-
 from src.core.config import settings
+from src.core.llm_client import llm_json_call
 from src.tools.base import Tool, ToolResult
 
 log = structlog.get_logger()
-
-_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=settings.openrouter_api_key,
-)
 
 
 async def _evaluate_smart(issue_data: dict, linked_issues: list[dict] | None = None) -> ToolResult:
@@ -40,7 +34,7 @@ async def _evaluate_smart(issue_data: dict, linked_issues: list[dict] | None = N
                 for i in linked_issues
             ]
 
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_smart_evaluator,
             messages=[
                 {
@@ -67,10 +61,10 @@ Respond with JSON:
                 },
                 {"role": "user", "content": json.dumps(context, default=str)},
             ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            caller="evaluate_smart",
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="S.M.A.R.T. evaluation failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
         log.warning("smart_evaluator_failed", error=str(e), exc_info=True)
@@ -80,7 +74,7 @@ Respond with JSON:
 async def _check_milestone_alignment(issue_data: dict, milestone_data: dict) -> ToolResult:
     """Check if an issue actually belongs to its assigned milestone."""
     try:
-        response = await _client.chat.completions.create(
+        result = await llm_json_call(
             model=settings.ai_model_milestone_alignment,
             messages=[
                 {
@@ -111,10 +105,10 @@ Respond with JSON:
                     }),
                 },
             ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
+            caller="check_milestone_alignment",
         )
-        result = json.loads(response.choices[0].message.content)
+        if result is None:
+            return ToolResult(success=False, error="Milestone alignment check failed after retries")
         return ToolResult(success=True, data=result)
     except Exception as e:
         log.warning("smart_evaluator_failed", error=str(e), exc_info=True)
@@ -124,18 +118,15 @@ Respond with JSON:
 def make_evaluate_smart() -> Tool:
     return Tool(
         name="evaluate_smart",
-        description="AI tool: Evaluate an issue against S.M.A.R.T. criteria (Specific, Measurable, Achievable, Relevant, Time-bound). Returns scores, findings, and suggestions.",
+        description="Evaluate an issue against S.M.A.R.T. criteria (Specific, Measurable, Achievable, Relevant, Time-bound). Returns per-criterion scores and suggestions.",
         parameters={
             "type": "object",
             "properties": {
-                "issue_data": {
-                    "type": "object",
-                    "description": "Issue data with title, body, labels, assignees, milestone, state, etc.",
-                },
+                "issue_data": {"type": "object", "description": "Issue data (title, body, labels, etc.)"},
                 "linked_issues": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "Linked sub-issues if this is a milestone tracker",
+                    "description": "Related issues for context",
                 },
             },
             "required": ["issue_data"],
@@ -147,12 +138,12 @@ def make_evaluate_smart() -> Tool:
 def make_check_milestone_alignment() -> Tool:
     return Tool(
         name="check_milestone_alignment",
-        description="AI tool: Check if an issue actually belongs to its assigned milestone. Returns alignment status and recommendation.",
+        description="Check if an issue actually belongs to its assigned milestone. Returns alignment score and recommendation.",
         parameters={
             "type": "object",
             "properties": {
-                "issue_data": {"type": "object", "description": "Issue data with title, body, labels"},
-                "milestone_data": {"type": "object", "description": "Milestone data with title and description"},
+                "issue_data": {"type": "object"},
+                "milestone_data": {"type": "object"},
             },
             "required": ["issue_data", "milestone_data"],
         },

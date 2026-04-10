@@ -36,6 +36,7 @@ from src.tools.ai.smart_evaluator import make_check_milestone_alignment
 
 # DB tools
 from src.tools.db.analysis import make_save_analysis
+from src.tools.db.rag_queries import make_get_pr_full, make_search_comments, make_get_pr_reviews, make_search_events
 from src.tools.db.graph_queries import (
     _get_blast_radius, _get_file_ownership, _get_focused_code_map,
 )
@@ -77,11 +78,16 @@ class PRReviewAgent(BaseAgent):
             # AI reasoning
             make_check_milestone_alignment(),
             # Output (LLM decides what to post)
-            make_post_comment(installation_id, repo_full_name),
+            make_post_comment(installation_id, repo_full_name, repo_id),
             make_create_check_run(installation_id, repo_full_name),
             make_tag_user(installation_id, repo_full_name),
             # DB
             make_save_analysis(repo_id),
+            # RAG
+            make_get_pr_full(repo_id),
+            make_search_comments(repo_id),
+            make_get_pr_reviews(repo_id),
+            make_search_events(repo_id),
         ]
 
     async def _gather_context(self, pr_number: int, shared_data: dict | None = None) -> dict:

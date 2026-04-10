@@ -14,6 +14,8 @@ from fastapi import APIRouter, Request
 
 from src.core.security import verify_webhook_signature
 from src.core.config import settings
+from src.core.repo_manager import upsert_repository
+from src.tools.db.entity_sync import persist_event, persist_issue_from_payload, persist_pr_from_payload, persist_comment
 
 log = structlog.get_logger()
 
@@ -82,6 +84,11 @@ async def github_webhook(request: Request):
     if event_type == "ping":
         return {"status": "pong"}
 
+    # Skip event types GITA doesn't handle (no agents in routing table)
+    skip_events = {"check_suite", "check_run", "workflow_run", "workflow_job", "status", "deployment", "deployment_status", "release", "create", "delete", "fork", "watch", "star", "member"}
+    if event_type in skip_events:
+        return {"status": "skipped", "reason": f"event_{event_type}_not_handled"}
+
     # Skip events that don't need agent processing
     skip_actions = {"deleted", "transferred", "pinned", "unpinned"}
     if action in skip_actions:
@@ -102,6 +109,47 @@ async def github_webhook(request: Request):
         return {"status": "skipped", "reason": "duplicate_delivery"}
 
     log.info("webhook_received", action=action)
+
+    # Resolve repo_id and persist event + entities for RAG
+    repo_github_id = payload.get("repository", {}).get("id", 0)
+    repo_id = 0
+    if repo_github_id:
+        try:
+            repo_id = await upsert_repository(repo_github_id, repo, installation_id)
+
+            # Classify target for event indexing
+            target_type = None
+            target_number = None
+            if event_type == "issues":
+                target_type = "issue"
+                target_number = payload.get("issue", {}).get("number")
+            elif event_type == "pull_request":
+                target_type = "pr"
+                target_number = payload.get("pull_request", {}).get("number")
+            elif event_type == "push":
+                target_type = "push"
+            elif event_type == "issue_comment":
+                target_type = "issue"
+                target_number = payload.get("issue", {}).get("number")
+
+            sender_login = payload.get("sender", {}).get("login")
+
+            # Persist raw event
+            await persist_event(
+                repo_id, delivery_id, event_type, action,
+                sender_login, target_type, target_number, payload,
+            )
+
+            # Persist enriched entities from the payload
+            if event_type == "issues" and "issue" in payload:
+                await persist_issue_from_payload(repo_id, payload["issue"])
+            elif event_type == "pull_request" and "pull_request" in payload:
+                await persist_pr_from_payload(repo_id, payload["pull_request"])
+            elif event_type == "issue_comment" and "comment" in payload:
+                issue_number = payload.get("issue", {}).get("number", 0)
+                await persist_comment(repo_id, payload["comment"], "issue", issue_number)
+        except Exception as e:
+            log.warning("webhook_persist_failed", error=str(e))
 
     # Queue for background processing — respond immediately
     pool = await _get_arq_pool()

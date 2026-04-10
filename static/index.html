@@ -13,11 +13,9 @@
     <h1 class="logo">GITA</h1>
     <nav>
       <button data-tab="overview" class="active">Overview</button>
-      <button data-tab="runs">Onboarding Runs</button>
-      <button data-tab="agents">Agent Runs</button>
+      <button data-tab="timeline">Timeline</button>
       <button data-tab="issues">Issues & Milestones</button>
       <button data-tab="security">Security</button>
-      <button data-tab="context">Context Updates</button>
     </nav>
     <select id="repo-selector">
       <option value="">Select repository...</option>
@@ -54,8 +52,15 @@
       <div id="activity-feed"></div>
     </div>
 
-    <!-- Onboarding Runs Tab -->
-    <div id="tab-runs" class="tab-content">
+    <!-- Timeline Tab -->
+    <div id="tab-timeline" class="tab-content">
+      <div class="section-title">GITA Activity Timeline</div>
+      <p class="subtitle">Every webhook event, what GITA decided, and what it did.</p>
+      <div id="timeline-container"></div>
+    </div>
+
+    <!-- Onboarding Runs Tab (hidden, kept for API compat) -->
+    <div id="tab-runs" class="tab-content" style="display:none">
       <div class="filters">
         <select id="runs-status-filter">
           <option value="">All statuses</option>

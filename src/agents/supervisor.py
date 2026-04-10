@@ -18,7 +18,7 @@ from src.agents.registry import registry
 from src.core.config import settings
 from src.core.database import async_session
 from src.models.agent_run import AgentRun
-from src.tools.github.pull_requests import _get_pr_diff, _get_pr_files
+from src.tools.github.pull_requests import _get_pr_diff, _get_pr_files, _get_pr_reviews
 from src.tools.db.graph_queries import _get_blast_radius
 
 log = structlog.get_logger()
@@ -120,11 +120,20 @@ class SupervisorAgent:
             )
             gathered["files"] = files_result.data if files_result.success else []
 
-            # Fetch diff
+            # Fetch diff (with caching)
+            head_sha = pr_data.get("head", {}).get("sha", "")
             diff_result = await _get_pr_diff(
                 context.installation_id, context.repo_full_name, pr_number,
+                context.repo_id, head_sha,
             )
             gathered["diff"] = diff_result.data.get("diff", "") if diff_result.success else ""
+
+            # Fetch reviews
+            reviews_result = await _get_pr_reviews(
+                context.installation_id, context.repo_full_name,
+                pr_number, context.repo_id,
+            )
+            gathered["reviews"] = reviews_result.data if reviews_result.success else []
 
             # Blast radius
             file_paths = [f["filename"] for f in gathered["files"]] if gathered["files"] else []

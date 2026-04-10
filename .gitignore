@@ -42,6 +42,14 @@ prompt.txt
 plan.md
 claude.md
 
+# Plans — internal roadmap, don't leak
+plans/
+PROJECT_SUMMARY.md
+scripts/
+
+# Bake-off results
+tests/bakeoff/results/
+
 # Alembic — keep versions/ tracked but ignore pycache
 alembic/__pycache__/
 alembic/versions/__pycache__/

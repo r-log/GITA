@@ -33,6 +33,7 @@ from src.tools.ai.risk_scanner import (
 
 # DB tools
 from src.tools.db.analysis import make_save_analysis
+from src.tools.db.rag_queries import make_get_pr_full, make_search_commits, make_search_events
 from src.tools.db.graph_queries import _get_blast_radius, _get_file_dependents
 
 log = structlog.get_logger()
@@ -74,11 +75,15 @@ class RiskDetectiveAgent(BaseAgent):
             make_read_file(installation_id, repo_full_name),
             make_get_open_prs(installation_id, repo_full_name),
             # Output
-            make_post_comment(installation_id, repo_full_name),
+            make_post_comment(installation_id, repo_full_name, repo_id),
             make_create_check_run(installation_id, repo_full_name),
             make_tag_user(installation_id, repo_full_name),
             # DB
             make_save_analysis(repo_id),
+            # RAG
+            make_get_pr_full(repo_id),
+            make_search_commits(repo_id),
+            make_search_events(repo_id),
         ]
 
     async def _gather_context(self, pr_number: int, shared_data: dict | None = None) -> dict:
@@ -153,6 +158,65 @@ class RiskDetectiveAgent(BaseAgent):
 
         return gathered
 
+    async def _gather_push_risk_context(self, payload: dict) -> dict:
+        """
+        Gather risk context from a push event (no PR available).
+        Reads changed files from commits, runs scans, checks file ownership.
+        """
+        gathered: dict = {"files": [], "diff": ""}
+
+        # Extract changed files from commits
+        changed_files = set()
+        for commit in payload.get("commits", []):
+            changed_files.update(commit.get("added", []))
+            changed_files.update(commit.get("modified", []))
+
+        gathered["files"] = [{"filename": f, "status": "modified"} for f in sorted(changed_files)]
+
+        # Get blast radius for changed files
+        if changed_files:
+            blast_result = await _get_blast_radius(self.repo_id, list(changed_files), depth=2)
+            gathered["blast_radius"] = blast_result.data if blast_result.success else {}
+        else:
+            gathered["blast_radius"] = {}
+
+        # Get file ownership — which issues are affected
+        if changed_files:
+            try:
+                from src.tools.db.graph_queries import _get_file_ownership
+                ownership_result = await _get_file_ownership(self.repo_id, list(changed_files))
+                if ownership_result.success:
+                    gathered["affected_issues"] = ownership_result.data.get("files", [])
+                else:
+                    gathered["affected_issues"] = []
+            except Exception:
+                gathered["affected_issues"] = []
+        else:
+            gathered["affected_issues"] = []
+
+        # We don't have the actual diff content for a push — only file lists
+        # The scans will be limited to what we can infer from filenames
+        gathered["secrets_scan"] = {}
+        gathered["security_patterns"] = {}
+        gathered["breaking_changes"] = {}
+
+        # Check dependency files
+        file_names = {f.split("/")[-1] for f in changed_files}
+        if file_names & _DEP_FILES:
+            gathered["dependency_changes"] = {"warning": "Dependency files changed", "files": sorted(file_names & _DEP_FILES)}
+        else:
+            gathered["dependency_changes"] = {}
+
+        # Check for breaking changes via file dependents
+        file_dependents = {}
+        for fp in list(changed_files)[:10]:
+            dep_result = await _get_file_dependents(self.repo_id, fp)
+            if dep_result.success and dep_result.data.get("count", 0) > 0:
+                file_dependents[fp] = dep_result.data
+        gathered["file_dependents"] = file_dependents
+
+        return gathered
+
     async def handle(self, context: AgentContext) -> AgentResult:
         log.info(
             "risk_detective_start",
@@ -162,51 +226,98 @@ class RiskDetectiveAgent(BaseAgent):
 
         pr_data = context.event_payload.get("pull_request", {})
         pr_number = pr_data.get("number", 0)
+        is_push = context.event_type == "push"
 
-        # Phase 1: Gather all data in Python
-        # Check for shared data from Supervisor (avoids duplicate API calls with PR Reviewer)
-        shared_data = context.additional_data.get("pr_gathered")
-        log.info("risk_detective_gathering", pr=pr_number, shared=bool(shared_data))
-        gathered = await self._gather_context(pr_number, shared_data)
+        if is_push:
+            # Push event — gather context from commits, not a PR
+            gathered = await self._gather_push_risk_context(context.event_payload)
+            log.info("risk_detective_gathering_push", files=len(gathered.get("files", [])))
 
-        # Phase 2: Send everything to LLM for reasoning + severity assessment
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {
-                "role": "user",
-                "content": json.dumps({
-                    "task": "Assess risks in this PR and report findings",
-                    "repo": self.repo_full_name,
-                    "pr_number": pr_number,
-                    "pr_summary": {
-                        "title": pr_data.get("title"),
-                        "author": pr_data.get("user", {}).get("login"),
-                        "head_sha": pr_data.get("head", {}).get("sha"),
-                        "additions": pr_data.get("additions"),
-                        "deletions": pr_data.get("deletions"),
-                        "changed_files": pr_data.get("changed_files"),
-                    },
-                    "scan_results": {
-                        "secrets": gathered.get("secrets_scan", {}),
-                        "security_patterns": gathered.get("security_patterns", {}),
-                        "breaking_changes": gathered.get("breaking_changes", {}),
-                        "dependency_changes": gathered.get("dependency_changes", {}),
-                    },
-                    "impact": {
-                        "blast_radius": gathered.get("blast_radius", {}),
-                        "file_dependents": gathered.get("file_dependents", {}),
-                        "other_open_prs": gathered.get("other_open_prs", 0),
-                    },
-                    "files_changed": gathered.get("files", []),
-                    "instructions": (
-                        f"All security scans and impact analysis have been completed for PR #{pr_number}. "
-                        "Review the scan results above. Determine severity (critical/warning/info). "
-                        "Create a check run: failure if critical, neutral if warnings, success if clean. "
-                        "If critical, tag maintainers with tag_user. Post a comment with findings."
-                    ),
-                }, default=str),
-            },
-        ]
+            push_ref = context.event_payload.get("ref", "unknown")
+            pusher = context.event_payload.get("pusher", {}).get("name", "unknown")
+            head_sha = context.event_payload.get("after", "")
+
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps({
+                        "task": "Assess risks in this push and report findings",
+                        "repo": self.repo_full_name,
+                        "event": "push",
+                        "push_summary": {
+                            "ref": push_ref,
+                            "pusher": pusher,
+                            "head_sha": head_sha[:10],
+                            "commits": [
+                                {"sha": c.get("id", "")[:10], "message": c.get("message", "")[:200]}
+                                for c in context.event_payload.get("commits", [])
+                            ],
+                        },
+                        "scan_results": {
+                            "secrets": gathered.get("secrets_scan", {}),
+                            "security_patterns": gathered.get("security_patterns", {}),
+                            "breaking_changes": gathered.get("breaking_changes", {}),
+                            "dependency_changes": gathered.get("dependency_changes", {}),
+                        },
+                        "impact": {
+                            "blast_radius": gathered.get("blast_radius", {}),
+                            "file_dependents": gathered.get("file_dependents", {}),
+                            "affected_issues": gathered.get("affected_issues", []),
+                        },
+                        "files_changed": gathered.get("files", []),
+                        "instructions": (
+                            "All security scans have been completed for this push. "
+                            "Review the scan results. Determine severity (critical/warning/info). "
+                            "If critical (e.g. secrets detected), post a comment on the repo. "
+                            "If warnings, save analysis. If clean, stay quiet."
+                        ),
+                    }, default=str),
+                },
+            ]
+        else:
+            # PR event — existing flow
+            shared_data = context.additional_data.get("pr_gathered")
+            log.info("risk_detective_gathering", pr=pr_number, shared=bool(shared_data))
+            gathered = await self._gather_context(pr_number, shared_data)
+
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps({
+                        "task": "Assess risks in this PR and report findings",
+                        "repo": self.repo_full_name,
+                        "pr_number": pr_number,
+                        "pr_summary": {
+                            "title": pr_data.get("title"),
+                            "author": pr_data.get("user", {}).get("login"),
+                            "head_sha": pr_data.get("head", {}).get("sha"),
+                            "additions": pr_data.get("additions"),
+                            "deletions": pr_data.get("deletions"),
+                            "changed_files": pr_data.get("changed_files"),
+                        },
+                        "scan_results": {
+                            "secrets": gathered.get("secrets_scan", {}),
+                            "security_patterns": gathered.get("security_patterns", {}),
+                            "breaking_changes": gathered.get("breaking_changes", {}),
+                            "dependency_changes": gathered.get("dependency_changes", {}),
+                        },
+                        "impact": {
+                            "blast_radius": gathered.get("blast_radius", {}),
+                            "file_dependents": gathered.get("file_dependents", {}),
+                            "other_open_prs": gathered.get("other_open_prs", 0),
+                        },
+                        "files_changed": gathered.get("files", []),
+                        "instructions": (
+                            f"All security scans and impact analysis have been completed for PR #{pr_number}. "
+                            "Review the scan results above. Determine severity (critical/warning/info). "
+                            "Create a check run: failure if critical, neutral if warnings, success if clean. "
+                            "If critical, tag maintainers with tag_user. Post a comment with findings."
+                        ),
+                    }, default=str),
+                },
+            ]
 
         final_text, tool_call_log = await self.run_tool_loop(messages)
 
