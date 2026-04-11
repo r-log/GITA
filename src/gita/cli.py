@@ -28,8 +28,8 @@ if sys.platform == "win32":
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 from sqlalchemy import func, select  # noqa: E402
-from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
+from gita import __version__  # noqa: E402
 from gita.db.models import CodeIndex, ImportEdge, Repo  # noqa: E402
 from gita.db.session import SessionLocal  # noqa: E402
 from gita.indexer.ingest import IngestResult, index_repository  # noqa: E402
@@ -360,6 +360,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gita",
         description="GitHub Assistant v2 — local repo indexer and query layer",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"gita {__version__}",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
