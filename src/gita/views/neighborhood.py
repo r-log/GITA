@@ -20,19 +20,23 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.db.models import CodeIndex, ImportEdge
-from gita.views._common import resolve_repo
+from gita.views._common import (
+    SymbolBrief,
+    build_symbol_summary,
+    resolve_repo,
+)
+
+__all__ = [
+    "FileInfo",
+    "FileNotFoundError",
+    "NeighborhoodResult",
+    "SymbolBrief",
+    "neighborhood_view",
+]
 
 MAX_IMPORTS = 20
 MAX_IMPORTED_BY = 20
 MAX_SIBLINGS = 10
-
-
-@dataclass
-class SymbolBrief:
-    name: str
-    kind: str
-    line: int
-    parent_class: str | None = None
 
 
 @dataclass
@@ -56,36 +60,12 @@ class FileNotFoundError(LookupError):
     """Raised when neighborhood_view is asked about a file that isn't indexed."""
 
 
-def _build_symbol_summary(structure: dict) -> list[SymbolBrief]:
-    """Flatten the JSONB structure into a simple list of briefs."""
-    briefs: list[SymbolBrief] = []
-    for cls in structure.get("classes", []):
-        briefs.append(
-            SymbolBrief(
-                name=cls["name"],
-                kind=cls["kind"],
-                line=cls["start_line"],
-            )
-        )
-    for fn in structure.get("functions", []):
-        briefs.append(
-            SymbolBrief(
-                name=fn["name"],
-                kind=fn["kind"],
-                line=fn["start_line"],
-                parent_class=fn.get("parent_class"),
-            )
-        )
-    briefs.sort(key=lambda b: b.line)
-    return briefs
-
-
 def _row_to_file_info(row: CodeIndex) -> FileInfo:
     return FileInfo(
         file_path=row.file_path,
         language=row.language,
         line_count=row.line_count,
-        symbol_summary=_build_symbol_summary(row.structure or {}),
+        symbol_summary=build_symbol_summary(row.structure or {}),
     )
 
 

@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     # the environment. See src/gita/agents/decisions.py for the full contract.
     write_mode: str = Field(default="shadow", alias="WRITE_MODE")
 
+    # GitHub App credentials. Optional — the CLI and tests run fine in
+    # shadow mode without them. Needed only when WRITE_MODE != shadow.
+    github_app_id: int | None = Field(default=None, alias="GITHUB_APP_ID")
+    github_app_private_key_path: str | None = Field(
+        default=None, alias="GITHUB_APP_PRIVATE_KEY_PATH"
+    )
+
     @field_validator("write_mode")
     @classmethod
     def _validate_write_mode(cls, v: str) -> str:
