@@ -22,6 +22,12 @@ except ImportError:
     TREE_SITTER_AVAILABLE = False
     log.info("tree_sitter_not_available", msg="Install tree-sitter-languages for Go/Java/Rust/C#/Ruby/PHP parsing")
 
+# Languages whose grammar has failed on this process — skipped silently on
+# subsequent calls. This avoids flooding the logs when the installed
+# tree-sitter-languages binding is incompatible with the running Python
+# (e.g. Python 3.11 + older tree-sitter-languages wheel).
+_BROKEN_GRAMMARS: set[str] = set()
+
 
 # Map our language names to tree-sitter grammar names
 _GRAMMAR_MAP = {
@@ -31,6 +37,9 @@ _GRAMMAR_MAP = {
     "c_sharp": "c_sharp",
     "ruby": "ruby",
     "php": "php",
+    "javascript": "javascript",
+    "typescript": "typescript",
+    "kotlin": "kotlin",
 }
 
 
@@ -43,16 +52,31 @@ def parse_tree_sitter(content: str, file_path: str, language: str) -> dict:
     Parse source code using tree-sitter and extract structure.
 
     Returns a dict with: imports, classes, functions, routes, todos, etc.
+    Every function/class/method entry includes both `line` (start) and
+    `end_line` for granular slice retrieval by review tools.
     """
     grammar = _GRAMMAR_MAP.get(language)
     if not grammar or not TREE_SITTER_AVAILABLE:
+        return {}
+    if grammar in _BROKEN_GRAMMARS:
+        # Already known to be incompatible on this process — skip silently so
+        # the regex fallback kicks in without spamming the logs per file.
         return {}
 
     try:
         parser = _get_parser(grammar)
         tree = parser.parse(content.encode("utf-8"))
     except Exception as e:
-        log.warning("tree_sitter_parse_error", file=file_path, language=language, error=str(e))
+        # Log once per language, then mark the grammar broken so subsequent
+        # files skip straight to the fallback.
+        if grammar not in _BROKEN_GRAMMARS:
+            log.warning(
+                "tree_sitter_grammar_broken",
+                language=language,
+                error=str(e),
+                note="silencing further warnings for this language",
+            )
+            _BROKEN_GRAMMARS.add(grammar)
         return {}
 
     root = tree.root_node
@@ -69,6 +93,10 @@ def parse_tree_sitter(content: str, file_path: str, language: str) -> dict:
         return _extract_ruby(root)
     elif language == "php":
         return _extract_php(root)
+    elif language in ("javascript", "typescript"):
+        return _extract_javascript(root)
+    elif language == "kotlin":
+        return _extract_kotlin(root)
     return {}
 
 
@@ -110,6 +138,16 @@ def _children_of_type(node, *types):
             yield child
 
 
+def _line(node) -> int:
+    """1-indexed start line for a tree-sitter node."""
+    return node.start_point[0] + 1
+
+
+def _end_line(node) -> int:
+    """1-indexed end line for a tree-sitter node."""
+    return node.end_point[0] + 1
+
+
 # ── Go ────────────────────────────────────────────────────────────
 
 
@@ -138,7 +176,12 @@ def _extract_go(root) -> dict:
                 type_node = _find_node(spec, "struct_type", "interface_type")
                 if type_node and type_node.type == "struct_type":
                     fields = _extract_go_struct_fields(type_node)
-                    structs.append({"name": name, "fields": fields})
+                    structs.append({
+                        "name": name,
+                        "fields": fields,
+                        "line": _line(spec),
+                        "end_line": _end_line(spec),
+                    })
                 elif type_node and type_node.type == "interface_type":
                     iface_methods = []
                     for ms in _walk(type_node):
@@ -146,7 +189,12 @@ def _extract_go(root) -> dict:
                             mname = _find(ms, "field_identifier")
                             if mname:
                                 iface_methods.append(mname)
-                    interfaces.append({"name": name, "methods": iface_methods})
+                    interfaces.append({
+                        "name": name,
+                        "methods": iface_methods,
+                        "line": _line(spec),
+                        "end_line": _end_line(spec),
+                    })
 
         elif node.type == "function_declaration":
             name = _find(node, "identifier")
@@ -156,7 +204,8 @@ def _extract_go(root) -> dict:
                     "name": name,
                     "args": params,
                     "is_async": False,
-                    "line": node.start_point[0] + 1,
+                    "line": _line(node),
+                    "end_line": _end_line(node),
                 })
 
         elif node.type == "method_declaration":
@@ -174,7 +223,8 @@ def _extract_go(root) -> dict:
                     "name": name,
                     "receiver": receiver_type,
                     "args": params,
-                    "line": node.start_point[0] + 1,
+                    "line": _line(node),
+                    "end_line": _end_line(node),
                 })
 
     # Detect routes from function bodies (Gin/Echo/Mux patterns)
@@ -196,18 +246,23 @@ def _extract_go(root) -> dict:
                             "method": method_name.upper(),
                             "path": path.strip('"') if path else "?",
                             "handler": handler or "?",
-                            "line": node.start_point[0] + 1,
+                            "line": _line(node),
+                            "end_line": _end_line(node),
                         })
 
     # Build classes from structs + methods
     classes = []
     for s in structs:
         struct_methods = [m["name"] for m in methods if m["receiver"] == s["name"]]
+        method_details = [m for m in methods if m["receiver"] == s["name"]]
         classes.append({
             "name": s["name"],
             "bases": [],
             "fields": s["fields"],
             "methods": struct_methods,
+            "method_details": method_details,
+            "line": s.get("line"),
+            "end_line": s.get("end_line"),
         })
 
     for iface in interfaces:
@@ -216,6 +271,8 @@ def _extract_go(root) -> dict:
             "bases": ["interface"],
             "fields": [],
             "methods": iface["methods"],
+            "line": iface.get("line"),
+            "end_line": iface.get("end_line"),
         })
 
     return {
@@ -288,6 +345,7 @@ def _extract_java_class(node) -> dict:
     interfaces = []
     fields = []
     methods = []
+    method_details: list[dict] = []
     routes = []
     base_path = ""
 
@@ -336,6 +394,13 @@ def _extract_java_class(node) -> dict:
                 mname = _find(child, "identifier")
                 if mname:
                     methods.append(mname)
+                    method_details.append({
+                        "name": mname,
+                        "args": [],
+                        "decorators": [],
+                        "line": _line(child),
+                        "end_line": _end_line(child),
+                    })
 
                 # Annotations are INSIDE method_declaration > modifiers
                 method_mods = _find_node(child, "modifiers")
@@ -375,7 +440,8 @@ def _extract_java_class(node) -> dict:
                             "method": route_method,
                             "path": full_path,
                             "handler": mname,
-                            "line": child.start_point[0] + 1,
+                            "line": _line(child),
+                            "end_line": _end_line(child),
                         })
 
     return {
@@ -383,6 +449,9 @@ def _extract_java_class(node) -> dict:
         "bases": bases,
         "fields": fields[:20],
         "methods": methods,
+        "method_details": method_details,
+        "line": _line(node),
+        "end_line": _end_line(node),
         "_routes": routes,
     }
 
@@ -395,7 +464,7 @@ def _extract_rust(root) -> dict:
     structs = []
     enums = []
     functions = []
-    impl_methods: dict[str, list[str]] = {}
+    impl_methods: dict[str, list[dict]] = {}
     routes = []
 
     for node in root.children:
@@ -413,7 +482,13 @@ def _extract_rust(root) -> dict:
                         fields.append(fname)
             derives = _extract_rust_derives(node, root)
             if name:
-                structs.append({"name": name, "fields": fields[:20], "derives": derives})
+                structs.append({
+                    "name": name,
+                    "fields": fields[:20],
+                    "derives": derives,
+                    "line": _line(node),
+                    "end_line": _end_line(node),
+                })
 
         elif node.type == "enum_item":
             name = _find(node, "type_identifier")
@@ -425,7 +500,12 @@ def _extract_rust(root) -> dict:
                     if vname:
                         variants.append(vname)
             if name:
-                enums.append({"name": name, "variants": variants[:20]})
+                enums.append({
+                    "name": name,
+                    "variants": variants[:20],
+                    "line": _line(node),
+                    "end_line": _end_line(node),
+                })
 
         elif node.type == "function_item":
             name = _find(node, "identifier")
@@ -439,7 +519,8 @@ def _extract_rust(root) -> dict:
                     "name": name,
                     "args": params,
                     "is_async": is_async,
-                    "line": node.start_point[0] + 1,
+                    "line": _line(node),
+                    "end_line": _end_line(node),
                 })
 
         elif node.type == "impl_item":
@@ -452,26 +533,38 @@ def _extract_rust(root) -> dict:
                     for fn in _children_of_type(body, "function_item"):
                         fname = _find(fn, "identifier")
                         if fname:
-                            impl_methods[type_name].append(fname)
+                            impl_methods[type_name].append({
+                                "name": fname,
+                                "args": _extract_rust_params(fn),
+                                "decorators": [],
+                                "line": _line(fn),
+                                "end_line": _end_line(fn),
+                            })
 
     # Build classes from structs + impl methods
     classes = []
     for s in structs:
-        methods = impl_methods.get(s["name"], [])
-        cls = {
+        method_details = impl_methods.get(s["name"], [])
+        classes.append({
             "name": s["name"],
             "bases": s.get("derives", []),
             "fields": s["fields"],
-            "methods": methods,
-        }
-        classes.append(cls)
+            "methods": [m["name"] for m in method_details],
+            "method_details": method_details,
+            "line": s.get("line"),
+            "end_line": s.get("end_line"),
+        })
 
     for e in enums:
+        method_details = impl_methods.get(e["name"], [])
         classes.append({
             "name": e["name"],
             "bases": ["enum"],
             "fields": e["variants"],
-            "methods": impl_methods.get(e["name"], []),
+            "methods": [m["name"] for m in method_details],
+            "method_details": method_details,
+            "line": e.get("line"),
+            "end_line": e.get("end_line"),
         })
 
     # Detect Actix macro routes (#[get("/path")])
@@ -493,7 +586,8 @@ def _extract_rust(root) -> dict:
                         "method": method.upper(),
                         "path": path,
                         "handler": handler,
-                        "line": node.start_point[0] + 1,
+                        "line": _line(node),
+                        "end_line": _end_line(node),
                     })
 
     # Detect Axum builder routes (.route("/path", get(handler)))
@@ -523,7 +617,8 @@ def _extract_rust(root) -> dict:
                                     "method": method_fn.upper(),
                                     "path": path,
                                     "handler": handler,
-                                    "line": node.start_point[0] + 1,
+                                    "line": _line(node),
+                                    "end_line": _end_line(node),
                                 })
 
     return {
@@ -596,6 +691,7 @@ def _extract_csharp_class(node) -> dict:
     bases = []
     fields = []
     methods = []
+    method_details: list[dict] = []
     routes = []
 
     # Base class / interfaces
@@ -624,6 +720,13 @@ def _extract_csharp_class(node) -> dict:
                 mname = _find(child, "identifier")
                 if mname:
                     methods.append(mname)
+                    method_details.append({
+                        "name": mname,
+                        "args": [],
+                        "decorators": [],
+                        "line": _line(child),
+                        "end_line": _end_line(child),
+                    })
 
                 # Attributes are CHILDREN of method_declaration
                 for attr_list in _children_of_type(child, "attribute_list"):
@@ -642,7 +745,8 @@ def _extract_csharp_class(node) -> dict:
                                 "method": method,
                                 "path": route_path or "/",
                                 "handler": mname,
-                                "line": child.start_point[0] + 1,
+                                "line": _line(child),
+                                "end_line": _end_line(child),
                             })
 
     return {
@@ -650,6 +754,9 @@ def _extract_csharp_class(node) -> dict:
         "bases": bases,
         "fields": fields[:20],
         "methods": methods,
+        "method_details": method_details,
+        "line": _line(node),
+        "end_line": _end_line(node),
         "_routes": routes,
     }
 
@@ -685,7 +792,8 @@ def _extract_ruby(root) -> dict:
                     "name": name,
                     "args": [],
                     "is_async": False,
-                    "line": node.start_point[0] + 1,
+                    "line": _line(node),
+                    "end_line": _end_line(node),
                 })
 
     # Detect Rails/Sinatra routes
@@ -702,7 +810,8 @@ def _extract_ruby(root) -> dict:
                             "method": method_name.upper(),
                             "path": path,
                             "handler": path.split("/")[-1] or path,
-                            "line": node.start_point[0] + 1,
+                            "line": _line(node),
+                            "end_line": _end_line(node),
                         })
             elif method_name in ("resources", "resource"):
                 args = _find_node(node, "argument_list")
@@ -714,7 +823,8 @@ def _extract_ruby(root) -> dict:
                             "method": "RESOURCE",
                             "path": f"/{name}",
                             "handler": f"{name}_controller",
-                            "line": node.start_point[0] + 1,
+                            "line": _line(node),
+                            "end_line": _end_line(node),
                         })
 
     return {
@@ -732,7 +842,8 @@ def _extract_ruby_class(node) -> dict:
     if superclass:
         base = _find(superclass, "constant", "scope_resolution") or ""
 
-    methods = []
+    methods: list[str] = []
+    method_details: list[dict] = []
     body = _find_node(node, "body_statement")
     if body:
         for child in _walk(body):
@@ -740,12 +851,22 @@ def _extract_ruby_class(node) -> dict:
                 mname = _find(child, "identifier")
                 if mname:
                     methods.append(mname)
+                    method_details.append({
+                        "name": mname,
+                        "args": [],
+                        "decorators": [],
+                        "line": _line(child),
+                        "end_line": _end_line(child),
+                    })
 
     return {
         "name": name or "?",
         "bases": [base] if base else [],
         "fields": [],
         "methods": methods,
+        "method_details": method_details,
+        "line": _line(node),
+        "end_line": _end_line(node),
     }
 
 
@@ -777,7 +898,8 @@ def _extract_php(root) -> dict:
                     "name": name,
                     "args": [],
                     "is_async": False,
-                    "line": node.start_point[0] + 1,
+                    "line": _line(node),
+                    "end_line": _end_line(node),
                 })
 
     # Detect Laravel routes: Route::get('path', 'Controller@method')
@@ -817,7 +939,8 @@ def _extract_php(root) -> dict:
                                 "method": method_name.upper(),
                                 "path": path,
                                 "handler": handler,
-                                "line": node.start_point[0] + 1,
+                                "line": _line(node),
+                                "end_line": _end_line(node),
                             })
                 elif method_name in ("resource", "apiResource"):
                     args = _find_node(node, "arguments")
@@ -830,7 +953,8 @@ def _extract_php(root) -> dict:
                                     "method": "RESOURCE",
                                     "path": name,
                                     "handler": name,
-                                    "line": node.start_point[0] + 1,
+                                    "line": _line(node),
+                                    "end_line": _end_line(node),
                                 })
 
     return {
@@ -857,7 +981,8 @@ def _extract_php_class(node) -> dict:
             if n.type in ("qualified_name", "name"):
                 bases.append(_text(n))
 
-    methods = []
+    methods: list[str] = []
+    method_details: list[dict] = []
     fields = []
     body = _find_node(node, "declaration_list")
     if body:
@@ -866,6 +991,13 @@ def _extract_php_class(node) -> dict:
                 mname = _find(child, "name")
                 if mname:
                     methods.append(mname)
+                    method_details.append({
+                        "name": mname,
+                        "args": [],
+                        "decorators": [],
+                        "line": _line(child),
+                        "end_line": _end_line(child),
+                    })
             elif child.type == "property_declaration":
                 for decl in _walk(child):
                     if decl.type == "property_element":
@@ -878,4 +1010,293 @@ def _extract_php_class(node) -> dict:
         "bases": bases,
         "fields": fields[:20],
         "methods": methods,
+        "method_details": method_details,
+        "line": _line(node),
+        "end_line": _end_line(node),
+    }
+
+
+# ── JavaScript / TypeScript ───────────────────────────────────────
+
+
+def _extract_javascript(root) -> dict:
+    """
+    Extract JS/TS structure using Tree-sitter.
+
+    Captures: imports, classes (with methods + fields), functions (regular
+    + arrow assigned to const/let/var), React-style components (PascalCase),
+    and Express-style routes. Every function/class has start `line` and
+    `end_line` so granular retrieval can slice it.
+    """
+    imports: list[str] = []
+    exports: list[str] = []
+    classes: list[dict] = []
+    functions: list[dict] = []
+    components: list[str] = []
+    routes: list[dict] = []
+
+    def _export_name(decl_node) -> str | None:
+        """Find an identifier name inside a declaration (function, class, etc.)."""
+        for child in decl_node.children:
+            if child.type in ("identifier", "type_identifier", "property_identifier"):
+                return _text(child)
+        return None
+
+    for node in _walk(root):
+        # import X from 'pkg';   import { A } from 'pkg';
+        if node.type == "import_statement":
+            src = _find_node(node, "string")
+            if src:
+                imports.append(_text(src).strip("'\""))
+
+        # const x = require('pkg')
+        elif node.type == "call_expression":
+            fn_name = _find(node, "identifier")
+            if fn_name == "require":
+                args = _find_node(node, "arguments")
+                if args:
+                    s = _find(args, "string")
+                    if s:
+                        imports.append(s.strip("'\""))
+
+        # export { foo } / export default / export function ...
+        elif node.type == "export_statement":
+            inner = None
+            for child in node.children:
+                if child.type in ("function_declaration", "class_declaration",
+                                  "lexical_declaration", "variable_declaration"):
+                    inner = child
+                    break
+            if inner:
+                name = _export_name(inner)
+                if name:
+                    exports.append(name)
+
+    for node in _walk(root):
+        # Regular: function foo(...) { ... }
+        if node.type == "function_declaration":
+            name = _find(node, "identifier")
+            if name:
+                params = _js_params(node)
+                entry = {
+                    "name": name,
+                    "args": params,
+                    "decorators": [],
+                    "is_async": "async" in _text(node)[:30],
+                    "line": _line(node),
+                    "end_line": _end_line(node),
+                }
+                functions.append(entry)
+                if name and name[0].isupper() and any(
+                    "jsx" in c.type or c.type in ("jsx_element", "jsx_self_closing_element")
+                    for c in _walk(node)
+                ):
+                    components.append(name)
+
+        # Class: class Foo extends Bar { method() {} }
+        elif node.type == "class_declaration":
+            classes.append(_extract_js_class(node))
+
+        # const foo = (...) => {...}  OR  const foo = function(...) {...}
+        elif node.type == "lexical_declaration" or node.type == "variable_declaration":
+            for declarator in _children_of_type(node, "variable_declarator"):
+                name = _find(declarator, "identifier")
+                if not name:
+                    continue
+                value = _find_node(
+                    declarator, "arrow_function", "function_expression", "function"
+                )
+                if value:
+                    entry = {
+                        "name": name,
+                        "args": _js_params(value),
+                        "decorators": [],
+                        "is_async": any(c.type == "async" for c in value.children)
+                                   or "async" in _text(value)[:30],
+                        "line": _line(declarator),
+                        "end_line": _end_line(declarator),
+                    }
+                    functions.append(entry)
+                    # PascalCase + returns JSX = React component
+                    if name[0].isupper() and any(
+                        c.type in ("jsx_element", "jsx_self_closing_element", "jsx_fragment")
+                        for c in _walk(value)
+                    ):
+                        components.append(name)
+
+    # Routes: app.get('/path', handler)  router.post(...)  etc.
+    for node in _walk(root):
+        if node.type != "call_expression":
+            continue
+        fn = _find_node(node, "member_expression")
+        if not fn:
+            continue
+        object_node = _find_node(fn, "identifier")
+        method_node = _find_node(fn, "property_identifier")
+        if not object_node or not method_node:
+            continue
+        obj = _text(object_node)
+        method = _text(method_node)
+        if obj not in ("app", "router", "server", "api") or method.lower() not in (
+            "get", "post", "put", "delete", "patch", "use", "options", "head"
+        ):
+            continue
+        args = _find_node(node, "arguments")
+        if not args:
+            continue
+        path_str = None
+        handler_name = None
+        arg_nodes = [c for c in args.children if c.type not in ("(", ")", ",")]
+        for i, arg in enumerate(arg_nodes):
+            if i == 0 and arg.type == "string":
+                path_str = _text(arg).strip("'\"`")
+            elif handler_name is None and arg.type == "identifier":
+                handler_name = _text(arg)
+        if path_str:
+            routes.append({
+                "method": method.upper(),
+                "path": path_str,
+                "handler": handler_name or "?",
+                "line": _line(node),
+                "end_line": _end_line(node),
+            })
+
+    return {
+        "imports": sorted(set(imports)),
+        "exports": exports,
+        "classes": classes,
+        "functions": functions,
+        "components": sorted(set(components)),
+        "routes": routes,
+    }
+
+
+def _js_params(node) -> list[str]:
+    """Extract parameter names from a JS/TS function/arrow-function node."""
+    params = []
+    plist = _find_node(node, "formal_parameters")
+    if not plist:
+        return params
+    for child in plist.children:
+        if child.type == "identifier":
+            params.append(_text(child))
+        elif child.type == "required_parameter" or child.type == "optional_parameter":
+            name = _find(child, "identifier")
+            if name:
+                params.append(name)
+        elif child.type == "assignment_pattern":
+            name = _find(child, "identifier")
+            if name:
+                params.append(name)
+        elif child.type == "object_pattern" or child.type == "array_pattern":
+            params.append(_text(child)[:40])
+    return params
+
+
+def _extract_js_class(node) -> dict:
+    """Extract a JS/TS class: name, bases, methods (with end_line), fields."""
+    name = _find(node, "type_identifier", "identifier")
+    bases: list[str] = []
+
+    heritage = _find_node(node, "class_heritage")
+    if heritage:
+        for child in _walk(heritage):
+            if child.type in ("identifier", "type_identifier"):
+                bases.append(_text(child))
+
+    methods: list[dict] = []
+    fields: list[str] = []
+
+    body = _find_node(node, "class_body")
+    if body:
+        for child in body.children:
+            if child.type == "method_definition":
+                mname = _find(child, "property_identifier")
+                if mname:
+                    methods.append({
+                        "name": mname,
+                        "args": _js_params(child),
+                        "decorators": [],
+                        "line": _line(child),
+                        "end_line": _end_line(child),
+                    })
+            elif child.type == "public_field_definition" or child.type == "field_definition":
+                fname = _find(child, "property_identifier", "identifier")
+                if fname:
+                    fields.append(fname)
+
+    return {
+        "name": name or "?",
+        "bases": bases,
+        "decorators": [],
+        "methods": [m["name"] for m in methods],
+        "method_details": methods,
+        "fields": fields[:20],
+        "line": _line(node),
+        "end_line": _end_line(node),
+    }
+
+
+# ── Kotlin ────────────────────────────────────────────────────────
+
+
+def _extract_kotlin(root) -> dict:
+    """
+    Extract Kotlin structure. Kotlin grammar uses `function_declaration`
+    / `class_declaration` / `object_declaration` top-level nodes.
+    """
+    imports: list[str] = []
+    classes: list[dict] = []
+    functions: list[dict] = []
+
+    for node in _walk(root):
+        if node.type == "import_header":
+            identifier = _find_node(node, "identifier")
+            if identifier:
+                imports.append(_text(identifier))
+
+        elif node.type == "function_declaration":
+            name = _find(node, "simple_identifier", "identifier")
+            if name:
+                functions.append({
+                    "name": name,
+                    "args": [],
+                    "decorators": [],
+                    "is_async": "suspend" in _text(node)[:30],
+                    "line": _line(node),
+                    "end_line": _end_line(node),
+                })
+
+        elif node.type == "class_declaration" or node.type == "object_declaration":
+            name = _find(node, "type_identifier", "simple_identifier", "identifier")
+            methods: list[dict] = []
+            class_body = _find_node(node, "class_body")
+            if class_body:
+                for child in _walk(class_body):
+                    if child.type == "function_declaration":
+                        mname = _find(child, "simple_identifier", "identifier")
+                        if mname:
+                            methods.append({
+                                "name": mname,
+                                "args": [],
+                                "decorators": [],
+                                "line": _line(child),
+                                "end_line": _end_line(child),
+                            })
+            classes.append({
+                "name": name or "?",
+                "bases": [],
+                "decorators": [],
+                "methods": [m["name"] for m in methods],
+                "method_details": methods,
+                "fields": [],
+                "line": _line(node),
+                "end_line": _end_line(node),
+            })
+
+    return {
+        "imports": sorted(set(imports)),
+        "classes": classes,
+        "functions": functions,
+        "routes": [],
     }

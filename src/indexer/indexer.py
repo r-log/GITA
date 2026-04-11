@@ -21,6 +21,59 @@ from src.indexer.graph_builder import build_graph_for_repo, update_graph_for_fil
 log = structlog.get_logger()
 
 
+# Languages whose raw content we keep in the DB for granular retrieval tools.
+# Test/generated/vendored paths are excluded by _should_store_content().
+_STORABLE_LANGUAGES = {
+    "python", "typescript", "javascript",
+    "go", "rust", "java", "ruby", "php", "c_sharp", "kotlin",
+    "vue", "svelte",
+    "json", "yaml", "toml",  # config-as-logic files the LLM may want to read
+}
+
+# Max stored content size per file. Files larger than this get content=None
+# (structure is still extracted). 200KB covers ~99% of real source files.
+_MAX_CONTENT_BYTES = 200_000
+
+_EXCLUDE_PATH_SEGMENTS = (
+    "/tests/", "/test/", "/__tests__/", "/spec/", "/specs/",
+    "/__pycache__/", "/node_modules/", "/vendor/", "/dist/", "/build/",
+    "/.venv/", "/venv/", "/.git/", "/target/",
+)
+
+_EXCLUDE_SUFFIXES = (
+    ".min.js", ".min.css", "_pb2.py", ".lock",
+)
+
+
+def _should_store_content(file_path: str, language: str, content: str) -> bool:
+    """Decide whether to persist raw content for this file in code_index.content.
+
+    Parses always run — this only gates whether the LLM can pull slices via
+    code_retrieval. Tests, generated code, vendored deps, and oversized files
+    get structure-only; everything else in an allowlisted source language is
+    stored in full.
+    """
+    if language not in _STORABLE_LANGUAGES:
+        return False
+    if len(content.encode("utf-8", errors="replace")) > _MAX_CONTENT_BYTES:
+        return False
+    path_lower = "/" + file_path.lower()  # leading slash so segment matches work at root
+    for segment in _EXCLUDE_PATH_SEGMENTS:
+        if segment in path_lower:
+            return False
+    for suffix in _EXCLUDE_SUFFIXES:
+        if path_lower.endswith(suffix):
+            return False
+    # Filename-based exclusions (test_*.py, *_test.go, *.spec.ts, etc.)
+    filename = file_path.rsplit("/", 1)[-1].lower()
+    if filename.startswith(("test_", "tests_")):
+        return False
+    if filename.endswith(("_test.go", "_test.py", ".test.ts", ".test.tsx", ".test.js", ".test.jsx",
+                          ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx")):
+        return False
+    return True
+
+
 async def index_repository(
     installation_id: int,
     repo_full_name: str,
@@ -39,13 +92,21 @@ async def index_repository(
         log.warning("index_no_files", repo=repo_full_name)
         return "# Empty Repository\nNo indexable source files found."
 
-    # 2. Parse all files
-    parsed = []
+    # 2. Parse all files (keep raw content alongside for storable files)
+    parsed: list = []
+    raw_contents: dict[str, str] = {}  # file_path -> raw source, for DB persistence
     for path, content in files.items():
         file_index = parse_file(content, path)
         parsed.append(file_index)
+        if _should_store_content(path, file_index.language, content):
+            raw_contents[path] = content
 
-    log.info("index_parsed", repo=repo_full_name, files=len(parsed))
+    log.info(
+        "index_parsed",
+        repo=repo_full_name,
+        files=len(parsed),
+        content_stored=len(raw_contents),
+    )
 
     # 3. Store in DB (upsert: delete old + insert new)
     async with async_session() as session:
@@ -63,6 +124,7 @@ async def index_repository(
                 size_bytes=fi.size_bytes,
                 line_count=fi.line_count,
                 structure=fi.structure,
+                content=raw_contents.get(fi.file_path),
                 content_hash=fi.content_hash,
             )
             session.add(record)
@@ -118,11 +180,14 @@ async def reindex_files(
             installation_id, repo_full_name, files_to_download
         )
 
-    # 2. Parse downloaded files
-    parsed = []
+    # 2. Parse downloaded files (keep raw content alongside for storable files)
+    parsed: list = []
+    raw_contents: dict[str, str] = {}
     for path, content in downloaded.items():
         file_index = parse_file(content, path)
         parsed.append(file_index)
+        if _should_store_content(path, file_index.language, content):
+            raw_contents[path] = content
 
     # 3. Update DB
     async with async_session() as session:
@@ -153,6 +218,7 @@ async def reindex_files(
                 record.size_bytes = fi.size_bytes
                 record.line_count = fi.line_count
                 record.structure = fi.structure
+                record.content = raw_contents.get(fi.file_path)
                 record.content_hash = fi.content_hash
                 record.updated_at = datetime.utcnow()
             else:
@@ -164,6 +230,7 @@ async def reindex_files(
                     size_bytes=fi.size_bytes,
                     line_count=fi.line_count,
                     structure=fi.structure,
+                    content=raw_contents.get(fi.file_path),
                     content_hash=fi.content_hash,
                 ))
 

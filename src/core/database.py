@@ -7,10 +7,15 @@ from sqlalchemy.orm import DeclarativeBase
 
 from src.core.config import settings
 
-# Create async engine
+# Create async engine.
+# SQLAlchemy echo is OFF even in dev — it generates ~3 log lines per query,
+# which drowns out actual agent telemetry during long operations like the
+# graph builder's per-node inserts. Re-enable with DB_ECHO=1 env var if you
+# specifically need to debug SQL.
+import os
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.is_dev,
+    echo=os.getenv("DB_ECHO") == "1",
     pool_size=10,
     max_overflow=20,
 )

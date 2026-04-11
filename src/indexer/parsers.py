@@ -170,6 +170,7 @@ def parse_python(content: str, file_path: str) -> FileIndex:
                         "args": args,
                         "decorators": method_decorators,
                         "line": item.lineno,
+                        "end_line": getattr(item, "end_lineno", None),
                     })
                 elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
                     fields.append(item.target.id)
@@ -186,6 +187,7 @@ def parse_python(content: str, file_path: str) -> FileIndex:
                 "method_details": methods,
                 "fields": fields[:20],
                 "line": node.lineno,
+                "end_line": getattr(node, "end_lineno", None),
             })
 
         # Top-level functions
@@ -200,6 +202,7 @@ def parse_python(content: str, file_path: str) -> FileIndex:
                     "decorators": decorators,
                     "is_async": isinstance(node, ast.AsyncFunctionDef),
                     "line": node.lineno,
+                    "end_line": getattr(node, "end_lineno", None),
                 })
 
                 # Detect route decorators
@@ -215,6 +218,7 @@ def parse_python(content: str, file_path: str) -> FileIndex:
                             "path": route_path or dec,
                             "handler": node.name,
                             "line": node.lineno,
+                            "end_line": getattr(node, "end_lineno", None),
                         })
 
         # Top-level constants
@@ -459,8 +463,13 @@ def parse_generic(content: str, file_path: str) -> FileIndex:
 
 # ── Main Parser Dispatcher ────────────────────────────────────────
 
-# Languages that tree-sitter handles (when available)
-TREE_SITTER_LANGUAGES = {"go", "java", "rust", "c_sharp", "ruby", "php"}
+# Languages parsed by tree-sitter. Python uses stdlib `ast` (100% accurate,
+# cheaper), so it's intentionally excluded here. Config files (json/yaml/toml)
+# have their own lightweight parser.
+TREE_SITTER_LANGUAGES = {
+    "javascript", "typescript",
+    "go", "java", "rust", "c_sharp", "ruby", "php", "kotlin",
+}
 
 
 def parse_file(content: str, file_path: str) -> FileIndex:
@@ -470,30 +479,76 @@ def parse_file(content: str, file_path: str) -> FileIndex:
     try:
         if language == "python":
             return parse_python(content, file_path)
-        elif language in ("javascript", "typescript"):
-            return parse_javascript(content, file_path)
         elif language in ("json", "yaml", "toml"):
             return parse_config(content, file_path)
-        elif language == "vue":
-            return parse_javascript(content, file_path, override_language="vue")
         elif language in TREE_SITTER_LANGUAGES:
             return _parse_with_tree_sitter(content, file_path, language)
+        elif language == "vue":
+            # Vue SFC: extract <script> block and parse it as TS/JS via
+            # tree-sitter, then relabel the result as 'vue' so downstream
+            # consumers still see the SFC language.
+            script = _extract_vue_script(content)
+            result = _parse_with_tree_sitter(script, file_path, "typescript")
+            return _relabel(result, "vue", original_content=content)
+        elif language == "svelte":
+            script = _extract_vue_script(content)
+            result = _parse_with_tree_sitter(script, file_path, "typescript")
+            return _relabel(result, "svelte", original_content=content)
         else:
             return parse_generic(content, file_path)
     except Exception as e:
         log.warning("parser_error", file=file_path, error=str(e))
+        # Fall back to the legacy regex parser for JS/TS when tree-sitter breaks,
+        # so we always have *some* structure rather than a blank file.
+        if language in ("javascript", "typescript"):
+            try:
+                return parse_javascript(content, file_path)
+            except Exception:
+                pass
+        if language in ("vue", "svelte"):
+            try:
+                return parse_javascript(content, file_path, override_language=language)
+            except Exception:
+                pass
         return parse_generic(content, file_path)
 
 
+def _relabel(result: FileIndex, new_language: str, original_content: str) -> FileIndex:
+    """
+    Rewrite the FileIndex to reflect a wrapper format's language while keeping
+    the parsed structure from the embedded script block. Size/line counts are
+    recomputed against the ORIGINAL (wrapper) content so the full-file stats
+    stay accurate.
+    """
+    result.language = new_language
+    result.size_bytes = len(original_content.encode("utf-8"))
+    result.line_count = len(original_content.split("\n"))
+    result.content_hash = compute_hash(original_content)
+    return result
+
+
+def _extract_vue_script(content: str) -> str:
+    """Extract the <script> block content from a Vue/Svelte SFC. Returns empty string if none."""
+    match = re.search(r"<script[^>]*>(.*?)</script>", content, re.DOTALL)
+    return match.group(1) if match else ""
+
+
 def _parse_with_tree_sitter(content: str, file_path: str, language: str) -> FileIndex:
-    """Parse using tree-sitter, fall back to generic if not available."""
+    """Parse using tree-sitter, fall back to the legacy regex parser for JS/TS
+    if tree-sitter is unavailable or returned an empty structure (e.g. broken
+    grammar on this Python version)."""
     from src.indexer.tree_sitter_parser import is_available, parse_tree_sitter
 
     lines = content.split("\n")
-    structure = {}
+    structure: dict = {}
 
     if is_available():
-        structure = parse_tree_sitter(content, file_path, language)
+        structure = parse_tree_sitter(content, file_path, language) or {}
+
+    # If the grammar returned nothing (parse error or incompatible binding),
+    # fall back to the legacy regex parser so JS/TS still gets imports/funcs/etc.
+    if not structure and language in ("javascript", "typescript"):
+        return parse_javascript(content, file_path)
 
     # Always add TODOs (tree-sitter doesn't extract these)
     structure["todos"] = _extract_todos(content)
