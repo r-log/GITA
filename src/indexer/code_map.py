@@ -220,48 +220,47 @@ def generate_code_map(records: list[dict], project_name: str = "") -> str:
         if len(all_todos) > 15:
             sections.append(f"  +{len(all_todos) - 15} more")
 
-    # Quality gaps
-    gaps = _detect_gaps(records, by_language, all_routes, all_models)
-    if gaps:
-        sections.append("\n## Detected Gaps")
-        for gap in gaps:
-            sections.append(f"- {gap}")
+    # Repository Facts — neutral counts only, no judgmental phrasing.
+    # Reviewers decide what is a problem from the actual code, not from labels here.
+    facts = _collect_facts(records, all_routes, all_models)
+    sections.append("\n## Repository Facts")
+    for key, value in facts.items():
+        sections.append(f"- {key}: {value}")
 
     return "\n".join(sections)
 
 
-def _detect_gaps(records, by_language, routes, models) -> list[str]:
-    """Detect common project gaps from the index."""
-    gaps = []
+def _collect_facts(records, routes, models) -> dict:
+    """
+    Report neutral repository facts — file counts, presence flags. No interpretation.
+    The LLM looks at actual code to decide what needs work; this section just reports
+    what exists.
+    """
     all_paths = {r["file_path"] for r in records}
     all_paths_lower = {p.lower() for p in all_paths}
 
-    # No tests
     test_files = [p for p in all_paths if "test" in p.lower() or "spec" in p.lower()]
-    if not test_files:
-        gaps.append("No test files found")
-    elif len(test_files) < len(routes) // 2:
-        gaps.append(f"Low test coverage: {len(test_files)} test files for {len(routes)} routes")
 
-    # No Dockerfile
-    if not any("dockerfile" in p for p in all_paths_lower):
-        gaps.append("No Dockerfile found")
-
-    # No CI/CD
-    if not any(".github/workflows" in p or ".gitlab-ci" in p for p in all_paths_lower):
-        gaps.append("No CI/CD configuration found")
-
-    # No README
-    if not any(p.lower().endswith("readme.md") or p.lower() == "readme" for p in all_paths):
-        gaps.append("No README.md found")
-
-    # No .env.example
-    if not any(".env.example" in p or ".env.sample" in p for p in all_paths_lower):
-        if any(".env" in p for p in all_paths_lower):
-            gaps.append("Has .env but no .env.example template")
-
-    # Models without migrations
-    if models and not any("migration" in p.lower() or "alembic" in p.lower() for p in all_paths_lower):
-        gaps.append(f"Found {len(models)} models but no database migrations")
-
-    return gaps
+    return {
+        "total_source_files": len(records),
+        "total_routes": len(routes),
+        "total_models": len(models),
+        "test_files": len(test_files),
+        "dockerfile_present": any("dockerfile" in p for p in all_paths_lower),
+        "docker_compose_present": any("docker-compose" in p for p in all_paths_lower),
+        "github_workflows": sum(
+            1 for p in all_paths_lower if ".github/workflows" in p and p.endswith((".yml", ".yaml"))
+        ),
+        "gitlab_ci_present": any(".gitlab-ci" in p for p in all_paths_lower),
+        "readme_present": any(
+            p.lower().endswith("readme.md") or p.lower().endswith("readme") or p.lower() == "readme"
+            for p in all_paths
+        ),
+        "env_example_present": any(".env.example" in p or ".env.sample" in p for p in all_paths_lower),
+        "env_file_present": any(
+            p.lower().endswith("/.env") or p.lower() == ".env" for p in all_paths
+        ),
+        "migrations_present": any(
+            "migration" in p.lower() or "alembic" in p.lower() for p in all_paths_lower
+        ),
+    }

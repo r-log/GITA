@@ -1,7 +1,8 @@
 """ORM model for the code index — per-file parsed structure stored in DB."""
 
 from datetime import datetime
-from sqlalchemy import Integer, String, DateTime, ForeignKey, UniqueConstraint, func
+from typing import Optional
+from sqlalchemy import Integer, String, Text, DateTime, ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,6 +22,7 @@ class CodeIndex(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     line_count: Mapped[int] = mapped_column(Integer, default=0)
     structure: Mapped[dict] = mapped_column(JSONB, default=dict)
+    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     indexed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

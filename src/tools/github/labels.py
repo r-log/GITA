@@ -34,8 +34,14 @@ async def _create_label(
         )
         return ToolResult(success=True, data=data)
     except Exception as e:
-        log.warning("create_label_failed", operation="create_label", error=str(e), exc_info=True)
-        return ToolResult(success=False, error=str(e))
+        # GitHub returns 422 when the label already exists. That's the
+        # expected path on repo reinstall — no need to dump a full traceback.
+        msg = str(e)
+        if "422" in msg:
+            log.info("create_label_already_exists", name=name)
+            return ToolResult(success=False, error="label already exists (422)")
+        log.warning("create_label_failed", operation="create_label", error=msg, exc_info=True)
+        return ToolResult(success=False, error=msg)
 
 
 def make_add_label(installation_id: int, repo_full_name: str) -> Tool:

@@ -488,7 +488,9 @@ class TestCodeMapIntegration:
         assert "/api/health" in code_map
         assert "User" in code_map
         assert "TODO" in code_map
-        assert "No test files found" in code_map  # gap detection
+        # Repository Facts section replaces the old judgmental "Detected Gaps"
+        assert "## Repository Facts" in code_map
+        assert "test_files: 0" in code_map
 
         # Verify it's compact
         assert len(code_map) < 5000  # should be well under 5KB for 4 files

@@ -44,6 +44,18 @@ from src.utils.checklist import parse_checklist, add_checklist_items
 # DB tools
 from src.tools.db.onboarding import _save_onboarding_run
 from src.tools.db.code_index import make_query_code_index, _save_issue_record, _query_code_index
+from src.tools.db.code_retrieval import (
+    make_list_project_files,
+    make_get_function_code,
+    make_get_class_code,
+    make_get_code_slice,
+    make_read_file,
+    make_search_in_file,
+)
+from src.tools.onboarding.scratchpad_tools import (
+    make_record_finding,
+    make_finalize_exploration,
+)
 
 log = structlog.get_logger()
 
@@ -111,11 +123,25 @@ class OnboardingAgent(BaseAgent):
 
         # Load per-pass prompts (only the passes that still use LLM)
         self._pass_prompts: dict[str, str] = {}
-        for pass_name in ["pass3_milestones", "pass3_5_validation", "pass3_progressive"]:
+        pass_names = [
+            "pass3_milestones",          # legacy fallback
+            "pass3_5_validation",
+            "pass3_progressive",         # legacy progressive fallback
+            "pass3a_explore",            # new agentic review loop
+            "pass3b_audit",              # new finding auditor
+            "pass3c_group",              # new findings → milestones grouper
+            "pass3c_group_progressive",  # new findings → progressive actions grouper
+        ]
+        for pass_name in pass_names:
             prompt_path = Path("prompts") / f"onboarding_{pass_name}.md"
             if prompt_path.exists():
                 self._pass_prompts[pass_name] = prompt_path.read_text(encoding="utf-8")
             else:
+                # New prompts are optional during the rollout — if missing,
+                # the legacy path still works.
+                if pass_name.startswith(("pass3a_", "pass3b_", "pass3c_")):
+                    log.warning("onboarding_prompt_missing", pass_name=pass_name)
+                    continue
                 raise FileNotFoundError(f"Pass prompt not found: {prompt_path}")
 
     async def _run_pass(
@@ -241,14 +267,325 @@ class OnboardingAgent(BaseAgent):
             "is_progressive": is_progressive,
         }
 
-    # -- Step 3: Milestones (LLM reads code map) --------------------------
+    # -- Step 3: Milestones ------------------------------------------------
+    #
+    # The new agentic review loop replaces the single-call "LLM reads code map"
+    # approach. Three sub-steps:
+    #   3a. Explorer — BaseAgent tool loop, LLM pulls code slices and records findings
+    #   3b. Auditor — drops generic / unverifiable findings
+    #   3c. Grouper — turns findings into the existing milestones JSON schema
+    #
+    # The legacy single-call path is kept as `_step3_milestones_legacy` and runs
+    # automatically if the new flow throws or if the feature flag is disabled.
 
     async def _step3_milestones(self, scratchpad: dict) -> dict[str, Any]:
+        use_new = getattr(settings, "onboarding_use_agentic_review", True)
+        if not use_new or not all(
+            self._pass_prompts.get(k)
+            for k in ("pass3a_explore", "pass3b_audit", "pass3c_group")
+        ):
+            log.info("step3_using_legacy_flow", reason="flag_disabled_or_prompts_missing")
+            return await self._step3_milestones_legacy(scratchpad)
+
+        try:
+            scratchpad["findings"] = []
+            await self._step3a_explore(scratchpad)
+            kept_findings = await self._step3b_audit(scratchpad)
+            scratchpad["findings"] = kept_findings
+            return await self._step3c_group(scratchpad)
+        except Exception as e:
+            log.warning(
+                "step3_new_flow_failed",
+                error=str(e),
+                findings_so_far=len(scratchpad.get("findings", [])),
+                exc_info=True,
+            )
+            # Fallback: run the legacy single-call flow so onboarding never fully fails.
+            return await self._step3_milestones_legacy(scratchpad)
+
+    # ── Step 3a: Explorer (agentic tool loop) ─────────────────────────────
+
+    async def _step3a_explore(self, scratchpad: dict) -> None:
         """
-        LLM reads the code map (~2-10KB) and proposes milestones.
-        Single LLM call, no tools needed. Much cheaper than old Pass 1+2+3.
+        Run a BaseAgent-style tool loop that lets the LLM read real code and
+        record findings. Populates scratchpad["findings"] and scratchpad["project_summary"].
         """
-        log.info("step3_start")
+        log.info("step3a_explore_start")
+
+        review_tools = [
+            make_list_project_files(self.repo_id),
+            make_get_function_code(self.repo_id),
+            make_get_class_code(self.repo_id),
+            make_get_code_slice(self.repo_id),
+            make_read_file(self.repo_id),
+            make_search_in_file(self.repo_id),
+            make_record_finding(self.repo_id, scratchpad),
+            make_finalize_exploration(scratchpad),
+        ]
+
+        # Build lean orientation: code map header + existing issues list.
+        # NO file contents here — the LLM pulls those itself via the tools.
+        code_map = scratchpad.get("code_map", "")
+        # Cap the orientation at ~10KB so the LLM's attention stays on the task,
+        # not on memorizing the whole codebase.
+        code_map_header = code_map[:10_000]
+
+        existing = scratchpad.get("existing", {})
+        existing_issues = existing.get("existing_issues", [])
+        issue_lines = []
+        for issue in existing_issues[:50]:
+            labels = ", ".join(l.get("name", "") for l in issue.get("labels", []))
+            issue_lines.append(
+                f"- #{issue.get('number', '?')} {issue.get('title', '?')} [{labels}]"
+            )
+
+        user_content = (
+            f"# Repository: {self.repo_full_name}\n\n"
+            f"## Code Map Navigation (deterministic analysis)\n\n{code_map_header}\n\n"
+            f"## Existing Issues ({len(existing_issues)} open)\n"
+            + "\n".join(issue_lines) + "\n\n"
+            "Explore the codebase using the tools. Record concrete findings via "
+            "record_finding. When you're done, call finalize_exploration with a "
+            "2-4 sentence project summary."
+        )
+
+        model = getattr(
+            settings,
+            "ai_model_onboarding_pass3a_explore",
+            settings.ai_model_onboarding_pass3,
+        )
+
+        _, tool_call_log = await self._run_pass(
+            pass_name="pass3a_explore",
+            system_prompt=self._pass_prompts["pass3a_explore"],
+            user_content=user_content,
+            tools=review_tools,
+            max_calls=20,  # tight budget — explorer should finalize at ~12-15 calls
+            model=model,
+        )
+
+        # Log per-tool counts so we can see what the explorer actually did.
+        # Without this, a run with 0 findings is indistinguishable from one
+        # where the LLM read the whole repo but forgot to record anything.
+        tool_counts: dict[str, int] = {}
+        for tc in tool_call_log:
+            name = tc.get("tool", "unknown")
+            tool_counts[name] = tool_counts.get(name, 0) + 1
+        log.info(
+            "step3a_tool_breakdown",
+            total=len(tool_call_log),
+            by_tool=tool_counts,
+            findings_recorded=len(scratchpad.get("findings", [])),
+            finalized=bool(scratchpad.get("finalized")),
+        )
+
+        # FINAL CALL nudge: if the explorer exhausted its budget without
+        # calling finalize_exploration, give it one more short pass with
+        # an explicit reminder and a RESTRICTED toolset (only record_finding
+        # and finalize_exploration — no more reads). This catches models
+        # that burn all their turns on reads and forget to close out.
+        if not scratchpad.get("finalized"):
+            findings_so_far = len(scratchpad.get("findings", []))
+            log.warning(
+                "step3a_no_finalize",
+                findings_so_far=findings_so_far,
+                last_tool_calls=len(tool_call_log),
+                note="retrying with FINAL CALL nudge",
+            )
+            final_call_system = (
+                "You are wrapping up an exploration pass. You have no budget "
+                "to read more code. Your only job is to call finalize_exploration "
+                "with a project_summary based on the findings already recorded "
+                "in the scratchpad."
+            )
+            nudge = (
+                f"You exhausted your exploration budget without calling "
+                f"finalize_exploration. You have {findings_so_far} findings "
+                f"already recorded.\n\n"
+                "DO NOT call any read/search/get tools — you have no budget "
+                "to explore further.\n\n"
+                "Your ONLY options:\n"
+                "1. record_finding — if you have one more critical finding ready\n"
+                "2. finalize_exploration — call this NOW with a 2-4 sentence "
+                "project_summary that describes what this repository IS "
+                "(tech stack, purpose, shape of the codebase).\n\n"
+                "Call finalize_exploration immediately."
+            )
+            # Restricted toolset: no reads, so the LLM literally cannot waste
+            # its remaining turns on exploration.
+            final_call_tools = [
+                make_record_finding(self.repo_id, scratchpad),
+                make_finalize_exploration(scratchpad),
+            ]
+            try:
+                await self._run_pass(
+                    pass_name="pass3a_explore_final_call",
+                    system_prompt=final_call_system,
+                    user_content=nudge,
+                    tools=final_call_tools,
+                    max_calls=5,
+                    model=model,
+                )
+            except Exception as e:
+                log.warning("step3a_final_call_failed", error=str(e))
+
+        findings = scratchpad.get("findings", [])
+        log.info(
+            "step3a_explore_complete",
+            findings=len(findings),
+            finalized=scratchpad.get("finalized", False),
+            confidence=scratchpad.get("exploration_confidence"),
+        )
+
+    # ── Step 3b: Auditor (drop generic/unverifiable findings) ─────────────
+
+    async def _step3b_audit(self, scratchpad: dict) -> list[dict]:
+        """
+        Second LLM review: drop generic, unverifiable, or duplicate findings.
+        Returns the filtered list; logs counts.
+        """
+        findings = scratchpad.get("findings", [])
+        if not findings:
+            log.info("step3b_audit_skipped", reason="no findings to audit")
+            return []
+
+        log.info("step3b_audit_start", findings_in=len(findings))
+
+        # Build the auditor input: findings + real file list for validation.
+        real_files: list[str] = []
+        try:
+            # Real paths come from the code_map — cheap and accurate enough.
+            for line in (scratchpad.get("code_map", "") or "").split("\n"):
+                line = line.strip()
+                if line.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".go",
+                                  ".rs", ".java", ".rb", ".php", ".cs", ".kt",
+                                  ".vue", ".svelte")):
+                    real_files.append(line)
+        except Exception:
+            pass
+
+        audit_input = json.dumps(
+            {"file_list": real_files[:500], "findings": findings},
+            default=str,
+        )
+
+        raw = await self._llm_call(
+            self._pass_prompts["pass3b_audit"],
+            audit_input,
+            model=getattr(
+                settings,
+                "ai_model_onboarding_pass3b_audit",
+                settings.ai_model_onboarding_pass3,
+            ),
+        )
+
+        try:
+            verdict = json.loads(_extract_json(raw))
+        except json.JSONDecodeError:
+            log.warning(
+                "step3b_audit_parse_failed",
+                reason="invalid JSON — keeping all findings unchanged",
+                raw=raw[:500],
+            )
+            return findings
+
+        kept_ids = {item.get("id") for item in verdict.get("kept", []) if item.get("id")}
+        dropped = verdict.get("dropped", [])
+
+        # Fail-open: if the auditor dropped EVERYTHING, keep the originals so
+        # the grouper has something to work with. The auditor can't see the
+        # actual code, so it routinely over-rejects legitimate findings — it's
+        # better to let a minor finding through than to ship an empty plan.
+        kept = [f for f in findings if f.get("id") in kept_ids]
+        if not kept and findings:
+            log.warning(
+                "step3b_audit_empty_skipped",
+                raw_findings=len(findings),
+                reason="auditor dropped everything — keeping originals as fallback",
+            )
+            return findings
+
+        log.info(
+            "step3b_audit_complete",
+            kept=len(kept),
+            dropped=len(dropped),
+        )
+        return kept
+
+    # ── Step 3c: Grouper (findings → milestones JSON) ─────────────────────
+
+    async def _step3c_group(self, scratchpad: dict) -> dict[str, Any]:
+        """
+        Turn the audited findings list into the existing `suggested_plan`
+        JSON shape so the dashboard's Issues tab keeps working unchanged.
+        """
+        findings = scratchpad.get("findings", [])
+        existing = scratchpad.get("existing", {})
+        existing_issues = existing.get("existing_issues", [])
+
+        # Carry a short code map header so the grouper has navigation context
+        code_map_header = (scratchpad.get("code_map", "") or "")[:3_000]
+        project_summary = scratchpad.get("project_summary", "")
+
+        grouper_input = json.dumps(
+            {
+                "project_summary": project_summary,
+                "code_map_header": code_map_header,
+                "findings": findings,
+                "existing_issues": [
+                    {
+                        "number": i.get("number"),
+                        "title": i.get("title"),
+                        "labels": [l.get("name") for l in i.get("labels", [])],
+                    }
+                    for i in existing_issues
+                ],
+            },
+            default=str,
+        )
+
+        log.info("step3c_group_start", findings=len(findings))
+
+        raw = await self._llm_call(
+            self._pass_prompts["pass3c_group"],
+            grouper_input,
+            model=getattr(
+                settings,
+                "ai_model_onboarding_pass3c_group",
+                settings.ai_model_onboarding_pass3,
+            ),
+        )
+
+        try:
+            result = json.loads(_extract_json(raw))
+        except json.JSONDecodeError:
+            log.error("step3c_group_parse_failed", raw=raw[:500])
+            raise RuntimeError("Step 3c (grouper) returned invalid JSON")
+
+        # Schema guard: milestones must be a list, each with tasks.
+        if not isinstance(result.get("milestones"), list):
+            log.error("step3c_schema_drift", result_shape=list(result.keys()))
+            raise RuntimeError("Step 3c returned a plan without a milestones list")
+
+        if project_summary and not result.get("project_summary"):
+            result["project_summary"] = project_summary
+
+        log.info(
+            "step3c_group_complete",
+            milestones=len(result.get("milestones", [])),
+            confidence=result.get("overall_confidence"),
+        )
+        return result
+
+    # ── Legacy single-call fallback ───────────────────────────────────────
+
+    async def _step3_milestones_legacy(self, scratchpad: dict) -> dict[str, Any]:
+        """
+        Original Step 3 behavior: one LLM call that reads the code map and
+        produces milestones. Kept as a fallback for when the new agentic loop
+        fails, or when `onboarding_use_agentic_review` is False.
+        """
+        log.info("step3_legacy_start")
 
         code_map = scratchpad["code_map"]
         existing = scratchpad["existing"]
@@ -272,7 +609,7 @@ class OnboardingAgent(BaseAgent):
                 )
 
         context = "".join(context_parts)
-        log.info("step3_context_size", chars=len(context))
+        log.info("step3_legacy_context_size", chars=len(context))
 
         raw = await self._llm_call(
             self._pass_prompts["pass3_milestones"],
@@ -283,11 +620,11 @@ class OnboardingAgent(BaseAgent):
         try:
             result = json.loads(_extract_json(raw))
         except json.JSONDecodeError:
-            log.error("step3_json_parse_failed", raw=raw[:500])
-            raise RuntimeError("Step 3 failed: LLM returned invalid JSON")
+            log.error("step3_legacy_json_parse_failed", raw=raw[:500])
+            raise RuntimeError("Step 3 legacy failed: LLM returned invalid JSON")
 
         log.info(
-            "step3_complete",
+            "step3_legacy_complete",
             milestones=len(result.get("milestones", [])),
             confidence=result.get("overall_confidence"),
         )
@@ -549,12 +886,24 @@ class OnboardingAgent(BaseAgent):
         }
         tool_call_log: list[dict] = []
 
-        # Ensure the Milestone Tracker label exists
-        await _create_label(
-            self.installation_id, self.repo_full_name,
-            name="Milestone Tracker", color="0052cc",
-            description="Tracks milestone progress via linked sub-issues",
-        )
+        # Ensure the Milestone Tracker label exists. GitHub returns 422 if
+        # it already exists — that's fine, we just wanted to guarantee it's
+        # present, so swallow the error and keep going.
+        try:
+            label_result = await _create_label(
+                self.installation_id, self.repo_full_name,
+                name="Milestone Tracker", color="0052cc",
+                description="Tracks milestone progress via linked sub-issues",
+            )
+            if not label_result.success:
+                log.info(
+                    "milestone_tracker_label_exists",
+                    reason=label_result.error or "already exists",
+                )
+        except Exception as e:
+            # Defensive: _create_label is supposed to return ToolResult, but
+            # a raw httpx error got through before. Log and continue.
+            log.info("milestone_tracker_label_create_skipped", error=str(e))
 
         for milestone in milestones_data.get("milestones", []):
             ms_title = milestone.get("title", "Untitled Milestone")

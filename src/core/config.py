@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     ai_model_onboarding_pass3_progressive: str = "anthropic/claude-sonnet-4"
     ai_model_onboarding_pass3_5: str = "anthropic/claude-sonnet-4"
     ai_model_onboarding_pass4: str = "anthropic/claude-haiku-4.5"
+    # Agentic review loop (new 3a/b/c pipeline).
+    # Kimi 2.5 chosen for the explorer: proven 100% tool validity at 15+ call
+    # chains in the Phase 0 bakeoff, much better token efficiency than Sonnet,
+    # and already used by issue_analyst / risk_detective / progress_tracker.
+    # Audit + group stay on Kimi for consistency across the pipeline.
+    ai_model_onboarding_pass3a_explore: str = "moonshotai/kimi-k2.5"
+    ai_model_onboarding_pass3b_audit: str = "moonshotai/kimi-k2.5"
+    ai_model_onboarding_pass3c_group: str = "moonshotai/kimi-k2.5"
+    # Feature flag: set False to force legacy single-call flow
+    onboarding_use_agentic_review: bool = True
     ai_model_issue_analyst: str = "anthropic/claude-sonnet-4"
     ai_model_progress_tracker: str = "anthropic/claude-sonnet-4"
     ai_model_pr_reviewer: str = "anthropic/claude-sonnet-4"
