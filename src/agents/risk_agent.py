@@ -233,6 +233,34 @@ class RiskDetectiveAgent(BaseAgent):
             gathered = await self._gather_push_risk_context(context.event_payload)
             log.info("risk_detective_gathering_push", files=len(gathered.get("files", [])))
 
+            # Skip LLM loop if nothing is actionable.
+            # Push events have no diff, so secrets/patterns/breaking scans are always empty.
+            # The only real signals are: dependency changes, files with dependents, or
+            # changed files linked to issues via the knowledge graph.
+            has_dep_changes = bool(gathered.get("dependency_changes"))
+            has_dependents = bool(gathered.get("file_dependents"))
+            has_affected_issues = bool(gathered.get("affected_issues"))
+
+            if not (has_dep_changes or has_dependents or has_affected_issues):
+                log.info(
+                    "risk_detective_skip_push",
+                    repo=self.repo_full_name,
+                    reason="no actionable signals",
+                    files=len(gathered.get("files", [])),
+                )
+                return AgentResult(
+                    agent_name=self.name,
+                    status="success",
+                    actions_taken=[],
+                    data={
+                        "skipped": True,
+                        "reason": "no actionable signals in push",
+                        "files_scanned": len(gathered.get("files", [])),
+                    },
+                    confidence=1.0,
+                    should_notify=False,
+                )
+
             push_ref = context.event_payload.get("ref", "unknown")
             pusher = context.event_payload.get("pusher", {}).get("name", "unknown")
             head_sha = context.event_payload.get("after", "")
@@ -328,6 +356,37 @@ class RiskDetectiveAgent(BaseAgent):
             tool_calls=len(tool_call_log),
         )
 
+        # Derive severity from scan results
+        severity = "info"
+        if gathered.get("secrets_scan", {}).get("findings"):
+            severity = "critical"
+        elif gathered.get("security_patterns", {}).get("findings") or gathered.get("breaking_changes"):
+            severity = "warning"
+
+        warned_files = sorted({
+            f.get("filename", "") for f in gathered.get("files", []) if f.get("filename")
+        })
+
+        data = {
+            "final_response": final_text,
+            "tool_call_log": tool_call_log,
+            "pr_number": pr_number,
+        }
+
+        # Only schedule outcome tracking for PR events with meaningful risk signal
+        if not is_push and pr_number and severity in ("critical", "warning"):
+            data["outcome_predictions"] = [
+                {
+                    "outcome_type": "risk_warning",
+                    "target_type": "pr",
+                    "target_number": pr_number,
+                    "predicted": {
+                        "severity": severity,
+                        "file_paths_warned": warned_files,
+                    },
+                },
+            ]
+
         return AgentResult(
             agent_name=self.name,
             status="success",
@@ -335,7 +394,7 @@ class RiskDetectiveAgent(BaseAgent):
                 {"tool": tc["tool"], "success": tc["result"]["success"]}
                 for tc in tool_call_log
             ],
-            data={"final_response": final_text, "tool_call_log": tool_call_log, "pr_number": pr_number},
+            data=data,
             confidence=0.85,
             should_notify=any(tc["tool"] in ("post_comment", "create_check_run", "tag_user") for tc in tool_call_log),
         )

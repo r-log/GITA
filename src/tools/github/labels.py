@@ -54,20 +54,3 @@ def make_add_label(installation_id: int, repo_full_name: str) -> Tool:
     )
 
 
-def make_create_label(installation_id: int, repo_full_name: str) -> Tool:
-    return Tool(
-        name="create_label",
-        description="Create a new label in the repository.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Label name"},
-                "color": {"type": "string", "description": "Color hex code without # (e.g. 'ff0000')"},
-                "description": {"type": "string", "description": "Label description"},
-            },
-            "required": ["name"],
-        },
-        handler=lambda name, color="ededed", description="": _create_label(
-            installation_id, repo_full_name, name, color, description
-        ),
-    )

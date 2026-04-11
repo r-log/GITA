@@ -17,6 +17,9 @@ from src.models.onboarding_run import OnboardingRun
 from src.models.agent_run import AgentRun
 from src.models.analysis import Analysis
 from src.models.event import EventModel
+from src.models.outcome import OutcomeModel
+from src.models.issue import IssueModel
+from src.models.pull_request import PullRequestModel
 
 log = structlog.get_logger()
 
@@ -738,6 +741,216 @@ async def get_timeline(
         timeline.append(entry)
 
     return {"timeline": timeline}
+
+
+# ── Outcomes ───────────────────────────────────────────────────────
+
+
+_ACTION_VERBS = {
+    "smart_eval": "flagged quality issues on",
+    "closure_validation": "validated the closure of",
+    "checklist_correction": "corrected the checklist in",
+    "risk_warning": "warned about risks in",
+    "stale_nudge": "nudged the stale",
+    "deadline_prediction": "predicted the deadline for",
+}
+
+
+def _build_story(row: dict, title: str | None) -> str:
+    """Turn a raw outcome row into a one-sentence human-readable story."""
+    target_label = f"{row['target_type']} #{row['target_number']}"
+    if title:
+        target_label += f" \"{title[:60]}\""
+    verb = _ACTION_VERBS.get(row["outcome_type"], "intervened on")
+    verdict = row.get("notes") or {
+        "success": "intervention landed",
+        "partial": "partially landed",
+        "failed": "no measurable effect",
+        "pending": "awaiting result",
+        "stale": "no result in 7 days",
+    }.get(row["status"], row["status"])
+    return f"{row['agent_name']} {verb} {target_label} — {verdict}"
+
+
+@router.get("/outcomes")
+async def get_outcomes(
+    repo_id: int = Query(...),
+    days: int = Query(30),
+):
+    """
+    Outcomes rollup — tells the human whether GITA is pulling its weight.
+
+    Returns a narrative, not a table:
+    - headline: one-sentence verdict for the period
+    - trend: weekly success/partial/failed buckets for a line chart
+    - by_agent: who's pulling their weight
+    - wins: recent stories where GITA helped
+    - struggles: recent stories where GITA missed
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    async with async_session() as session:
+        # Pull all outcomes for the period with agent name
+        rows_stmt = (
+            select(OutcomeModel, AgentRun.agent_name)
+            .join(AgentRun, OutcomeModel.agent_run_id == AgentRun.id)
+            .where(
+                OutcomeModel.repo_id == repo_id,
+                OutcomeModel.created_at >= cutoff,
+            )
+            .order_by(desc(OutcomeModel.created_at))
+        )
+        joined = (await session.execute(rows_stmt)).all()
+
+        # Bulk-load titles for target enrichment
+        issue_numbers = {o.target_number for (o, _) in joined if o.target_type == "issue" and o.target_number}
+        pr_numbers = {o.target_number for (o, _) in joined if o.target_type == "pr" and o.target_number}
+
+        issue_titles: dict[int, str] = {}
+        if issue_numbers:
+            issue_rows = (await session.execute(
+                select(IssueModel.github_number, IssueModel.title).where(
+                    IssueModel.repo_id == repo_id,
+                    IssueModel.github_number.in_(issue_numbers),
+                )
+            )).all()
+            issue_titles = {num: title for (num, title) in issue_rows}
+
+        pr_titles: dict[int, str] = {}
+        if pr_numbers:
+            pr_rows = (await session.execute(
+                select(PullRequestModel.github_number, PullRequestModel.title).where(
+                    PullRequestModel.repo_id == repo_id,
+                    PullRequestModel.github_number.in_(pr_numbers),
+                )
+            )).all()
+            pr_titles = {num: title for (num, title) in pr_rows}
+
+    # Shape rows + enrich with titles + stories
+    shaped = []
+    for o, agent_name in joined:
+        title = None
+        if o.target_type == "issue":
+            title = issue_titles.get(o.target_number)
+        elif o.target_type == "pr":
+            title = pr_titles.get(o.target_number)
+
+        row = {
+            "id": o.id,
+            "agent_name": agent_name,
+            "outcome_type": o.outcome_type,
+            "target_type": o.target_type,
+            "target_number": o.target_number,
+            "target_title": title,
+            "status": o.status,
+            "notes": o.notes,
+            "scheduled_for": _serialize_datetime(o.scheduled_for),
+            "checked_at": _serialize_datetime(o.checked_at),
+            "created_at": _serialize_datetime(o.created_at),
+        }
+        row["story"] = _build_story(row, title)
+        shaped.append(row)
+
+    # Headline counts
+    counts = {"success": 0, "partial": 0, "failed": 0, "pending": 0, "stale": 0}
+    for r in shaped:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    total = len(shaped)
+    checked = counts["success"] + counts["partial"] + counts["failed"]
+    success_rate = round(counts["success"] / checked * 100, 1) if checked else None
+
+    # First-result ETA: earliest scheduled_for among pending rows
+    pending_rows = [r for r in shaped if r["status"] == "pending" and r["scheduled_for"]]
+    first_eta = min((r["scheduled_for"] for r in pending_rows), default=None)
+
+    # Human headline
+    if total == 0:
+        headline_text = f"No interventions in the last {days} days yet."
+    elif checked == 0:
+        headline_text = (
+            f"Still gathering signal — {total} interventions scheduled, "
+            f"first results in ~24h."
+        )
+    else:
+        parts = []
+        if counts["success"]:
+            parts.append(f"{counts['success']} worked")
+        if counts["partial"]:
+            parts.append(f"{counts['partial']} partially")
+        if counts["failed"]:
+            parts.append(f"{counts['failed']} didn't land")
+        if counts["pending"]:
+            parts.append(f"{counts['pending']} still pending")
+        headline_text = f"{total} interventions in {days} days — " + ", ".join(parts) + "."
+
+    # Weekly trend — last 8 weeks, bucketed by ISO week start (Monday)
+    now = datetime.utcnow()
+    trend_weeks = 8
+    trend_cutoff = now - timedelta(weeks=trend_weeks)
+    buckets: dict[str, dict[str, int]] = {}
+    for i in range(trend_weeks):
+        wk_start = now - timedelta(days=now.weekday(), weeks=i)
+        wk_start = wk_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        key = wk_start.date().isoformat()
+        buckets[key] = {"success": 0, "partial": 0, "failed": 0, "total": 0}
+
+    for r in shaped:
+        if not r["created_at"]:
+            continue
+        created = datetime.fromisoformat(r["created_at"].replace("Z", ""))
+        if created < trend_cutoff:
+            continue
+        wk_start = created - timedelta(days=created.weekday())
+        wk_start = wk_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        key = wk_start.date().isoformat()
+        if key not in buckets:
+            continue
+        buckets[key]["total"] += 1
+        if r["status"] in ("success", "partial", "failed"):
+            buckets[key][r["status"]] += 1
+
+    trend = [
+        {"week_start": k, **v}
+        for k, v in sorted(buckets.items())
+    ]
+
+    # By-agent rollup
+    by_agent: dict[str, dict] = {}
+    for r in shaped:
+        a = r["agent_name"]
+        if a not in by_agent:
+            by_agent[a] = {"success": 0, "partial": 0, "failed": 0, "pending": 0, "stale": 0, "total": 0}
+        by_agent[a][r["status"]] = by_agent[a].get(r["status"], 0) + 1
+        by_agent[a]["total"] += 1
+
+    for stats in by_agent.values():
+        checked_ = stats["success"] + stats["partial"] + stats["failed"]
+        stats["checked"] = checked_
+        stats["success_rate"] = round(stats["success"] / checked_ * 100, 1) if checked_ else None
+
+    # Wins + struggles lists (top 10 each, most recent first)
+    wins = [r for r in shaped if r["status"] == "success"][:10]
+    struggles = [r for r in shaped if r["status"] == "failed"][:10]
+
+    return {
+        "headline": {
+            "period_days": days,
+            "text": headline_text,
+            "total": total,
+            "checked": checked,
+            "succeeded": counts["success"],
+            "partial": counts["partial"],
+            "failed": counts["failed"],
+            "pending": counts["pending"],
+            "stale": counts["stale"],
+            "success_rate": success_rate,
+            "first_result_eta": first_eta,
+        },
+        "trend": trend,
+        "by_agent": by_agent,
+        "wins": wins,
+        "struggles": struggles,
+    }
 
 
 # ── Quick Actions ──────────────────────────────────────────────────

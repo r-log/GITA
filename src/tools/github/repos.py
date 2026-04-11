@@ -60,21 +60,6 @@ async def _get_collaborators(installation_id: int, repo_full_name: str) -> ToolR
         return ToolResult(success=False, error=str(e))
 
 
-def make_get_repo_tree(installation_id: int, repo_full_name: str) -> Tool:
-    return Tool(
-        name="get_repo_tree",
-        description="Fetch the full file tree of the repository. Returns all file paths, types, and sizes.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "ref": {"type": "string", "description": "Git ref (branch/tag/sha). Defaults to HEAD."},
-            },
-            "required": [],
-        },
-        handler=lambda ref="HEAD": _get_repo_tree(installation_id, repo_full_name, ref),
-    )
-
-
 def make_read_file(installation_id: int, repo_full_name: str) -> Tool:
     return Tool(
         name="read_file",
@@ -91,10 +76,3 @@ def make_read_file(installation_id: int, repo_full_name: str) -> Tool:
     )
 
 
-def make_get_collaborators(installation_id: int, repo_full_name: str) -> Tool:
-    return Tool(
-        name="get_collaborators",
-        description="List all collaborators on the repository with their permission levels.",
-        parameters={"type": "object", "properties": {}, "required": []},
-        handler=lambda: _get_collaborators(installation_id, repo_full_name),
-    )

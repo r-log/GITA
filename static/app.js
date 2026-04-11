@@ -18,13 +18,16 @@ function badge(status) {
 function timeAgo(dateStr) {
   if (!dateStr) return 'never';
   const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
+  const future = diff < 0;
+  const absMs = Math.abs(diff);
+  const mins = Math.floor(absMs / 60000);
   if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
+  const fmt = (n, unit) => future ? `in ${n}${unit}` : `${n}${unit} ago`;
+  if (mins < 60) return fmt(mins, 'm');
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 24) return fmt(hrs, 'h');
   const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
+  return fmt(days, 'd');
 }
 
 function formatDuration(ms) {
@@ -46,13 +49,26 @@ function jsonViewer(obj, maxHeight) {
   return `<div class="json-viewer" style="${style}">${JSON.stringify(obj, null, 2)}</div>`;
 }
 
+// ── Persistence helpers ───────────────────────────────────────────
+const LS_REPO_KEY = 'gita.selectedRepoId';
+const LS_TAB_KEY = 'gita.activeTab';
+
+function setActiveTab(tab) {
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  const btn = document.querySelector(`nav button[data-tab="${tab}"]`);
+  const panel = document.getElementById(`tab-${tab}`);
+  if (!btn || !panel) return false;
+  btn.classList.add('active');
+  panel.classList.add('active');
+  localStorage.setItem(LS_TAB_KEY, tab);
+  return true;
+}
+
 // ── Tab Navigation ────────────────────────────────────────────────
 document.querySelectorAll('nav button').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+    setActiveTab(btn.dataset.tab);
     loadTabData(btn.dataset.tab);
   });
 });
@@ -62,8 +78,11 @@ const repoSelector = document.getElementById('repo-selector');
 repoSelector.addEventListener('change', () => {
   currentRepoId = repoSelector.value ? parseInt(repoSelector.value) : null;
   if (currentRepoId) {
+    localStorage.setItem(LS_REPO_KEY, String(currentRepoId));
     const activeTab = document.querySelector('nav button.active').dataset.tab;
     loadTabData(activeTab);
+  } else {
+    localStorage.removeItem(LS_REPO_KEY);
   }
 });
 
@@ -75,11 +94,26 @@ async function loadRepos() {
     opt.textContent = r.full_name;
     repoSelector.appendChild(opt);
   });
-  if (repos.length === 1) {
+
+  // Restore previously selected repo if it still exists, otherwise
+  // fall back to the only repo if there's just one.
+  const savedRepoId = parseInt(localStorage.getItem(LS_REPO_KEY) || '', 10);
+  const savedExists = repos.some(r => r.id === savedRepoId);
+  if (savedExists) {
+    repoSelector.value = String(savedRepoId);
+    currentRepoId = savedRepoId;
+  } else if (repos.length === 1) {
     repoSelector.value = repos[0].id;
     currentRepoId = repos[0].id;
-    loadTabData('overview');
+    localStorage.setItem(LS_REPO_KEY, String(currentRepoId));
   }
+
+  // Restore the tab the user was last on (fall back to overview)
+  const savedTab = localStorage.getItem(LS_TAB_KEY) || 'overview';
+  const activeTab = setActiveTab(savedTab) ? savedTab : 'overview';
+  if (activeTab !== savedTab) setActiveTab('overview');
+
+  if (currentRepoId) loadTabData(activeTab);
 }
 
 // ── Tab Data Loading ──────────────────────────────────────────────
@@ -88,11 +122,119 @@ function loadTabData(tab) {
   switch (tab) {
     case 'overview': loadOverview(); break;
     case 'timeline': loadTimeline(); break;
+    case 'outcomes': loadOutcomes(); break;
     case 'runs': loadRuns(); break;
     case 'agents': loadAgents(); break;
     case 'issues': loadIssues(); break;
     case 'security': loadSecurity(); break;
     case 'context': loadContext(); break;
+  }
+}
+
+// ── Outcomes Tab ──────────────────────────────────────────────────
+let outcomesTrendChart = null;
+
+async function loadOutcomes() {
+  const data = await api(`/outcomes?repo_id=${currentRepoId}&days=30`);
+  const headline = data.headline || {};
+
+  // Headline — one sentence verdict
+  const rate = headline.success_rate;
+  let rateBadge = '';
+  if (rate !== null && rate !== undefined) {
+    const cls = rate >= 70 ? 'badge-success' : rate >= 40 ? 'badge-partial' : 'badge-failed';
+    rateBadge = `<span class="badge ${cls}" style="margin-left:12px">${rate}% success rate</span>`;
+  }
+  const etaLine = headline.first_result_eta
+    ? `<div class="subtitle" style="margin-top:6px">Next result expected ${timeAgo(headline.first_result_eta)}</div>`
+    : '';
+  document.getElementById('outcomes-headline').innerHTML = `
+    <div class="headline-text">${headline.text || 'No data yet.'} ${rateBadge}</div>
+    ${etaLine}
+  `;
+
+  // Trend chart — stacked bars: success / partial / failed per week
+  const trend = data.trend || [];
+  const ctx = document.getElementById('outcomes-trend');
+  if (outcomesTrendChart) outcomesTrendChart.destroy();
+  outcomesTrendChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: trend.map(t => t.week_start),
+      datasets: [
+        { label: 'Success',  data: trend.map(t => t.success),  backgroundColor: '#2dc653' },
+        { label: 'Partial',  data: trend.map(t => t.partial),  backgroundColor: '#d29922' },
+        { label: 'Failed',   data: trend.map(t => t.failed),   backgroundColor: '#f85149' },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: '#8b949e' } } },
+      scales: {
+        x: { stacked: true, ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+        y: { stacked: true, ticks: { color: '#8b949e' }, grid: { color: '#21262d' }, beginAtZero: true },
+      },
+    },
+  });
+
+  // By-agent breakdown
+  const byAgent = data.by_agent || {};
+  const agentNames = Object.keys(byAgent).sort();
+  if (!agentNames.length) {
+    document.getElementById('outcomes-by-agent').innerHTML = '<p class="subtitle">No agent activity in this period.</p>';
+  } else {
+    let html = '';
+    agentNames.forEach(a => {
+      const s = byAgent[a];
+      const rate = s.success_rate;
+      const rateStr = rate === null ? 'no signal yet' : `${rate}%`;
+      const rateClass = rate === null ? '' : rate >= 70 ? 'badge-success' : rate >= 40 ? 'badge-partial' : 'badge-failed';
+      html += `
+        <div style="margin-bottom:10px">
+          <div><strong>${a}</strong> <span class="badge ${rateClass}">${rateStr}</span></div>
+          <div class="subtitle">${s.success} worked · ${s.partial} partial · ${s.failed} failed · ${s.pending} pending (${s.total} total)</div>
+        </div>
+      `;
+    });
+    document.getElementById('outcomes-by-agent').innerHTML = html;
+  }
+
+  // Wins list — narrative cards
+  const wins = data.wins || [];
+  if (!wins.length) {
+    document.getElementById('outcomes-wins').innerHTML = '<p class="subtitle">No wins recorded yet. Signal takes 24-72h to accumulate after each intervention.</p>';
+  } else {
+    let html = '';
+    wins.forEach(w => {
+      html += `
+        <div class="chart-card" style="margin-bottom:10px">
+          <div>${w.story}</div>
+          <div class="subtitle" style="margin-top:4px">
+            ${timeAgo(w.checked_at || w.created_at)} · <code>${w.outcome_type}</code>
+          </div>
+        </div>
+      `;
+    });
+    document.getElementById('outcomes-wins').innerHTML = html;
+  }
+
+  // Struggles list — narrative cards
+  const struggles = data.struggles || [];
+  if (!struggles.length) {
+    document.getElementById('outcomes-struggles').innerHTML = '<p class="subtitle">No failures in the last 30 days.</p>';
+  } else {
+    let html = '';
+    struggles.forEach(s => {
+      html += `
+        <div class="chart-card" style="margin-bottom:10px">
+          <div>${s.story}</div>
+          <div class="subtitle" style="margin-top:4px">
+            ${timeAgo(s.checked_at || s.created_at)} · <code>${s.outcome_type}</code>
+          </div>
+        </div>
+      `;
+    });
+    document.getElementById('outcomes-struggles').innerHTML = html;
   }
 }
 

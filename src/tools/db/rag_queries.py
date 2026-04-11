@@ -369,3 +369,98 @@ def make_get_pr_full(repo_id: int) -> Tool:
         },
         handler=lambda github_number: _get_pr_full(repo_id, github_number),
     )
+
+
+# ── Get Parent Trackers ───────────────────────────────────────────
+
+from src.utils.checklist import CHECKLIST_ITEM_RE
+
+
+async def _get_parent_trackers(repo_id: int, issue_number: int) -> ToolResult:
+    """
+    Find every Milestone Tracker issue whose checklist references the given
+    sub-issue number. Returns the tracker's body and a parsed checklist state
+    so the LLM can decide how to edit it.
+
+    Use this when a sub-issue is closed / completed, to find which tracker(s)
+    need their checkbox ticked.
+    """
+    try:
+        async with async_session() as session:
+            # Prefer the structured linked_issue_numbers when it's populated.
+            # Fall back to a LIKE body scan otherwise (some trackers were
+            # created before this field was set reliably).
+            stmt = select(IssueModel).where(
+                IssueModel.repo_id == repo_id,
+                IssueModel.is_milestone_tracker == True,  # noqa: E712
+            )
+            result = await session.execute(stmt)
+            trackers = result.scalars().all()
+
+        matching = []
+        for t in trackers:
+            linked = t.linked_issue_numbers or []
+            body = t.body or ""
+            mentions = f"#{issue_number}" in body or issue_number in linked
+            if not mentions:
+                continue
+
+            # Parse the checklist to expose current state
+            checklist = []
+            for mark, desc, num_str in CHECKLIST_ITEM_RE.findall(body):
+                num = int(num_str)
+                checklist.append({
+                    "sub_issue_number": num,
+                    "description": desc.strip(),
+                    "checked": mark.lower() == "x",
+                    "is_target": num == issue_number,
+                })
+
+            completed = sum(1 for c in checklist if c["checked"])
+            total = len(checklist)
+
+            matching.append({
+                "tracker_number": t.github_number,
+                "title": t.title,
+                "state": t.state,
+                "body": body,
+                "checklist": checklist,
+                "progress": {
+                    "completed": completed,
+                    "total": total,
+                    "pct": round(completed / total * 100) if total else 0,
+                },
+                "target_item_checked": any(
+                    c["checked"] for c in checklist if c["is_target"]
+                ),
+            })
+
+        return ToolResult(success=True, data=matching)
+    except Exception as e:
+        return ToolResult(success=False, error=str(e))
+
+
+def make_get_parent_trackers(repo_id: int) -> Tool:
+    return Tool(
+        name="get_parent_trackers",
+        description=(
+            "Find every Milestone Tracker issue whose checklist references a given "
+            "sub-issue number. Returns each tracker's body, parsed checklist state "
+            "(which items are checked vs unchecked), progress percentage, and whether "
+            "the target item is already checked. Use this when you're about to close "
+            "a sub-issue and want to tick it off in the parent tracker, or when you "
+            "need to decide whether a parent tracker is now 100% complete and should "
+            "itself be closed."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "issue_number": {
+                    "type": "integer",
+                    "description": "The sub-issue number to look up parent trackers for",
+                },
+            },
+            "required": ["issue_number"],
+        },
+        handler=lambda issue_number: _get_parent_trackers(repo_id, issue_number),
+    )

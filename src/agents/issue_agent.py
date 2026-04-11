@@ -8,7 +8,7 @@ Includes deterministic logic for:
 
 from __future__ import annotations
 
-import re
+import hashlib
 import json
 import structlog
 
@@ -18,7 +18,7 @@ from src.core.github_auth import GitHubClient
 
 # GitHub tools — raw functions for deterministic checks
 from src.tools.github.issues import (
-    make_get_issue, make_get_all_issues, make_update_issue,
+    make_get_issue, make_get_all_issues, make_update_issue, make_create_issue,
     _get_issue, _update_issue,
 )
 from src.tools.github.comments import make_post_comment, make_edit_comment, _post_comment
@@ -30,12 +30,11 @@ from src.tools.ai.smart_evaluator import make_evaluate_smart, make_check_milesto
 
 # DB tools
 from src.tools.db.analysis import make_save_evaluation, make_get_previous_evaluation, make_save_analysis
-from src.tools.db.rag_queries import make_get_issue_full, make_search_comments, make_search_events
+from src.tools.db.rag_queries import make_get_issue_full, make_search_comments, make_search_events, make_get_parent_trackers
+
+from src.utils.checklist import CHECKLIST_ITEM_RE
 
 log = structlog.get_logger()
-
-# Pattern to match checklist items: - [x] or - [ ] followed by text and (#N)
-CHECKLIST_PATTERN = re.compile(r"- \[([ xX])\] (.+?)\(#(\d+)\)")
 
 
 class IssueAnalystAgent(BaseAgent):
@@ -64,6 +63,7 @@ class IssueAnalystAgent(BaseAgent):
             make_get_issue(installation_id, repo_full_name),
             make_get_all_issues(installation_id, repo_full_name),
             make_update_issue(installation_id, repo_full_name),
+            make_create_issue(installation_id, repo_full_name),
             make_post_comment(installation_id, repo_full_name, repo_id),
             make_edit_comment(installation_id, repo_full_name),
             make_add_label(installation_id, repo_full_name),
@@ -77,6 +77,7 @@ class IssueAnalystAgent(BaseAgent):
             make_get_issue_full(repo_id),
             make_search_comments(repo_id),
             make_search_events(repo_id),
+            make_get_parent_trackers(repo_id),
         ]
 
     async def _validate_checklist(self, issue_number: int, issue_data: dict) -> dict:
@@ -86,7 +87,7 @@ class IssueAnalystAgent(BaseAgent):
         Returns {"fixed": bool, "unchecked": [list of issue numbers]}
         """
         body = issue_data.get("body") or ""
-        matches = CHECKLIST_PATTERN.findall(body)
+        matches = CHECKLIST_ITEM_RE.findall(body)
 
         if not matches:
             return {"fixed": False, "unchecked": []}
@@ -292,6 +293,12 @@ class IssueAnalystAgent(BaseAgent):
             {"role": "user", "content": json.dumps(issue_context)},
         ]
 
+        # Snapshot pre-run state for outcome tracking
+        initial_body_hash = hashlib.sha256(
+            (issue_data.get("body") or "").encode("utf-8", errors="replace")
+        ).hexdigest()
+        initial_labels = sorted(labels)
+
         final_text, tool_call_log = await self.run_tool_loop(messages)
 
         log.info(
@@ -301,6 +308,39 @@ class IssueAnalystAgent(BaseAgent):
             tool_calls=len(tool_call_log),
         )
 
+        # Extract labels recommended by the agent (from add_label tool calls)
+        recommended_labels = sorted({
+            tc.get("arguments", {}).get("label")
+            for tc in tool_call_log
+            if tc.get("tool") == "add_label" and tc.get("arguments", {}).get("label")
+        })
+
+        # Extract smart_eval score if one was recorded
+        smart_score = None
+        for tc in tool_call_log:
+            if tc.get("tool") == "evaluate_smart" and tc.get("result", {}).get("success"):
+                smart_score = tc["result"].get("data", {}).get("score")
+                break
+
+        data = {
+            "final_response": final_text,
+            "tool_call_log": tool_call_log,
+            "issue_number": issue_number,
+            "outcome_predictions": [
+                {
+                    "outcome_type": "smart_eval",
+                    "target_type": "issue",
+                    "target_number": issue_number,
+                    "predicted": {
+                        "initial_body_hash": initial_body_hash,
+                        "initial_labels": initial_labels,
+                        "recommended_labels": recommended_labels,
+                        "score": smart_score,
+                    },
+                },
+            ],
+        }
+
         return AgentResult(
             agent_name=self.name,
             status="success",
@@ -308,7 +348,7 @@ class IssueAnalystAgent(BaseAgent):
                 {"tool": tc["tool"], "success": tc["result"]["success"]}
                 for tc in tool_call_log
             ],
-            data={"final_response": final_text, "tool_call_log": tool_call_log, "issue_number": issue_number},
+            data=data,
             confidence=0.8,
             should_notify=any(tc["tool"] == "post_comment" for tc in tool_call_log),
         )

@@ -173,33 +173,6 @@ async def _detect_stale_prs(pull_requests: list[dict], stale_days: int = 7) -> T
         return ToolResult(success=False, error=str(e))
 
 
-def make_calculate_velocity() -> Tool:
-    return Tool(
-        name="calculate_velocity",
-        description="Compute velocity from issue data. Pass a text summary of the issues: how many total, how many closed, and the close dates of closed issues.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "total_issues": {"type": "integer", "description": "Total number of issues in the milestone"},
-                "closed_issues": {"type": "integer", "description": "Number of closed issues"},
-                "summary": {"type": "string", "description": "Text summary of issue states and dates for velocity calculation"},
-            },
-            "required": ["total_issues", "closed_issues"],
-        },
-        handler=lambda total_issues, closed_issues, summary="": ToolResult(
-            success=True,
-            data={
-                "velocity": round(closed_issues / max(total_issues, 1), 2),
-                "closed_count": closed_issues,
-                "open_count": total_issues - closed_issues,
-                "total_count": total_issues,
-                "completion_pct": round(closed_issues / max(total_issues, 1) * 100, 1),
-                "trend": "insufficient_data",
-            },
-        ),
-    )
-
-
 def make_predict_completion() -> Tool:
     return Tool(
         name="predict_completion",
@@ -218,39 +191,3 @@ def make_predict_completion() -> Tool:
     )
 
 
-def make_detect_blockers() -> Tool:
-    return Tool(
-        name="detect_blockers",
-        description="Find stale issues. Pass the issue numbers and their last update dates as text.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "issues_summary": {"type": "string", "description": "Text listing issues with their numbers, titles, states, and last update dates"},
-                "stale_days": {"type": "integer", "description": "Days of inactivity to consider stale (default 14)"},
-            },
-            "required": ["issues_summary"],
-        },
-        handler=lambda issues_summary, stale_days=14: ToolResult(
-            success=True,
-            data={"summary": issues_summary, "stale_threshold_days": stale_days, "note": "Review the issues listed to identify blockers"},
-        ),
-    )
-
-
-def make_detect_stale_prs() -> Tool:
-    return Tool(
-        name="detect_stale_prs",
-        description="Find PRs that have been open too long. Pass PR details as text.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "prs_summary": {"type": "string", "description": "Text listing open PRs with numbers, titles, and creation dates"},
-                "stale_days": {"type": "integer", "description": "Days open to consider stale (default 7)"},
-            },
-            "required": ["prs_summary"],
-        },
-        handler=lambda prs_summary, stale_days=7: ToolResult(
-            success=True,
-            data={"summary": prs_summary, "stale_threshold_days": stale_days},
-        ),
-    )

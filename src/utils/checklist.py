@@ -7,6 +7,14 @@ Used by both the reconciliation worker and the onboarding agent's progressive fl
 import re
 
 
+# Compiled regex for matching a checked/unchecked sub-issue reference:
+#   - [x] Some task (#42)
+#   - [ ] Another task (#43)
+# Capture groups: (1) mark char, (2) description, (3) issue number.
+# Use with `.findall(body)` to get a list of (mark, desc, num_str) tuples.
+CHECKLIST_ITEM_RE = re.compile(r"- \[([ xX])\] (.+?)\(#(\d+)\)")
+
+
 def parse_checklist(body: str) -> list[dict]:
     """
     Parse markdown checklist items from a Milestone Tracker body.

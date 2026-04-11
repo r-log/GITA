@@ -49,7 +49,6 @@ class Settings(BaseSettings):
     ai_model_risk_detective: str = "anthropic/claude-opus-4.5"
 
     # --- Per-Tool Model Overrides ---
-    ai_model_project_planner: str = "anthropic/claude-sonnet-4"
     ai_model_plan_reconciler: str = "anthropic/claude-haiku-4.5"
     ai_model_smart_evaluator: str = "anthropic/claude-sonnet-4"
     ai_model_milestone_alignment: str = "anthropic/claude-haiku-4.5"

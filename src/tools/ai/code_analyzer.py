@@ -6,7 +6,7 @@ import json
 import structlog
 from src.core.config import settings
 from src.core.llm_client import llm_json_call
-from src.tools.base import Tool, ToolResult
+from src.tools.base import ToolResult
 
 log = structlog.get_logger()
 
@@ -115,33 +115,3 @@ Respond with JSON:
         return ToolResult(success=False, error=str(e))
 
 
-def make_analyze_diff_quality() -> Tool:
-    return Tool(
-        name="analyze_diff_quality",
-        description="AI tool: Analyze a PR diff for code quality issues. Returns quality score, issues found, and suggestions.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "diff": {"type": "string", "description": "The PR diff content"},
-                "pr_info": {"type": "object", "description": "PR metadata (title, body, files_changed count)"},
-            },
-            "required": ["diff", "pr_info"],
-        },
-        handler=lambda diff, pr_info: _analyze_diff_quality(diff, pr_info),
-    )
-
-
-def make_check_test_coverage() -> Tool:
-    return Tool(
-        name="check_test_coverage",
-        description="AI tool: Check if new code paths in the diff have corresponding test changes.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "diff": {"type": "string", "description": "The PR diff content"},
-                "files_changed": {"type": "array", "items": {"type": "object"}, "description": "List of changed files with filename and status"},
-            },
-            "required": ["diff", "files_changed"],
-        },
-        handler=lambda diff, files_changed: _check_test_coverage(diff, files_changed),
-    )

@@ -12,9 +12,15 @@ from __future__ import annotations
 import json
 import re
 import structlog
+from datetime import datetime
+
+from sqlalchemy import select
 
 from src.agents.base import BaseAgent, AgentContext, AgentResult
 from src.core.config import settings
+from src.core.database import async_session
+from src.models.issue import IssueModel
+from src.models.milestone import MilestoneModel
 from src.tools.base import Tool
 
 # GitHub tools — raw functions for data gathering
@@ -35,14 +41,13 @@ from src.tools.ai.predictor import make_predict_completion
 
 # DB tools
 from src.tools.db.analysis import make_save_analysis, make_get_analysis_history
-from src.tools.db.rag_queries import make_search_events, make_search_commits
+from src.tools.db.rag_queries import make_search_events, make_search_commits, make_get_parent_trackers
 from src.tools.db.graph_queries import _get_milestone_file_coverage, _get_file_ownership
 from src.tools.db.code_index import _query_code_index
 
-log = structlog.get_logger()
+from src.utils.checklist import CHECKLIST_ITEM_RE
 
-# Pattern to extract issue numbers from checklist items
-_CHECKLIST_RE = re.compile(r"- \[([ xX])\] .+?\(#(\d+)\)")
+log = structlog.get_logger()
 
 
 class ProgressTrackerAgent(BaseAgent):
@@ -88,6 +93,7 @@ class ProgressTrackerAgent(BaseAgent):
             # RAG
             make_search_events(repo_id),
             make_search_commits(repo_id),
+            make_get_parent_trackers(repo_id),
         ]
 
     async def _gather_context(self, focus_milestone_number: int | None = None) -> dict:
@@ -120,10 +126,10 @@ class ProgressTrackerAgent(BaseAgent):
         # 3. For each tracker, parse checklist and gather sub-issue states
         for tracker in trackers:
             body = tracker.get("body", "") or ""
-            checklist_matches = _CHECKLIST_RE.findall(body)
+            checklist_matches = CHECKLIST_ITEM_RE.findall(body)
             sub_issues = []
 
-            for check_mark, issue_num in checklist_matches:
+            for check_mark, _desc, issue_num in checklist_matches:
                 num = int(issue_num)
                 # Find in all_issues (avoid extra API calls)
                 sub = next((i for i in all_issues if i.get("number") == num), None)
@@ -223,6 +229,11 @@ class ProgressTrackerAgent(BaseAgent):
                             }
                         push_context["affected_issues"][key]["files"].append(path)
 
+                # Enrich with issue title/body/state so the LLM can actually
+                # reason about "is this issue done?". Without this, it only
+                # sees DB IDs and can't make close/progress decisions.
+                await self._enrich_affected_issues(push_context["affected_issues"])
+
                 # Convert to list for JSON serialization
                 push_context["affected_issues"] = list(push_context["affected_issues"].values())
         except Exception as e:
@@ -270,6 +281,56 @@ class ProgressTrackerAgent(BaseAgent):
         push_context["code_structures"] = code_structures
 
         return push_context
+
+    async def _enrich_affected_issues(self, affected: dict) -> None:
+        """
+        Add title/body/state/github_number to the affected_issues entries
+        so the LLM can reason about whether each issue is actually done.
+        Mutates in place.
+        """
+        issue_ids = [v["id"] for v in affected.values() if v.get("type") == "issue" and v.get("id")]
+        milestone_ids = [v["id"] for v in affected.values() if v.get("type") == "milestone" and v.get("id")]
+
+        if not issue_ids and not milestone_ids:
+            return
+
+        async with async_session() as session:
+            issue_rows = []
+            if issue_ids:
+                issue_result = await session.execute(
+                    select(IssueModel).where(IssueModel.id.in_(issue_ids))
+                )
+                issue_rows = issue_result.scalars().all()
+
+            milestone_rows = []
+            if milestone_ids:
+                ms_result = await session.execute(
+                    select(MilestoneModel).where(MilestoneModel.id.in_(milestone_ids))
+                )
+                milestone_rows = ms_result.scalars().all()
+
+        issues_by_id = {i.id: i for i in issue_rows}
+        milestones_by_id = {m.id: m for m in milestone_rows}
+
+        for entry in affected.values():
+            if entry.get("type") == "issue":
+                issue = issues_by_id.get(entry["id"])
+                if issue:
+                    entry["github_number"] = issue.github_number
+                    entry["title"] = issue.title
+                    entry["state"] = issue.state
+                    entry["body_excerpt"] = (issue.body or "")[:1500]
+                    entry["is_milestone_tracker"] = issue.is_milestone_tracker
+                    entry["assignees"] = [
+                        a.get("login") if isinstance(a, dict) else a
+                        for a in (issue.assignees or [])
+                    ]
+            elif entry.get("type") == "milestone":
+                ms = milestones_by_id.get(entry["id"])
+                if ms:
+                    entry["github_number"] = ms.github_number
+                    entry["title"] = ms.title
+                    entry["state"] = ms.state
 
     async def handle(self, context: AgentContext) -> AgentResult:
         log.info(
@@ -343,6 +404,36 @@ class ProgressTrackerAgent(BaseAgent):
                         total=total,
                     )
 
+        # Phase 1d: Skip LLM on push events with nothing actionable.
+        # A push is only worth reasoning about if: it touches files linked to issues,
+        # its commits reference/resolve issues, a tracker was auto-closed, or there
+        # are stale PRs that need nudging.
+        if context.event_type == "push" and not auto_closed_trackers:
+            has_affected = bool((push_context or {}).get("affected_issues"))
+            has_resolved = bool((push_context or {}).get("issues_resolved_in_commits"))
+            has_referenced = bool((push_context or {}).get("issues_referenced_in_commits"))
+            stale_prs = (gathered.get("open_prs") or {}).get("stale") or {}
+            stale_count = len(stale_prs.get("stale_prs") or [])
+
+            if not (has_affected or has_resolved or has_referenced or stale_count):
+                log.info(
+                    "progress_tracker_skip_push",
+                    repo=self.repo_full_name,
+                    reason="no actionable signals",
+                )
+                return AgentResult(
+                    agent_name=self.name,
+                    status="success",
+                    actions_taken=[],
+                    data={
+                        "skipped": True,
+                        "reason": "no actionable signals in push",
+                        "changed_files": len((push_context or {}).get("changed_files", [])),
+                    },
+                    confidence=1.0,
+                    should_notify=False,
+                )
+
         # Phase 2: Send everything to LLM for reasoning + output decisions
         push_section = ""
         if push_context:
@@ -406,6 +497,50 @@ class ProgressTrackerAgent(BaseAgent):
             tool_calls=len(tool_call_log),
         )
 
+        # Build outcome predictions from tool call results
+        outcome_predictions: list[dict] = []
+
+        # deadline_prediction: pull expected close date from predict_completion tool call
+        for tc in tool_call_log:
+            if tc.get("tool") == "predict_completion" and tc.get("result", {}).get("success"):
+                data_blob = tc["result"].get("data") or {}
+                expected_close = data_blob.get("predicted_completion") or data_blob.get("expected_close_by")
+                if expected_close and focus_number:
+                    outcome_predictions.append({
+                        "outcome_type": "deadline_prediction",
+                        "target_type": "milestone",
+                        "target_number": focus_number,
+                        "predicted": {
+                            "expected_close_by": expected_close,
+                            "milestone_title": focus_title,
+                        },
+                    })
+                    break
+
+        # stale_nudge: if the agent posted a comment on a stale PR, record the nudge timestamp
+        stale_prs = (gathered.get("open_prs") or {}).get("stale") or {}
+        stale_pr_numbers = {
+            pr.get("number") for pr in (stale_prs.get("stale_prs") or [])
+            if isinstance(pr, dict) and pr.get("number")
+        }
+        if stale_pr_numbers:
+            nudged_at = datetime.utcnow().isoformat()
+            for tc in tool_call_log:
+                if tc.get("tool") in ("post_comment", "tag_user") and tc.get("result", {}).get("success"):
+                    args = tc.get("arguments", {}) or {}
+                    target = args.get("issue_number") or args.get("pr_number") or args.get("number")
+                    if target in stale_pr_numbers:
+                        outcome_predictions.append({
+                            "outcome_type": "stale_nudge",
+                            "target_type": "pr",
+                            "target_number": target,
+                            "predicted": {"nudged_at": nudged_at},
+                        })
+
+        data = {"final_response": final_text, "tool_call_log": tool_call_log}
+        if outcome_predictions:
+            data["outcome_predictions"] = outcome_predictions[:3]
+
         return AgentResult(
             agent_name=self.name,
             status="success",
@@ -413,7 +548,7 @@ class ProgressTrackerAgent(BaseAgent):
                 {"tool": tc["tool"], "success": tc["result"]["success"]}
                 for tc in tool_call_log
             ],
-            data={"final_response": final_text, "tool_call_log": tool_call_log},
+            data=data,
             confidence=0.8,
             should_notify=any(tc["tool"] in ("post_comment", "tag_user") for tc in tool_call_log),
         )
