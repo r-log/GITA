@@ -83,10 +83,13 @@ def _nodes_from_captures(captures, name: str) -> list:
     return [node for node, cap_name in captures if cap_name == name]
 
 
-def _find_enclosing_class_name(node, source: bytes) -> str | None:
+def _find_enclosing_class_name(
+    node, source: bytes, class_node_type: str
+) -> str | None:
+    """Walk up the AST to find the nearest enclosing class node and return its name."""
     current = node.parent
     while current is not None:
-        if current.type == "class_definition":
+        if current.type == class_node_type:
             name_node = current.child_by_field_name("name")
             if name_node is not None:
                 return _node_text(name_node, source)
@@ -115,7 +118,9 @@ def _extract_python(source: bytes, tree) -> FileStructure:
         if name_node is None:
             continue
         name = _node_text(name_node, source)
-        parent_class = _find_enclosing_class_name(func_node, source)
+        parent_class = _find_enclosing_class_name(
+            func_node, source, "class_definition"
+        )
         is_async = _is_async_function(func_node)
         if parent_class is not None:
             kind = "async_method" if is_async else "method"
@@ -155,8 +160,126 @@ def _extract_python(source: bytes, tree) -> FileStructure:
     return structure
 
 
+def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
+    """Shared extractor for TypeScript and JavaScript.
+
+    Handles function_declaration, class_declaration, method_definition,
+    arrow functions bound via ``const foo = () => ...``, and imports.
+    TS additionally captures interface_declaration; JS queries don't, so that
+    capture bucket is simply empty for JS files.
+    """
+    query = _load_query(language)
+    if query is None:
+        return FileStructure()
+
+    structure = FileStructure()
+    captures = QueryCursor(query).captures(tree.root_node)
+
+    # Top-level function declarations
+    for func_node in _nodes_from_captures(captures, "function.body"):
+        name_node = func_node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        is_async = _is_async_function(func_node)
+        kind = "async_function" if is_async else "function"
+        structure.functions.append(
+            Symbol(
+                name=_node_text(name_node, source),
+                kind=kind,
+                start_line=func_node.start_point[0] + 1,
+                end_line=func_node.end_point[0] + 1,
+            )
+        )
+
+    # Class declarations
+    for class_node in _nodes_from_captures(captures, "class.body"):
+        name_node = class_node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        structure.classes.append(
+            Symbol(
+                name=_node_text(name_node, source),
+                kind="class",
+                start_line=class_node.start_point[0] + 1,
+                end_line=class_node.end_point[0] + 1,
+            )
+        )
+
+    # Interface declarations (TS only; JS query doesn't capture these)
+    for iface_node in _nodes_from_captures(captures, "interface.body"):
+        name_node = iface_node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        structure.classes.append(
+            Symbol(
+                name=_node_text(name_node, source),
+                kind="interface",
+                start_line=iface_node.start_point[0] + 1,
+                end_line=iface_node.end_point[0] + 1,
+            )
+        )
+
+    # Method definitions inside classes
+    for method_node in _nodes_from_captures(captures, "method.body"):
+        name_node = method_node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        parent = _find_enclosing_class_name(
+            method_node, source, "class_declaration"
+        )
+        is_async = _is_async_function(method_node)
+        kind = "async_method" if is_async else "method"
+        structure.functions.append(
+            Symbol(
+                name=_node_text(name_node, source),
+                kind=kind,
+                start_line=method_node.start_point[0] + 1,
+                end_line=method_node.end_point[0] + 1,
+                parent_class=parent,
+            )
+        )
+
+    # Arrow functions bound to a const/let/var
+    for decl_node in _nodes_from_captures(captures, "arrow.decl"):
+        name_node = decl_node.child_by_field_name("name")
+        value_node = decl_node.child_by_field_name("value")
+        if name_node is None or value_node is None:
+            continue
+        is_async = _is_async_function(value_node)
+        kind = "async_function" if is_async else "function"
+        structure.functions.append(
+            Symbol(
+                name=_node_text(name_node, source),
+                kind=kind,
+                start_line=decl_node.start_point[0] + 1,
+                end_line=decl_node.end_point[0] + 1,
+            )
+        )
+
+    # Imports
+    for imp_node in _nodes_from_captures(captures, "import"):
+        structure.imports.append(
+            ImportStmt(
+                raw=_node_text(imp_node, source),
+                start_line=imp_node.start_point[0] + 1,
+            )
+        )
+
+    return structure
+
+
+def _extract_typescript(source: bytes, tree) -> FileStructure:
+    return _extract_ts_js(source, tree, "typescript")
+
+
+def _extract_javascript(source: bytes, tree) -> FileStructure:
+    return _extract_ts_js(source, tree, "javascript")
+
+
 _EXTRACTORS = {
     "python": _extract_python,
+    "typescript": _extract_typescript,
+    "javascript": _extract_javascript,
 }
 
 
