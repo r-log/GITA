@@ -18,7 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.db.models import CodeIndex, ImportEdge, Repo
-from gita.indexer.imports import resolve_import
+from gita.indexer.imports import discover_package_roots, resolve_import
 from gita.indexer.parsers import parse_file
 from gita.indexer.walker import iter_files
 
@@ -94,6 +94,10 @@ async def index_repository(
 
     repo = await _get_or_create_repo(session, repo_name, root_path)
     head_sha = _read_head_sha(root_path)
+    # Discover package roots ONCE per repo — walks the __init__.py chain to
+    # find every directory that absolute Python imports can resolve against.
+    # Passed into resolve_import() below so src/ and backend/ layouts work.
+    package_roots = discover_package_roots(root_path)
     await _clear_repo_rows(session, repo.id)
 
     code_rows: list[CodeIndex] = []
@@ -144,7 +148,13 @@ async def index_repository(
             raw = imp.get("raw", "")
             if not raw:
                 continue
-            resolved = resolve_import(raw, source_file, root_path, row.language)
+            resolved = resolve_import(
+                raw,
+                source_file,
+                root_path,
+                row.language,
+                package_roots=package_roots,
+            )
             dst_file: str | None = None
             if resolved is not None:
                 try:

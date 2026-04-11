@@ -35,6 +35,10 @@ from gita.db.session import SessionLocal  # noqa: E402
 from gita.indexer.ingest import IngestResult, index_repository  # noqa: E402
 from gita.views._common import RepoNotFoundError  # noqa: E402
 from gita.views.history import HistoryResult, history_view  # noqa: E402
+from gita.views.load_bearing import (  # noqa: E402
+    LoadBearingResult,
+    load_bearing_view,
+)
 from gita.views.neighborhood import (  # noqa: E402
     FileNotFoundError,
     NeighborhoodResult,
@@ -204,6 +208,37 @@ def _fmt_neighborhood_result(result: NeighborhoodResult) -> str:
     return "\n".join(lines)
 
 
+def _fmt_load_bearing_result(result: LoadBearingResult) -> str:
+    if not result.files:
+        return f"No files indexed for {result.repo_name!r}"
+
+    header = (
+        f"Load-bearing files for {result.repo_name} "
+        f"(top {len(result.files)} of {result.total_files}):"
+    )
+    lines = [header, ""]
+    for rank, ranked in enumerate(result.files, start=1):
+        lines.append(
+            f"  {rank:>2}. [in:{ranked.in_degree:>3}]  {ranked.file_path}  "
+            f"({ranked.language}, {ranked.line_count} lines)"
+        )
+        shown = ranked.symbol_summary[:6]
+        for brief in shown:
+            parent = (
+                f" in {brief.parent_class}" if brief.parent_class else ""
+            )
+            lines.append(
+                f"          line {brief.line:>4}  {brief.kind:<16} "
+                f"{brief.name}{parent}"
+            )
+        if len(ranked.symbol_summary) > len(shown):
+            lines.append(
+                f"          ... and {len(ranked.symbol_summary) - len(shown)} more"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def _fmt_history_result(result: HistoryResult) -> str:
     lines = [f"File: {result.file_path}"]
 
@@ -342,6 +377,19 @@ async def cmd_query_neighborhood(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_query_load_bearing(args: argparse.Namespace) -> int:
+    async with SessionLocal() as session:
+        try:
+            result = await load_bearing_view(
+                session, args.repo, limit=args.limit
+            )
+        except RepoNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    print(_fmt_load_bearing_result(result))
+    return 0
+
+
 async def cmd_query_history(args: argparse.Namespace) -> int:
     async with SessionLocal() as session:
         try:
@@ -395,6 +443,18 @@ def _build_parser() -> argparse.ArgumentParser:
     q_nbh.add_argument("repo")
     q_nbh.add_argument("file_path")
 
+    q_load = query_sub.add_parser(
+        "load-bearing",
+        help="Rank files by in-degree in the import graph",
+    )
+    q_load.add_argument("repo")
+    q_load.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="How many files to return (default 10, max 100)",
+    )
+
     q_hist = query_sub.add_parser(
         "history", help="Show git log + blame for a file"
     )
@@ -410,6 +470,7 @@ _HANDLERS = {
     "stats": cmd_stats,
     ("query", "symbol"): cmd_query_symbol,
     ("query", "neighborhood"): cmd_query_neighborhood,
+    ("query", "load-bearing"): cmd_query_load_bearing,
     ("query", "history"): cmd_query_history,
 }
 

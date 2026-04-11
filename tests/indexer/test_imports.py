@@ -5,9 +5,8 @@ to match against.
 """
 from pathlib import Path
 
-import pytest
-
 from gita.indexer.imports import (
+    discover_package_roots,
     resolve_import,
     resolve_python_import,
     resolve_ts_js_import,
@@ -205,3 +204,199 @@ class TestResolveImportDispatcher:
     def test_unknown_language_returns_none(self, tmp_path):
         src = _touch(tmp_path, "a.py")
         assert resolve_import("import foo", src, tmp_path, "ruby") is None
+
+
+# ---------------------------------------------------------------------------
+# Package-root discovery (Week 2 P1 fix)
+# ---------------------------------------------------------------------------
+class TestDiscoverPackageRoots:
+    def test_flat_repo_returns_only_repo_root(self, tmp_path):
+        """A repo with no __init__.py anywhere → just the repo root."""
+        _touch(tmp_path, "script.py")
+        _touch(tmp_path, "other.py")
+        roots = discover_package_roots(tmp_path)
+        assert roots == [tmp_path.resolve()]
+
+    def test_flat_package_at_repo_root(self, tmp_path):
+        """pkg/__init__.py at repo root → repo root is a package root."""
+        _touch(tmp_path, "mypkg/__init__.py")
+        _touch(tmp_path, "mypkg/core.py")
+        roots = discover_package_roots(tmp_path)
+        # Only the repo root — mypkg/'s parent IS repo_root, which is dedup'd
+        assert roots == [tmp_path.resolve()]
+
+    def test_src_layout(self, tmp_path):
+        """src/mypkg/__init__.py → ['src/', repo_root]"""
+        _touch(tmp_path, "src/mypkg/__init__.py")
+        _touch(tmp_path, "src/mypkg/core.py")
+        roots = discover_package_roots(tmp_path)
+        assert (tmp_path / "src").resolve() in roots
+        assert tmp_path.resolve() in roots
+        # Repo root comes last as fallback
+        assert roots[-1] == tmp_path.resolve()
+
+    def test_backend_layout(self, tmp_path):
+        """backend/app/__init__.py → ['backend/', repo_root]"""
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "backend/app/models.py")
+        _touch(tmp_path, "backend/app/api/__init__.py")
+        _touch(tmp_path, "backend/app/api/routes.py")
+        roots = discover_package_roots(tmp_path)
+        assert (tmp_path / "backend").resolve() in roots
+        assert roots[-1] == tmp_path.resolve()
+
+    def test_nested_packages_collapse_to_one_root(self, tmp_path):
+        """A deep package chain (a/b/c/d with __init__.py at every level)
+        should still only contribute ONE package root: parent of the topmost
+        package."""
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "backend/app/api/__init__.py")
+        _touch(tmp_path, "backend/app/api/auth/__init__.py")
+        _touch(tmp_path, "backend/app/api/auth/routes.py")
+        roots = discover_package_roots(tmp_path)
+        # Only `backend/` should be in the list (plus repo_root as fallback)
+        assert (tmp_path / "backend").resolve() in roots
+        assert (tmp_path / "backend" / "app").resolve() not in roots
+        assert (tmp_path / "backend" / "app" / "api").resolve() not in roots
+
+    def test_multiple_disjoint_roots(self, tmp_path):
+        """Two completely separate package trees → both are roots."""
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "tools/lib/__init__.py")
+        roots = discover_package_roots(tmp_path)
+        assert (tmp_path / "backend").resolve() in roots
+        assert (tmp_path / "tools").resolve() in roots
+
+    def test_node_modules_excluded(self, tmp_path):
+        """__init__.py files inside skipped dirs must not produce package roots."""
+        _touch(tmp_path, "node_modules/bad/__init__.py")
+        _touch(tmp_path, "real/pkg/__init__.py")
+        roots = discover_package_roots(tmp_path)
+        assert (tmp_path / "real").resolve() in roots
+        assert (tmp_path / "node_modules").resolve() not in roots
+
+    def test_venv_excluded(self, tmp_path):
+        _touch(tmp_path, ".venv/lib/site-packages/foo/__init__.py")
+        _touch(tmp_path, "src/mypkg/__init__.py")
+        roots = discover_package_roots(tmp_path)
+        assert (tmp_path / ".venv").resolve() not in roots
+        assert (tmp_path / "src").resolve() in roots
+
+    def test_test_dirs_excluded(self, tmp_path):
+        """A tests/ package shouldn't pollute the package-root list."""
+        _touch(tmp_path, "src/mypkg/__init__.py")
+        _touch(tmp_path, "tests/__init__.py")
+        _touch(tmp_path, "tests/test_foo.py")
+        roots = discover_package_roots(tmp_path)
+        assert (tmp_path / "src").resolve() in roots
+        # The repo-root fallback is always present, but tests/ itself shouldn't
+        # appear as a distinct root.
+        assert (tmp_path / "tests").resolve() not in roots
+
+    def test_exclusion_only_applies_inside_repo_root(self, tmp_path):
+        """If the ABSOLUTE path leading to the repo contains an excluded
+        directory name (e.g. the repo lives under /foo/tests/bar/), that
+        must not cause every __init__.py inside the repo to be skipped.
+        Only path components INSIDE the repo root should be checked."""
+        repo = tmp_path / "tests" / "fixtures" / "myrepo"
+        repo.mkdir(parents=True)
+        _touch(repo, "src/mypkg/__init__.py")
+        _touch(repo, "src/mypkg/core.py")
+        roots = discover_package_roots(repo)
+        # src/ must still be discovered despite "tests" appearing in the
+        # absolute path above the repo root.
+        assert (repo / "src").resolve() in roots
+
+
+# ---------------------------------------------------------------------------
+# Absolute imports via package_roots (Week 2 P1 fix)
+# ---------------------------------------------------------------------------
+class TestPythonImportsWithPackageRoots:
+    def test_absolute_import_resolves_via_src_layout(self, tmp_path):
+        """`from mypkg.utils import foo` in a src-layout repo should resolve
+        to src/mypkg/utils.py when src/ is in package_roots."""
+        _touch(tmp_path, "src/mypkg/__init__.py")
+        _touch(tmp_path, "src/mypkg/utils.py")
+        src = _touch(tmp_path, "src/mypkg/models.py")
+
+        package_roots = discover_package_roots(tmp_path)
+        resolved = resolve_python_import(
+            "from mypkg.utils import format_name",
+            src,
+            tmp_path,
+            package_roots,
+        )
+        assert resolved == (tmp_path / "src" / "mypkg" / "utils.py").resolve()
+
+    def test_absolute_import_resolves_via_backend_layout(self, tmp_path):
+        """`from app.models import User` → backend/app/models.py"""
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "backend/app/models.py")
+        _touch(tmp_path, "backend/app/api/__init__.py")
+        src = _touch(tmp_path, "backend/app/api/routes.py")
+
+        package_roots = discover_package_roots(tmp_path)
+        resolved = resolve_python_import(
+            "from app.models import User", src, tmp_path, package_roots
+        )
+        assert resolved == (
+            tmp_path / "backend" / "app" / "models.py"
+        ).resolve()
+
+    def test_plain_import_via_src_layout(self, tmp_path):
+        _touch(tmp_path, "src/mypkg/__init__.py")
+        _touch(tmp_path, "src/mypkg/helpers.py")
+        src = _touch(tmp_path, "src/mypkg/service.py")
+
+        package_roots = discover_package_roots(tmp_path)
+        resolved = resolve_python_import(
+            "import mypkg.helpers", src, tmp_path, package_roots
+        )
+        assert resolved == (
+            tmp_path / "src" / "mypkg" / "helpers.py"
+        ).resolve()
+
+    def test_relative_imports_still_work(self, tmp_path):
+        """Relative imports should resolve against the source file's dir,
+        not go through package_roots. Regression check."""
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "backend/app/utils.py")
+        src = _touch(tmp_path, "backend/app/models.py")
+
+        package_roots = discover_package_roots(tmp_path)
+        resolved = resolve_python_import(
+            "from .utils import foo", src, tmp_path, package_roots
+        )
+        assert resolved == (
+            tmp_path / "backend" / "app" / "utils.py"
+        ).resolve()
+
+    def test_stdlib_still_unresolved(self, tmp_path):
+        """`import os` shouldn't suddenly resolve just because package_roots
+        is richer — stdlib doesn't live in the repo."""
+        _touch(tmp_path, "backend/app/__init__.py")
+        src = _touch(tmp_path, "backend/app/models.py")
+
+        package_roots = discover_package_roots(tmp_path)
+        assert (
+            resolve_python_import("import os", src, tmp_path, package_roots)
+            is None
+        )
+        assert (
+            resolve_python_import(
+                "from typing import List", src, tmp_path, package_roots
+            )
+            is None
+        )
+
+    def test_fallback_to_repo_root_when_no_packages(self, tmp_path):
+        """Repo with no __init__.py at all → absolute imports resolved
+        against repo root as fallback."""
+        _touch(tmp_path, "myutil.py")
+        src = _touch(tmp_path, "caller.py")
+
+        package_roots = discover_package_roots(tmp_path)
+        resolved = resolve_python_import(
+            "import myutil", src, tmp_path, package_roots
+        )
+        assert resolved == (tmp_path / "myutil.py").resolve()
