@@ -11,6 +11,7 @@ from src.core.config import settings
 from src.workers.tasks import dispatch_event
 from src.workers.context_updater import process_context_update
 from src.workers.reconciliation import reconcile_all_repos
+from src.workers.outcomes import check_outcome, run_outcome_checks
 from src.agents.setup import register_all_agents
 
 
@@ -30,9 +31,19 @@ async def run_reconciliation(ctx):
 
 
 class WorkerSettings:
-    functions = [process_webhook, process_context_update, run_reconciliation]
+    functions = [
+        process_webhook,
+        process_context_update,
+        run_reconciliation,
+        check_outcome,
+        run_outcome_checks,
+    ]
     cron_jobs = [
         cron(run_reconciliation, hour={0, 6, 12, 18}, minute=0),  # every 6 hours
+        cron(
+            run_outcome_checks,
+            minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55},
+        ),  # every 5 minutes
     ]
     on_startup = startup
     redis_settings = RedisSettings.from_dsn(settings.redis_url)

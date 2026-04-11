@@ -20,6 +20,7 @@ from src.core.database import async_session
 from src.models.agent_run import AgentRun
 from src.tools.github.pull_requests import _get_pr_diff, _get_pr_files, _get_pr_reviews
 from src.tools.db.graph_queries import _get_blast_radius
+from src.workers.outcome_scheduler import schedule_outcomes_for_run
 
 log = structlog.get_logger()
 
@@ -191,6 +192,20 @@ class SupervisorAgent:
                 result.data["agent_run_id"] = run_id
                 result.data["usage"] = dict(agent._usage)
                 await self._log_agent_complete(run_id, result, started)
+
+                # Phase 1: Schedule outcome checks for this run.
+                # Wrapped in try/except so outcome scheduling never crashes the agent run.
+                try:
+                    await schedule_outcomes_for_run(
+                        run_id=run_id,
+                        repo_id=context.repo_id,
+                        agent_name=name,
+                        result=result,
+                        context=context,
+                    )
+                except Exception as e:
+                    log.warning("schedule_outcomes_failed", run=run_id, error=str(e))
+
                 return result
 
             except asyncio.TimeoutError:

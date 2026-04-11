@@ -7,7 +7,7 @@ import json
 import structlog
 from src.core.config import settings
 from src.core.llm_client import llm_json_call
-from src.tools.base import Tool, ToolResult
+from src.tools.base import ToolResult
 
 log = structlog.get_logger()
 
@@ -204,62 +204,3 @@ Respond with JSON:
         return ToolResult(success=False, error=str(e))
 
 
-def make_scan_secrets() -> Tool:
-    return Tool(
-        name="scan_secrets",
-        description="AI tool: Scan a diff for hardcoded secrets, API keys, tokens, and passwords. Only checks added lines.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "diff": {"type": "string", "description": "The diff content to scan"},
-            },
-            "required": ["diff"],
-        },
-        handler=lambda diff: _scan_secrets(diff),
-    )
-
-
-def make_scan_security_patterns() -> Tool:
-    return Tool(
-        name="scan_security_patterns",
-        description="AI tool: Scan a diff for security vulnerability patterns (SQL injection, XSS, command injection, etc.).",
-        parameters={
-            "type": "object",
-            "properties": {
-                "diff": {"type": "string", "description": "The diff content to scan"},
-            },
-            "required": ["diff"],
-        },
-        handler=lambda diff: _scan_security_patterns(diff),
-    )
-
-
-def make_detect_breaking_changes() -> Tool:
-    return Tool(
-        name="detect_breaking_changes",
-        description="AI tool: Detect breaking API changes, schema changes, config changes in a diff.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "diff": {"type": "string", "description": "The diff content"},
-                "files_changed": {"type": "array", "items": {"type": "object"}, "description": "List of changed files"},
-            },
-            "required": ["diff", "files_changed"],
-        },
-        handler=lambda diff, files_changed: _detect_breaking_changes(diff, files_changed),
-    )
-
-
-def make_check_dependency_changes() -> Tool:
-    return Tool(
-        name="check_dependency_changes",
-        description="AI tool: Analyze dependency changes in package manifests or lockfiles for risk.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "diff": {"type": "string", "description": "The diff content (ideally just the manifest/lockfile portion)"},
-            },
-            "required": ["diff"],
-        },
-        handler=lambda diff: _check_dependency_changes(diff),
-    )

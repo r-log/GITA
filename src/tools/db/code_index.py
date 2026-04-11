@@ -15,7 +15,6 @@ log = structlog.get_logger()
 from src.core.database import async_session
 from src.models.code_index import CodeIndex
 from src.models.issue import IssueModel
-from src.indexer.code_map import generate_code_map
 from src.tools.base import Tool, ToolResult
 
 
@@ -96,52 +95,6 @@ def make_query_code_index(repo_id: int) -> Tool:
         handler=lambda file_path=None, language=None, search=None: _query_code_index(
             repo_id, file_path, language, search
         ),
-    )
-
-
-# ── Get Code Map ───────────────────────────────────────────────────
-
-async def _get_code_map(repo_id: int) -> ToolResult:
-    """Generate the full compressed code map for the project."""
-    try:
-        async with async_session() as session:
-            result = await session.execute(
-                select(CodeIndex).where(CodeIndex.repo_id == repo_id)
-            )
-            records = result.scalars().all()
-
-        if not records:
-            return ToolResult(success=True, data="No code index found. Repository may not have been indexed yet.")
-
-        records_for_map = [
-            {
-                "file_path": r.file_path,
-                "language": r.language,
-                "line_count": r.line_count,
-                "structure": r.structure,
-            }
-            for r in records
-        ]
-
-        code_map = generate_code_map(records_for_map)
-        return ToolResult(success=True, data=code_map)
-    except Exception as e:
-        log.warning("code_index_failed", error=str(e), exc_info=True)
-        return ToolResult(success=False, error=str(e))
-
-
-def make_get_code_map(repo_id: int) -> Tool:
-    return Tool(
-        name="get_code_map",
-        description="Get the full compressed code map for the project. "
-                    "Returns a structured overview (~2-10KB) including: routes, models, services, "
-                    "components, dependencies, file structure, and detected gaps. "
-                    "Use this to understand the project without reading individual files.",
-        parameters={
-            "type": "object",
-            "properties": {},
-        },
-        handler=lambda: _get_code_map(repo_id),
     )
 
 

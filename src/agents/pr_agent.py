@@ -212,6 +212,36 @@ class PRReviewAgent(BaseAgent):
             tool_calls=len(tool_call_log),
         )
 
+        # Derive severity from quality analysis + test coverage
+        quality = gathered.get("quality_analysis", {}) or {}
+        coverage = gathered.get("test_coverage", {}) or {}
+        severity = "info"
+        if quality.get("critical_issues") or coverage.get("missing_tests"):
+            severity = "warning"
+
+        warned_files = sorted({
+            f.get("filename", "") for f in gathered.get("files", []) if f.get("filename")
+        })
+
+        data = {
+            "final_response": final_text,
+            "tool_call_log": tool_call_log,
+            "pr_number": pr_number,
+        }
+
+        if pr_number and severity == "warning":
+            data["outcome_predictions"] = [
+                {
+                    "outcome_type": "risk_warning",
+                    "target_type": "pr",
+                    "target_number": pr_number,
+                    "predicted": {
+                        "severity": severity,
+                        "file_paths_warned": warned_files,
+                    },
+                },
+            ]
+
         return AgentResult(
             agent_name=self.name,
             status="success",
@@ -219,7 +249,7 @@ class PRReviewAgent(BaseAgent):
                 {"tool": tc["tool"], "success": tc["result"]["success"]}
                 for tc in tool_call_log
             ],
-            data={"final_response": final_text, "tool_call_log": tool_call_log, "pr_number": pr_number},
+            data=data,
             confidence=0.8,
             should_notify=any(tc["tool"] in ("post_comment", "create_check_run") for tc in tool_call_log),
         )

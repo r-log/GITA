@@ -20,6 +20,7 @@ from src.models.commit import CommitModel
 from src.models.comment import CommentModel
 from src.models.review import ReviewModel
 from src.models.diff import DiffModel
+from src.models.outcome import OutcomeModel, OutcomeType, OutcomeStatus
 
 __all__ = [
     "Repository",
@@ -40,4 +41,7 @@ __all__ = [
     "CommentModel",
     "ReviewModel",
     "DiffModel",
+    "OutcomeModel",
+    "OutcomeType",
+    "OutcomeStatus",
 ]

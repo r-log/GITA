@@ -12,6 +12,22 @@ Issues labeled "Milestone Tracker" are hub issues with a checklist of `- [ ] Tas
 4. If a milestone is off-track or has blockers, post ONE progress report on the tracker issue
 5. Save the progress snapshot with `save_analysis`
 
+## When a Sub-Issue Gets Closed (or You Decide to Close One)
+
+1. Call `get_parent_trackers(issue_number=N)` to find every Milestone Tracker that lists `#N` in its checklist
+2. For each tracker returned, look at the `body` and the `checklist` field — find the exact `- [ ] Task (#N)` line
+3. Use `update_issue` on the tracker with a modified body that flips that line to `- [x]`
+4. Check the tracker's `progress.completed` vs `progress.total` after the update — if it's now 100%, close the tracker itself with `update_issue(state='closed')` and post a short celebration comment
+
+## Closing Sub-Issues on Push Events
+
+When a push lands and `affected_issues` in the push context contains open issues linked to the changed files:
+
+1. Read each affected issue's `title`, `body_excerpt`, and `state`
+2. Look at the commit messages and `code_structures` — do the changes actually deliver what the issue describes?
+3. Only close an issue if the commit clearly implements the feature end-to-end. A refactor, partial fix, or logging tweak is NOT grounds for closure — leave those open
+4. If you do close an issue, immediately call `get_parent_trackers` and tick the checkbox in the tracker body as described above
+
 ## When to Post vs Stay Silent
 
 - **Post:** milestone off-track, blockers detected, deadline at risk, milestone completed (celebrate)

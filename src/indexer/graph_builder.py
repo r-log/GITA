@@ -143,8 +143,13 @@ async def update_graph_for_files(
             n.file_path: n.id for n in existing_nodes if n.node_type == "file"
         }
 
-        # Recreate nodes for changed files
+        # Recreate nodes for changed files.
+        # Track the new file node IDs separately so we can rebuild ownership
+        # edges (belongs_to_issue / belongs_to_milestone) — those were wiped
+        # along with the old nodes and won't be recreated by the structural
+        # edge pass below.
         node_count = 0
+        new_file_nodes: dict[str, int] = {}
         for fi in changed_files:
             nodes = _build_nodes_for_file(repo_id, fi)
             for node in nodes:
@@ -153,6 +158,7 @@ async def update_graph_for_files(
                 node_lookup[node.qualified_name] = node.id
                 if node.node_type == "file":
                     file_path_to_node[node.file_path] = node.id
+                    new_file_nodes[node.file_path] = node.id
             node_count += len(nodes)
 
         # Rebuild module lookup with all current files
@@ -172,9 +178,25 @@ async def update_graph_for_files(
                 session.add(edge)
             edge_count += len(edges)
 
+        # Re-attach ownership edges for the newly-created file nodes.
+        # Without this, every push wipes belongs_to_issue / belongs_to_milestone
+        # edges for the changed files and progress_tracker's file_ownership
+        # lookup returns empty.
+        if new_file_nodes:
+            ownership_edges = await _migrate_file_mappings(
+                session, repo_id, new_file_nodes
+            )
+            edge_count += ownership_edges
+
         await session.commit()
 
-    log.info("graph_update_complete", repo_id=repo_id, nodes=node_count, edges=edge_count)
+    log.info(
+        "graph_update_complete",
+        repo_id=repo_id,
+        nodes=node_count,
+        edges=edge_count,
+        ownership_restored=len(new_file_nodes),
+    )
     return {"nodes_updated": node_count, "edges_updated": edge_count}
 
 
