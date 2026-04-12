@@ -30,11 +30,22 @@ if sys.platform == "win32":
 from sqlalchemy import func, select  # noqa: E402
 
 from gita import __version__  # noqa: E402
-from gita.agents.onboarding import OnboardingError, run_onboarding  # noqa: E402
+from gita.agents.decisions import (  # noqa: E402
+    Outcome,
+    WriteMode,
+    execute_decision,
+)
+from gita.agents.onboarding import (  # noqa: E402
+    OnboardingError,
+    build_onboarding_comment_decision,
+    run_onboarding,
+)
 from gita.agents.types import OnboardingResult  # noqa: E402
 from gita.config import settings  # noqa: E402
 from gita.db.models import CodeIndex, ImportEdge, Repo  # noqa: E402
 from gita.db.session import SessionLocal  # noqa: E402
+from gita.github.auth import GithubAppAuth  # noqa: E402
+from gita.github.client import GithubClient  # noqa: E402
 from gita.indexer.ingest import IngestResult, index_repository  # noqa: E402
 from gita.llm.client import OpenRouterClient  # noqa: E402
 from gita.views._common import RepoNotFoundError  # noqa: E402
@@ -435,6 +446,26 @@ async def cmd_query_load_bearing(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_post_to(value: str) -> tuple[str, int]:
+    """Parse ``owner/repo#123`` into ``("owner/repo", 123)``."""
+    if "#" not in value:
+        raise ValueError(
+            f"--post-to expects owner/repo#issue_number, got {value!r}"
+        )
+    repo_full, issue_str = value.rsplit("#", 1)
+    if repo_full.count("/") != 1:
+        raise ValueError(
+            f"--post-to repo must be owner/repo, got {repo_full!r}"
+        )
+    try:
+        issue_number = int(issue_str)
+    except ValueError as exc:
+        raise ValueError(
+            f"--post-to issue number must be an integer, got {issue_str!r}"
+        ) from exc
+    return repo_full, issue_number
+
+
 async def cmd_onboard(args: argparse.Namespace) -> int:
     if not settings.openrouter_api_key:
         print(
@@ -443,6 +474,14 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+
+    post_target: tuple[str, int] | None = None
+    if args.post_to:
+        try:
+            post_target = _parse_post_to(args.post_to)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
 
     model = args.model or settings.ai_default_model
     async with OpenRouterClient(
@@ -463,7 +502,67 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
             except OnboardingError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
+
     print(_fmt_onboarding_result(result))
+
+    if post_target is None:
+        return 0
+
+    # --- Posting flow: wrap the result in a Decision and route through
+    # execute_decision with the current WRITE_MODE from settings. ---
+    repo_full, issue_number = post_target
+    mode = WriteMode(settings.write_mode)
+    decision = build_onboarding_comment_decision(
+        result, repo_full_name=repo_full, issue_number=issue_number
+    )
+
+    print()
+    print(f"--- Posting flow (WRITE_MODE={mode.value}) ---")
+    print(f"target: {repo_full}#{issue_number}")
+    print(f"decision confidence: {decision.confidence:.2f}")
+    print(f"evidence:")
+    for bullet in decision.evidence:
+        print(f"  - {bullet}")
+
+    if mode == WriteMode.SHADOW:
+        # Shadow mode: route through the gate with no client attached.
+        # This logs the decision and returns without any network I/O.
+        decision_result = await execute_decision(decision, mode=mode)
+        print()
+        print(f"outcome: {decision_result.outcome.value}")
+        print("(shadow mode — no comment was posted; flip WRITE_MODE=comment to post for real)")
+        return 0
+
+    # comment / full mode — instantiate the real GitHub client.
+    if (
+        not settings.github_app_id
+        or not settings.github_app_private_key_path
+    ):
+        print(
+            "error: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be set "
+            "in .env when WRITE_MODE is not shadow",
+            file=sys.stderr,
+        )
+        return 2
+
+    auth = GithubAppAuth.from_files(
+        app_id=settings.github_app_id,
+        private_key_path=settings.github_app_private_key_path,
+    )
+    async with GithubClient(auth=auth) as gh:
+        decision_result = await execute_decision(
+            decision, mode=mode, client=gh
+        )
+
+    print()
+    print(f"outcome: {decision_result.outcome.value}")
+    if decision_result.executed:
+        side = decision_result.side_effect or {}
+        url = side.get("html_url") or "(url not returned)"
+        print(f"posted: {url}")
+    elif decision_result.error:
+        print(f"error: {decision_result.error}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -526,6 +625,16 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="How many files the LLM is allowed to read deeply (default 5)",
+    )
+    onboard_p.add_argument(
+        "--post-to",
+        default=None,
+        metavar="OWNER/REPO#ISSUE",
+        help=(
+            "Wrap the onboarding output as a GitHub comment Decision and "
+            "route through execute_decision. Behavior depends on WRITE_MODE: "
+            "shadow = log only (default), comment = post a comment."
+        ),
     )
 
     query_p = sub.add_parser("query", help="Query the index")
