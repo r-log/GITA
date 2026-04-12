@@ -39,6 +39,7 @@ from gita.cli.commands import (  # noqa: E402
     cmd_query_neighborhood,
     cmd_query_symbol,
     cmd_repos,
+    cmd_review_pr,
     cmd_stats,
 )
 
@@ -136,6 +137,38 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    review_p = sub.add_parser(
+        "review-pr",
+        help="Review a pull request (uses OpenRouter + GitHub API)",
+    )
+    review_p.add_argument(
+        "pr",
+        metavar="OWNER/REPO#N",
+        help="The pull request to review (e.g. r-log/amass#42)",
+    )
+    review_p.add_argument(
+        "--repo-name",
+        default=None,
+        help=(
+            "Override the indexed repo name to look up context from "
+            "(defaults to OWNER/REPO from the PR target)"
+        ),
+    )
+    review_p.add_argument(
+        "--model",
+        default=None,
+        help="Override the LLM model (defaults to AI_DEFAULT_MODEL)",
+    )
+    review_p.add_argument(
+        "--post",
+        action="store_true",
+        default=False,
+        help=(
+            "Post the review as a comment on the PR. Behavior depends on "
+            "WRITE_MODE: shadow = log only (default), comment = post."
+        ),
+    )
+
     query_p = sub.add_parser("query", help="Query the index")
     query_sub = query_p.add_subparsers(dest="query_type", required=True)
 
@@ -177,6 +210,7 @@ _HANDLERS = {
     "repos": cmd_repos,
     "stats": cmd_stats,
     "onboard": cmd_onboard,
+    "review-pr": cmd_review_pr,
     ("query", "symbol"): cmd_query_symbol,
     ("query", "neighborhood"): cmd_query_neighborhood,
     ("query", "load-bearing"): cmd_query_load_bearing,
