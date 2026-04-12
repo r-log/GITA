@@ -10,6 +10,7 @@ from pathlib import Path
 from gita.agents.types import OnboardingResult, PRReviewResult
 from gita.db.models import Repo
 from gita.indexer.ingest import IngestResult
+from gita.views.concept import ConceptResult
 from gita.views.history import HistoryResult
 from gita.views.load_bearing import LoadBearingResult
 from gita.views.neighborhood import NeighborhoodResult
@@ -264,6 +265,38 @@ def fmt_onboarding_result(result: OnboardingResult) -> str:
     lines.append("")
     lines.append(f"overall confidence: {result.confidence:.2f}")
     return "\n".join(lines)
+
+
+def fmt_concept_result(result: ConceptResult) -> str:
+    if not result.matches:
+        return f"No matches for {result.query!r} in {result.repo_name}"
+
+    header = (
+        f"{result.total_matches} match"
+        f"{'es' if result.total_matches != 1 else ''} "
+        f"for {result.query!r} in {result.repo_name}"
+    )
+    if result.total_matches > len(result.matches):
+        header += f" (showing top {len(result.matches)})"
+
+    lines = [header, ""]
+    for i, match in enumerate(result.matches, start=1):
+        lines.append(
+            f"  {i}. {match.file_path}  "
+            f"({match.language}, {match.line_count} lines, "
+            f"rank {match.rank:.3f})"
+        )
+        if match.matching_symbols:
+            sym_names = ", ".join(s.name for s in match.matching_symbols[:5])
+            lines.append(f"     symbols: {sym_names}")
+        if match.headline:
+            # Clean up the headline for CLI display.
+            clean = match.headline.replace("\n", " ").strip()
+            if len(clean) > 120:
+                clean = clean[:117] + "..."
+            lines.append(f"     ...{clean}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def fmt_pr_review_result(result: PRReviewResult) -> str:
