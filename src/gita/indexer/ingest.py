@@ -82,6 +82,7 @@ async def index_repository(
     root_path: Path,
     *,
     include_tests: bool = False,
+    force_full: bool = False,
 ) -> IngestResult:
     """Ingest a local repo into the three tables.
 
