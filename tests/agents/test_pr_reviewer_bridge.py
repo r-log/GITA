@@ -112,12 +112,21 @@ class TestBuildDecision:
 class TestRenderReviewBody:
     def test_body_has_pr_header(self):
         body = _render_review_body(_result())
-        assert "PR #42" in body
-        assert "Fix user query" in body
+        assert "#42" in body
 
     def test_body_has_verdict(self):
         body = _render_review_body(_result(verdict="request_changes"))
-        assert "CHANGES REQUESTED" in body
+        assert "Changes Requested" in body
+
+    def test_body_has_approve_verdict(self):
+        body = _render_review_body(_result(findings=[], verdict="approve"))
+        assert "Approved" in body
+
+    def test_body_has_summary_in_blockquote(self):
+        body = _render_review_body(_result(
+            summary="Found a SQL injection."
+        ))
+        assert "> Found a SQL injection." in body
 
     def test_body_has_findings_grouped_by_file(self):
         body = _render_review_body(_result(findings=[
@@ -125,10 +134,15 @@ class TestRenderReviewBody:
             _finding(file="src/db.py", line=50, description="another issue"),
             _finding(file="src/auth.py", line=10),
         ]))
-        assert "### `src/db.py`" in body
-        assert "### `src/auth.py`" in body
+        assert "`src/db.py`" in body
+        assert "`src/auth.py`" in body
         assert "SQL injection" in body
         assert "another issue" in body
+
+    def test_finding_card_has_severity_and_location(self):
+        body = _render_review_body(_result(findings=[_finding()]))
+        assert "HIGH" in body
+        assert "`src/db.py:42`" in body
 
     def test_body_includes_fix_sketch(self):
         body = _render_review_body(_result(findings=[_finding()]))
@@ -137,17 +151,26 @@ class TestRenderReviewBody:
     def test_body_has_footer(self):
         body = _render_review_body(_result(confidence=0.88))
         assert "GITA v0.1.0" in body
-        assert "0.88" in body
+        assert "88%" in body
 
     def test_empty_findings_says_no_issues(self):
         body = _render_review_body(_result(findings=[], verdict="approve"))
         assert "No issues found" in body
-        assert "APPROVED" in body
+
+    def test_finding_count_in_header(self):
+        body = _render_review_body(_result(findings=[
+            _finding(), _finding(file="b.py"),
+        ]))
+        assert "2 findings" in body
+
+    def test_single_finding_no_plural(self):
+        body = _render_review_body(_result(findings=[_finding()]))
+        assert "1 finding" in body
 
     def test_many_findings_collapsed(self):
         findings = [
             _finding(file=f"f{i}.py", line=i + 1)
-            for i in range(5)
+            for i in range(7)
         ]
         body = _render_review_body(_result(findings=findings))
         assert "<details>" in body
