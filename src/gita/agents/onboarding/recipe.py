@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gita.agents.guardrails import structural_confidence, verify_findings
 from gita.agents.onboarding.schemas import (
     FindingsResponse,
     MilestonesResponse,
@@ -333,6 +334,22 @@ async def run_onboarding(
         assert isinstance(findings_response.parsed, FindingsResponse)
         findings = _convert_findings(findings_response.parsed.findings)
 
+    # Stage 3.5: architectural guardrails — verify findings against the index.
+    # The LLM's output is untrusted; the guardrails are walls, not rules.
+    original_finding_count = len(findings)
+    if findings:
+        findings, dropped = await verify_findings(
+            session, repo.id, findings
+        )
+        if dropped:
+            logger.info(
+                "onboarding_guardrails repo=%s dropped=%d kept=%d reasons=%s",
+                repo_name,
+                len(dropped),
+                len(findings),
+                [reason for _, reason in dropped],
+            )
+
     # Stage 4: LLM groups findings into milestones
     milestones: list[Milestone] = []
     if findings:
@@ -349,10 +366,19 @@ async def run_onboarding(
             group_response.parsed.milestones, len(findings)
         )
 
+    # Blend the LLM's milestone-based confidence with a structural penalty
+    # based on how many findings survived the guardrails.
+    llm_confidence = _overall_confidence(findings, milestones)
+    final_confidence = structural_confidence(
+        original_count=original_finding_count,
+        verified_count=len(findings),
+        llm_confidence=llm_confidence,
+    )
+
     return OnboardingResult(
         repo_name=repo_name,
         project_summary=pick_data.project_summary,
         findings=findings,
         milestones=milestones,
-        confidence=_overall_confidence(findings, milestones),
+        confidence=final_confidence,
     )

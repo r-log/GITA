@@ -105,6 +105,53 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                 "html_url": "https://github.com/o/r/issues/7",
             },
         )
+    # GET /repos/o/r/pulls/N — get_pr
+    if method == "GET" and "/pulls/" in path and "/files" not in path:
+        return httpx.Response(
+            200,
+            json={
+                "number": 10,
+                "title": "Fix SQL injection",
+                "body": "This PR fixes the SQL injection in db.py",
+                "state": "open",
+                "user": {"login": "dev-alice"},
+                "base": {"ref": "main"},
+                "head": {"ref": "fix/sql-injection", "sha": "abc123def"},
+                "changed_files": 3,
+                "additions": 15,
+                "deletions": 5,
+                "html_url": "https://github.com/owner/repo/pull/10",
+            },
+        )
+    # GET /repos/o/r/pulls/N/files — get_pr_files
+    if method == "GET" and "/files" in path:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "sha": "abc123",
+                    "filename": "src/db.py",
+                    "status": "modified",
+                    "additions": 10,
+                    "deletions": 3,
+                    "patch": (
+                        "@@ -40,7 +40,14 @@ def get_user(user_id):\n"
+                        " def get_user(user_id):\n"
+                        "-    query = f\"SELECT * FROM users WHERE id={user_id}\"\n"
+                        "+    query = \"SELECT * FROM users WHERE id=?\"\n"
+                        "+    return execute(query, (user_id,))\n"
+                    ),
+                },
+                {
+                    "sha": "def456",
+                    "filename": "src/auth.py",
+                    "status": "modified",
+                    "additions": 5,
+                    "deletions": 2,
+                    "patch": "@@ -10,5 +10,8 @@ def login():\n some context",
+                },
+            ],
+        )
     return httpx.Response(404, json={"message": f"Unexpected {method} {path}"})
 
 
@@ -588,6 +635,65 @@ class TestHttpErrors:
         client = GithubClient(auth=test_auth, http=http)
         with pytest.raises(httpx.HTTPStatusError):
             await client.execute(_comment_decision())
+
+
+# ---------------------------------------------------------------------------
+# PR reading (not through execute() — direct methods)
+# ---------------------------------------------------------------------------
+class TestGetPr:
+    async def test_returns_pr_info(self, client, capture):
+        pr = await client.get_pr("owner", "repo", 10)
+        assert pr.number == 10
+        assert pr.title == "Fix SQL injection"
+        assert pr.author == "dev-alice"
+        assert pr.state == "open"
+        assert pr.base_ref == "main"
+        assert pr.head_ref == "fix/sql-injection"
+        assert pr.head_sha == "abc123def"
+        assert pr.changed_files == 3
+        assert pr.additions == 15
+        assert pr.deletions == 5
+        assert pr.html_url == "https://github.com/owner/repo/pull/10"
+
+    async def test_hits_correct_url(self, client, capture):
+        await client.get_pr("owner", "repo", 10)
+        pr_requests = [
+            r for r in capture.requests
+            if "/pulls/" in r.url.path and "/files" not in r.url.path
+        ]
+        assert len(pr_requests) == 1
+        assert pr_requests[0].url.path == "/repos/owner/repo/pulls/10"
+        assert pr_requests[0].method == "GET"
+
+    async def test_uses_installation_token(self, client, capture):
+        await client.get_pr("owner", "repo", 10)
+        pr_req = next(
+            r for r in capture.requests
+            if "/pulls/" in r.url.path and "/files" not in r.url.path
+        )
+        assert pr_req.headers["Authorization"].startswith("token ")
+
+
+class TestGetPrFiles:
+    async def test_returns_file_list(self, client, capture):
+        files = await client.get_pr_files("owner", "repo", 10)
+        assert isinstance(files, list)
+        assert len(files) == 2
+        assert files[0]["filename"] == "src/db.py"
+        assert files[1]["filename"] == "src/auth.py"
+
+    async def test_hits_correct_url_with_pagination(self, client, capture):
+        await client.get_pr_files("owner", "repo", 10)
+        file_requests = [
+            r for r in capture.requests if "/files" in r.url.path
+        ]
+        assert len(file_requests) == 1
+        assert "/pulls/10/files" in file_requests[0].url.path
+
+    async def test_files_have_patch_field(self, client, capture):
+        files = await client.get_pr_files("owner", "repo", 10)
+        assert files[0]["patch"] is not None
+        assert "@@ " in files[0]["patch"]
 
 
 # ---------------------------------------------------------------------------
