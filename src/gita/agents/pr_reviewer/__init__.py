@@ -4,9 +4,11 @@ Submodules:
 - ``diff_parser``  — parse GitHub PR file diffs into structured hunks
 - ``schemas``      — pydantic LLM I/O models
 - ``recipe``       — the two-call review pipeline
+- ``bridge``       — Decision bridge (review → comment Decision)
 
 Public API re-exported here.
 """
+from gita.agents.pr_reviewer.bridge import build_pr_review_decision
 from gita.agents.pr_reviewer.diff_parser import (
     ChangedLineRange,
     DiffHunk,
@@ -24,6 +26,7 @@ __all__ = [
     "parse_pr_files",
     "PRReviewError",
     "run_pr_review",
+    "build_pr_review_decision",
     "FindingsResponse",
     "ReviewSummaryResponse",
 ]

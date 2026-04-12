@@ -25,6 +25,12 @@ from gita.agents.onboarding import (
     build_onboarding_issue_decisions,
     run_onboarding,
 )
+from gita.agents.pr_reviewer import (
+    PRReviewError,
+    build_pr_review_decision,
+    parse_pr_files,
+    run_pr_review,
+)
 from gita.agents.types import OnboardingResult
 from gita.cli.formatters import (
     fmt_history_result,
@@ -32,6 +38,7 @@ from gita.cli.formatters import (
     fmt_load_bearing_result,
     fmt_neighborhood_result,
     fmt_onboarding_result,
+    fmt_pr_review_result,
     fmt_repos,
     fmt_stats,
     fmt_symbol_result,
@@ -190,6 +197,158 @@ async def cmd_query_history(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
     print(fmt_history_result(result))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Review-PR command
+# ---------------------------------------------------------------------------
+def _parse_pr_target(value: str) -> tuple[str, str, int]:
+    """Parse ``OWNER/REPO#N`` into ``(owner, repo, pr_number)``."""
+    if "#" not in value:
+        raise ValueError(
+            f"review-pr expects OWNER/REPO#PR_NUMBER, got {value!r}"
+        )
+    repo_full, pr_str = value.rsplit("#", 1)
+    if repo_full.count("/") != 1:
+        raise ValueError(
+            f"review-pr repo must be owner/repo, got {repo_full!r}"
+        )
+    try:
+        pr_number = int(pr_str)
+    except ValueError as exc:
+        raise ValueError(
+            f"review-pr PR number must be an integer, got {pr_str!r}"
+        ) from exc
+    owner, repo = repo_full.split("/", 1)
+    return owner, repo, pr_number
+
+
+async def cmd_review_pr(args: argparse.Namespace) -> int:
+    if not settings.openrouter_api_key:
+        print(
+            "error: OPENROUTER_API_KEY is not set in .env",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        owner, repo, pr_number = _parse_pr_target(args.pr)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    repo_full = f"{owner}/{repo}"
+    repo_name = args.repo_name or repo_full
+    mode = WriteMode(settings.write_mode)
+
+    # GitHub credentials needed for fetching the PR (even in shadow mode,
+    # because we need to read the PR diff from the API).
+    if (
+        not settings.github_app_id
+        or not settings.github_app_private_key_path
+    ):
+        print(
+            "error: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be "
+            "set in .env (needed to fetch the PR from GitHub)",
+            file=sys.stderr,
+        )
+        return 2
+
+    auth = GithubAppAuth.from_files(
+        app_id=settings.github_app_id,
+        private_key_path=settings.github_app_private_key_path,
+    )
+
+    model = args.model or settings.ai_default_model
+
+    async with GithubClient(auth=auth) as gh:
+        print(f"Fetching PR #{pr_number} from {repo_full}...")
+        pr_info = await gh.get_pr(owner, repo, pr_number)
+        pr_files_json = await gh.get_pr_files(owner, repo, pr_number)
+
+    diff_hunks = parse_pr_files(pr_files_json)
+    print(
+        f"PR #{pr_number}: {pr_info.title} "
+        f"({pr_info.changed_files} files, "
+        f"+{pr_info.additions}/-{pr_info.deletions})"
+    )
+
+    async with OpenRouterClient(
+        api_key=settings.openrouter_api_key, default_model=model
+    ) as llm:
+        async with SessionLocal() as session:
+            try:
+                result = await run_pr_review(
+                    session,
+                    repo_name,
+                    pr_info,
+                    diff_hunks,
+                    llm=llm,
+                )
+            except RepoNotFoundError:
+                print(
+                    f"warning: repo {repo_name!r} not indexed — "
+                    f"reviewing diff without code context",
+                    file=sys.stderr,
+                )
+                # Re-run with a fallback: index doesn't exist but the
+                # diff alone is still reviewable. For now, bail.
+                return 1
+            except PRReviewError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+
+    print()
+    print(fmt_pr_review_result(result))
+
+    if not args.post:
+        return 0
+
+    # --- Posting flow ---
+    decision = build_pr_review_decision(
+        result, repo_full_name=repo_full, pr_number=pr_number
+    )
+
+    print()
+    print(f"--- Posting review (WRITE_MODE={mode.value}) ---")
+    print(f"target: {repo_full}#{pr_number}")
+    print(f"verdict: {result.verdict}")
+    print(f"confidence: {decision.confidence:.2f}")
+
+    if mode == WriteMode.SHADOW:
+        async with SessionLocal() as session:
+            decision_result = await execute_decision(
+                decision,
+                mode=mode,
+                session=session,
+                agent="pr_reviewer",
+            )
+            await session.commit()
+        print()
+        print(f"outcome: {decision_result.outcome.value}")
+        print("(shadow mode — no comment posted)")
+        return 0
+
+    async with GithubClient(auth=auth) as gh, SessionLocal() as session:
+        decision_result = await execute_decision(
+            decision,
+            mode=mode,
+            client=gh,
+            session=session,
+            agent="pr_reviewer",
+        )
+        await session.commit()
+
+    print()
+    print(f"outcome: {decision_result.outcome.value}")
+    if decision_result.executed:
+        side = decision_result.side_effect or {}
+        url = side.get("html_url") or "(url not returned)"
+        print(f"posted: {url}")
+    elif decision_result.error:
+        print(f"error: {decision_result.error}", file=sys.stderr)
+        return 1
     return 0
 
 

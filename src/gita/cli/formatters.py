@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from gita.agents.types import OnboardingResult
+from gita.agents.types import OnboardingResult, PRReviewResult
 from gita.db.models import Repo
 from gita.indexer.ingest import IngestResult
 from gita.views.history import HistoryResult
@@ -243,6 +243,33 @@ def fmt_onboarding_result(result: OnboardingResult) -> str:
 
     lines.append("")
     lines.append(f"overall confidence: {result.confidence:.2f}")
+    return "\n".join(lines)
+
+
+def fmt_pr_review_result(result: PRReviewResult) -> str:
+    lines = [
+        f"PR Review: #{result.pr_number} — {result.pr_title}",
+        "",
+        f"verdict: {result.verdict}",
+        f"summary: {result.summary}",
+        "",
+    ]
+
+    if result.findings:
+        lines.append(f"findings ({len(result.findings)}):")
+        for i, finding in enumerate(result.findings):
+            lines.append(
+                f"  [{i}] {finding.severity:<8} {finding.kind:<10} "
+                f"{finding.file}:{finding.line}"
+            )
+            lines.append(f"      {finding.description}")
+            if finding.fix_sketch:
+                lines.append(f"      fix: {finding.fix_sketch}")
+    else:
+        lines.append("findings: (none)")
+
+    lines.append("")
+    lines.append(f"confidence: {result.confidence:.2f}")
     return "\n".join(lines)
 
 
