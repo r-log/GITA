@@ -73,10 +73,13 @@ async def cmd_index(args: argparse.Namespace) -> int:
         print(f"error: not a directory: {root}", file=sys.stderr)
         return 2
     name = args.name or root.name
+    force_full = getattr(args, "full", False)
 
     async with SessionLocal() as session:
         t0 = time.time()
-        result = await index_repository(session, name, root)
+        result = await index_repository(
+            session, name, root, force_full=force_full
+        )
         await session.commit()
         elapsed = time.time() - t0
     print(fmt_ingest(name, root, elapsed, result))

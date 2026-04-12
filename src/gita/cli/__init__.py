@@ -65,6 +65,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--name",
         help="Override the repo name (defaults to the root directory name)",
     )
+    index_p.add_argument(
+        "--full",
+        action="store_true",
+        default=False,
+        help=(
+            "Force a full re-index even when an incremental update is "
+            "possible. Without this flag, gita detects changed files "
+            "since the last index and only re-parses those."
+        ),
+    )
 
     sub.add_parser("repos", help="List indexed repos")
 
