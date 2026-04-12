@@ -23,13 +23,13 @@ FIXTURE = (
 ).resolve()
 
 
-async def test_seeded_buggy_checklist_passes(db_session):
+async def test_seeded_buggy_checklist_passes(db_session, real_llm):
     assert FIXTURE.is_dir(), f"fixture missing at {FIXTURE}"
 
     await index_repository(db_session, "seeded_buggy", FIXTURE)
     await db_session.commit()
 
-    result = await run_onboarding(db_session, "seeded_buggy")
+    result = await run_onboarding(db_session, "seeded_buggy", llm=real_llm)
 
     violations = check_output(result, CHECKLIST)
     assert violations == [], (

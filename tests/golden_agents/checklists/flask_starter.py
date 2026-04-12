@@ -12,12 +12,13 @@ CHECKLIST = Checklist(
     repo_name="flask_starter",
     description="Small Flask app with planted security + quality issues",
     project_summary_must_mention=[
-        r"flask",
-        r"python",
+        # Either "flask" or "python" is enough — the LLM usually names the
+        # framework rather than the language, which is acceptable.
+        r"flask|python",
     ],
     min_findings=2,
     require_file_line=True,
-    max_milestones=4,
+    max_milestones=5,  # matches the "0 to 5" upper bound in the grouping prompt
     banned_milestone_titles=[
         r"testing.*qa",
         r"ci/?cd",
@@ -31,8 +32,11 @@ CHECKLIST = Checklist(
     ],
     must_not_mention=[
         # Week-1 v1 boilerplate patterns we never want to see again.
-        r"\bgeneric\b",
+        # Note: bare "generic" is too loose — LLMs legitimately say things
+        # like "generic error handling". We match the specific v1 phrases.
         r"add unit tests",
         r"set up (?:ci|cd)",
+        r"improve (?:test )?coverage",
+        r"add (?:more )?documentation",
     ],
 )

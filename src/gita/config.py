@@ -29,6 +29,15 @@ class Settings(BaseSettings):
         default=None, alias="GITHUB_APP_PRIVATE_KEY_PATH"
     )
 
+    # LLM provider (OpenRouter). Optional at import time — only required
+    # when an agent actually makes an LLM call. Tests use a FakeLLMClient.
+    openrouter_api_key: str | None = Field(
+        default=None, alias="OPENROUTER_API_KEY"
+    )
+    ai_default_model: str = Field(
+        default="moonshotai/kimi-k2.5", alias="AI_DEFAULT_MODEL"
+    )
+
     @field_validator("write_mode")
     @classmethod
     def _validate_write_mode(cls, v: str) -> str:

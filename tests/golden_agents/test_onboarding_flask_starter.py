@@ -25,15 +25,15 @@ FIXTURE = (
 ).resolve()
 
 
-async def test_flask_starter_checklist_passes(db_session):
+async def test_flask_starter_checklist_passes(db_session, real_llm):
     assert FIXTURE.is_dir(), f"fixture missing at {FIXTURE}"
 
     # 1. Index the fixture into the test DB.
     await index_repository(db_session, "flask_starter", FIXTURE)
     await db_session.commit()
 
-    # 2. Run the onboarding agent.
-    result = await run_onboarding(db_session, "flask_starter")
+    # 2. Run the onboarding agent with the real OpenRouter LLM.
+    result = await run_onboarding(db_session, "flask_starter", llm=real_llm)
 
     # 3. Check the output against the fixture's checklist.
     violations = check_output(result, CHECKLIST)

@@ -40,6 +40,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "gita.indexer.queries" = ["*.scm"]
+"gita.agents.prompts" = ["*.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

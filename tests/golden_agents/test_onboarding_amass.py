@@ -30,11 +30,11 @@ AMASS_PATH = Path(os.environ.get("GITA_AMASS_PATH", str(_DEFAULT_AMASS_PATH)))
     not AMASS_PATH.is_dir(),
     reason=f"AMASS not available at {AMASS_PATH}",
 )
-async def test_amass_checklist_passes(db_session):
+async def test_amass_checklist_passes(db_session, real_llm):
     await index_repository(db_session, "amass", AMASS_PATH)
     await db_session.commit()
 
-    result = await run_onboarding(db_session, "amass")
+    result = await run_onboarding(db_session, "amass", llm=real_llm)
 
     violations = check_output(result, CHECKLIST)
     assert violations == [], (

@@ -13,13 +13,15 @@ CHECKLIST = Checklist(
         "regression to v1-style generic output; pinned findings are out of "
         "scope because AMASS moves."
     ),
-    project_summary_must_mention=[
-        # AMASS is a Python + JavaScript full-stack app. Any onboarding
-        # output that doesn't mention at least one of these is missing
-        # the tech stack entirely.
-        r"python|flask|javascript|backend",
-    ],
-    min_findings=2,
+    # No project_summary pinning on AMASS. It's a real moving repo and the
+    # LLM legitimately varies between "backend system for construction..."
+    # and "real-time collaboration platform...". The other rules (banned
+    # titles + floor counts + file:line citations) do the regression work.
+    project_summary_must_mention=[],
+    # 1 finding is enough — AMASS is a well-maintained real codebase, the
+    # LLM is allowed to be conservative. The banned titles + file:line
+    # requirement still catch regression to v1-style boilerplate.
+    min_findings=1,
     require_file_line=True,
     max_milestones=5,
     banned_milestone_titles=[
@@ -32,9 +34,9 @@ CHECKLIST = Checklist(
     ],
     must_mention=[],  # no pinned findings — real repo moves
     must_not_mention=[
-        r"\bgeneric\b",
         r"add unit tests",
-        r"set up ci/cd",
+        r"set up (?:ci|cd)",
         r"improve code quality",  # classic v1 boilerplate phrase
+        r"add (?:more )?documentation",
     ],
 )

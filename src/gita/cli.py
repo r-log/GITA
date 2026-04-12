@@ -30,9 +30,13 @@ if sys.platform == "win32":
 from sqlalchemy import func, select  # noqa: E402
 
 from gita import __version__  # noqa: E402
+from gita.agents.onboarding import OnboardingError, run_onboarding  # noqa: E402
+from gita.agents.types import OnboardingResult  # noqa: E402
+from gita.config import settings  # noqa: E402
 from gita.db.models import CodeIndex, ImportEdge, Repo  # noqa: E402
 from gita.db.session import SessionLocal  # noqa: E402
 from gita.indexer.ingest import IngestResult, index_repository  # noqa: E402
+from gita.llm.client import OpenRouterClient  # noqa: E402
 from gita.views._common import RepoNotFoundError  # noqa: E402
 from gita.views.history import HistoryResult, history_view  # noqa: E402
 from gita.views.load_bearing import (  # noqa: E402
@@ -239,6 +243,47 @@ def _fmt_load_bearing_result(result: LoadBearingResult) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _fmt_onboarding_result(result: OnboardingResult) -> str:
+    lines = [
+        f"Onboarding: {result.repo_name}",
+        "",
+        "project_summary:",
+        f"  {result.project_summary}",
+        "",
+    ]
+
+    if result.findings:
+        lines.append(f"findings ({len(result.findings)}):")
+        for i, finding in enumerate(result.findings):
+            lines.append(
+                f"  [{i}] {finding.severity:<8} {finding.kind:<10} "
+                f"{finding.file}:{finding.line}"
+            )
+            lines.append(f"      {finding.description}")
+            if finding.fix_sketch:
+                lines.append(f"      fix: {finding.fix_sketch}")
+    else:
+        lines.append("findings: (none)")
+
+    lines.append("")
+    if result.milestones:
+        lines.append(f"milestones ({len(result.milestones)}):")
+        for i, milestone in enumerate(result.milestones):
+            lines.append(
+                f"  [{i}] {milestone.title}  (confidence {milestone.confidence:.2f})"
+            )
+            lines.append(f"      {milestone.summary}")
+            lines.append(
+                f"      findings: {', '.join(str(j) for j in milestone.finding_indices)}"
+            )
+    else:
+        lines.append("milestones: (none)")
+
+    lines.append("")
+    lines.append(f"overall confidence: {result.confidence:.2f}")
+    return "\n".join(lines)
+
+
 def _fmt_history_result(result: HistoryResult) -> str:
     lines = [f"File: {result.file_path}"]
 
@@ -390,6 +435,38 @@ async def cmd_query_load_bearing(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_onboard(args: argparse.Namespace) -> int:
+    if not settings.openrouter_api_key:
+        print(
+            "error: OPENROUTER_API_KEY is not set in .env — cannot call the "
+            "onboarding LLM",
+            file=sys.stderr,
+        )
+        return 2
+
+    model = args.model or settings.ai_default_model
+    async with OpenRouterClient(
+        api_key=settings.openrouter_api_key, default_model=model
+    ) as llm:
+        async with SessionLocal() as session:
+            try:
+                result = await run_onboarding(
+                    session,
+                    args.repo,
+                    llm=llm,
+                    load_bearing_limit=args.load_bearing,
+                    deep_read_limit=args.deep_read,
+                )
+            except RepoNotFoundError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            except OnboardingError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+    print(_fmt_onboarding_result(result))
+    return 0
+
+
 async def cmd_query_history(args: argparse.Namespace) -> int:
     async with SessionLocal() as session:
         try:
@@ -427,6 +504,29 @@ def _build_parser() -> argparse.ArgumentParser:
 
     stats_p = sub.add_parser("stats", help="Show stats for one indexed repo")
     stats_p.add_argument("repo")
+
+    onboard_p = sub.add_parser(
+        "onboard",
+        help="Run the onboarding agent against an indexed repo (uses OpenRouter)",
+    )
+    onboard_p.add_argument("repo")
+    onboard_p.add_argument(
+        "--model",
+        default=None,
+        help="Override the LLM model (defaults to AI_DEFAULT_MODEL)",
+    )
+    onboard_p.add_argument(
+        "--load-bearing",
+        type=int,
+        default=10,
+        help="How many load-bearing files to show the picker (default 10)",
+    )
+    onboard_p.add_argument(
+        "--deep-read",
+        type=int,
+        default=5,
+        help="How many files the LLM is allowed to read deeply (default 5)",
+    )
 
     query_p = sub.add_parser("query", help="Query the index")
     query_sub = query_p.add_subparsers(dest="query_type", required=True)
@@ -468,6 +568,7 @@ _HANDLERS = {
     "index": cmd_index,
     "repos": cmd_repos,
     "stats": cmd_stats,
+    "onboard": cmd_onboard,
     ("query", "symbol"): cmd_query_symbol,
     ("query", "neighborhood"): cmd_query_neighborhood,
     ("query", "load-bearing"): cmd_query_load_bearing,
