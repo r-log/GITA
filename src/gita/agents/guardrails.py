@@ -40,6 +40,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gita.agents.types import Finding
 from gita.db.models import CodeIndex
 
+# Lazy import to avoid circular dependency at module level.
+# DiffHunk is only needed when diff_hunks kwarg is passed.
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gita.agents.pr_reviewer.diff_parser import DiffHunk
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -113,16 +120,46 @@ def _file_parses_cleanly(content: str, language: str) -> bool:
 # ---------------------------------------------------------------------------
 # Main verification pass
 # ---------------------------------------------------------------------------
+def _line_in_diff_ranges(
+    file_path: str,
+    line: int,
+    diff_hunks: list["DiffHunk"],
+) -> bool:
+    """True if ``line`` falls within any changed range of the file's hunk.
+
+    Used to relax the line-range guardrail for PR reviews: the diff adds
+    new lines beyond the indexed file length, so findings citing those
+    new lines should be allowed even though ``code_index.line_count``
+    doesn't include them yet.
+    """
+    for hunk in diff_hunks:
+        if hunk.file_path != file_path:
+            continue
+        for r in hunk.changed_ranges:
+            if r.start <= line <= r.end:
+                return True
+    return False
+
+
 async def verify_findings(
     session: AsyncSession,
     repo_id: Any,
     findings: list[Finding],
+    *,
+    diff_hunks: list["DiffHunk"] | None = None,
 ) -> tuple[list[Finding], list[tuple[Finding, str]]]:
     """Verify each finding against structural ground truth.
 
     Returns ``(verified, dropped)`` where ``dropped`` is a list of
     ``(finding, reason)`` tuples. The recipe feeds ``verified`` into
     stage 4 (milestone grouping); ``dropped`` is logged for diagnostics.
+
+    When ``diff_hunks`` is provided (PR review context), the line-range
+    check is relaxed: a finding at line L passes if either
+    ``L <= code_index.line_count`` OR ``L`` falls within one of the
+    diff's changed ranges for that file. This handles the "PR adds new
+    lines beyond the indexed file length" case without disabling the
+    guardrail entirely.
 
     This function hits the DB once (batch fetch of all cited files) and
     then runs pure checks in-memory. Cost: one SQL query + negligible
@@ -160,19 +197,27 @@ async def verify_findings(
 
         # --- Guardrail 2: line range ---
         if finding.line > row.line_count:
-            reason = (
-                f"line_out_of_range: line {finding.line} > "
-                f"{row.line_count} (file has {row.line_count} lines)"
+            # In PR review context, the diff may add lines beyond the
+            # indexed file length. Allow if the line falls within a
+            # diff changed range.
+            in_diff = (
+                diff_hunks is not None
+                and _line_in_diff_ranges(finding.file, finding.line, diff_hunks)
             )
-            dropped.append((finding, reason))
-            logger.warning(
-                "guardrail_drop reason=line_out_of_range "
-                "file=%s line=%d max=%d",
-                finding.file,
-                finding.line,
-                row.line_count,
-            )
-            continue
+            if not in_diff:
+                reason = (
+                    f"line_out_of_range: line {finding.line} > "
+                    f"{row.line_count} (file has {row.line_count} lines)"
+                )
+                dropped.append((finding, reason))
+                logger.warning(
+                    "guardrail_drop reason=line_out_of_range "
+                    "file=%s line=%d max=%d",
+                    finding.file,
+                    finding.line,
+                    row.line_count,
+                )
+                continue
 
         # --- Guardrail 3: AST parse gate for syntax-error claims ---
         if _claims_syntax_error(finding):

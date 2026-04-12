@@ -23,9 +23,11 @@ from gita.agents.guardrails import (
     _check_banned_phrase,
     _claims_syntax_error,
     _file_parses_cleanly,
+    _line_in_diff_ranges,
     structural_confidence,
     verify_findings,
 )
+from gita.agents.pr_reviewer.diff_parser import ChangedLineRange, DiffHunk
 from gita.agents.types import Finding
 from gita.db.models import CodeIndex, Repo
 
@@ -218,6 +220,82 @@ class TestVerifyFindingsLineRange:
         )
         assert len(verified) == 0
         assert "line_out_of_range" in dropped[0][1]
+
+    async def test_out_of_range_allowed_if_in_diff_range(
+        self, db_session: AsyncSession
+    ):
+        """PR review context: the diff adds lines beyond the indexed file
+        length. A finding citing a line in the diff's changed range
+        should pass even though it exceeds code_index.line_count."""
+        repo_id = await _seed_repo_with_files(db_session, {
+            "src/app.py": ("python", 28, "x = 1\n" * 28),
+        })
+        diff_hunks = [
+            DiffHunk(
+                file_path="src/app.py",
+                status="modified",
+                additions=10,
+                deletions=0,
+                patch="@@ -28,0 +29,10 @@\n+new code",
+                changed_ranges=[ChangedLineRange(start=29, count=10)],
+            )
+        ]
+        # Line 34 is beyond the 28-line file but within the diff range 29-38.
+        findings = [_finding(file="src/app.py", line=34)]
+        verified, dropped = await verify_findings(
+            db_session, repo_id, findings, diff_hunks=diff_hunks
+        )
+        assert len(verified) == 1
+        assert len(dropped) == 0
+
+    async def test_out_of_range_still_dropped_if_not_in_diff(
+        self, db_session: AsyncSession
+    ):
+        """Even with diff_hunks provided, a line that's out of range AND
+        not in any diff range is still dropped."""
+        repo_id = await _seed_repo_with_files(db_session, {
+            "src/app.py": ("python", 28, "x = 1\n" * 28),
+        })
+        diff_hunks = [
+            DiffHunk(
+                file_path="src/app.py",
+                status="modified",
+                additions=5,
+                deletions=0,
+                patch="@@ -28,0 +29,5 @@\n+new",
+                changed_ranges=[ChangedLineRange(start=29, count=5)],
+            )
+        ]
+        # Line 999 is way beyond both the file AND the diff range.
+        findings = [_finding(file="src/app.py", line=999)]
+        verified, dropped = await verify_findings(
+            db_session, repo_id, findings, diff_hunks=diff_hunks
+        )
+        assert len(verified) == 0
+        assert "line_out_of_range" in dropped[0][1]
+
+
+class TestLineInDiffRanges:
+    def test_line_inside_range(self):
+        hunks = [DiffHunk(
+            file_path="a.py", status="modified", additions=5, deletions=0,
+            patch="", changed_ranges=[ChangedLineRange(start=10, count=5)],
+        )]
+        assert _line_in_diff_ranges("a.py", 12, hunks) is True
+
+    def test_line_outside_range(self):
+        hunks = [DiffHunk(
+            file_path="a.py", status="modified", additions=5, deletions=0,
+            patch="", changed_ranges=[ChangedLineRange(start=10, count=5)],
+        )]
+        assert _line_in_diff_ranges("a.py", 50, hunks) is False
+
+    def test_different_file_no_match(self):
+        hunks = [DiffHunk(
+            file_path="a.py", status="modified", additions=5, deletions=0,
+            patch="", changed_ranges=[ChangedLineRange(start=1, count=100)],
+        )]
+        assert _line_in_diff_ranges("b.py", 50, hunks) is False
 
 
 class TestVerifyFindingsASTGate:
