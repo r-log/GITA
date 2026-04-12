@@ -46,3 +46,19 @@ class OnboardingResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class PRReviewResult:
+    """The structured output of ``run_pr_review``."""
+
+    repo_name: str
+    pr_number: int
+    pr_title: str
+    summary: str  # 2-3 sentence review from the LLM
+    verdict: str  # "approve" | "request_changes" | "comment"
+    findings: list[Finding] = field(default_factory=list)
+    confidence: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
