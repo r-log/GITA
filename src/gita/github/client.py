@@ -19,7 +19,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
@@ -448,3 +448,97 @@ class GithubClient:
             "repo": f"{owner}/{repo}",
             "label": label,
         }
+
+    # -----------------------------------------------------------------
+    # PR reading (not part of ActionClient — called directly by agents)
+    # -----------------------------------------------------------------
+    async def get_pr(
+        self, owner: str, repo: str, number: int
+    ) -> "PRInfo":
+        """Fetch PR metadata. Returns a typed dataclass, not raw JSON."""
+        token = await self._installation_token_for_repo(owner, repo)
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls/{number}"
+        response = await self.http.get(
+            url,
+            headers=self._repo_auth_headers(token),
+        )
+        response.raise_for_status()
+        data = response.json()
+        return PRInfo(
+            number=data["number"],
+            title=data.get("title", ""),
+            body=data.get("body") or "",
+            author=data.get("user", {}).get("login", ""),
+            state=data.get("state", "open"),
+            base_ref=data.get("base", {}).get("ref", ""),
+            head_ref=data.get("head", {}).get("ref", ""),
+            head_sha=data.get("head", {}).get("sha", ""),
+            changed_files=data.get("changed_files", 0),
+            additions=data.get("additions", 0),
+            deletions=data.get("deletions", 0),
+            html_url=data.get("html_url", ""),
+        )
+
+    async def get_pr_files(
+        self, owner: str, repo: str, number: int
+    ) -> list[dict[str, Any]]:
+        """Fetch the list of files changed in a PR.
+
+        Returns the raw JSON array from GitHub's
+        ``GET /repos/{owner}/{repo}/pulls/{n}/files`` endpoint. The
+        caller (typically ``diff_parser.parse_pr_files``) normalizes
+        this into typed ``DiffHunk`` objects.
+
+        Paginates automatically — GitHub caps each page at 30 files by
+        default; PRs with 100+ changed files need multiple pages.
+        """
+        token = await self._installation_token_for_repo(owner, repo)
+        all_files: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            url = (
+                f"{_GITHUB_API}/repos/{owner}/{repo}/pulls/{number}/files"
+                f"?per_page=100&page={page}"
+            )
+            response = await self.http.get(
+                url,
+                headers=self._repo_auth_headers(token),
+            )
+            response.raise_for_status()
+            batch = response.json()
+            if not batch:
+                break
+            all_files.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        logger.info(
+            "github_pr_files_fetched owner=%s repo=%s pr=%d files=%d pages=%d",
+            owner,
+            repo,
+            number,
+            len(all_files),
+            page,
+        )
+        return all_files
+
+
+# ---------------------------------------------------------------------------
+# PR data types (outside the class so they're importable without a client)
+# ---------------------------------------------------------------------------
+@dataclass
+class PRInfo:
+    """Typed representation of a GitHub pull request's metadata."""
+
+    number: int
+    title: str
+    body: str
+    author: str
+    state: str  # "open" | "closed" | "merged"
+    base_ref: str
+    head_ref: str
+    head_sha: str
+    changed_files: int
+    additions: int
+    deletions: int
+    html_url: str
