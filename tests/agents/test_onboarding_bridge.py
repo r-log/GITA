@@ -314,7 +314,6 @@ class TestIssueBodyRenderer:
         finding = _finding(fix_sketch="Use try/except ValueError")
         milestone = _milestone(finding_indices=[0])
         body = _render_issue_body(milestone, [finding], "r-log/flask_starter")
-        assert "Fix sketch" in body
         assert "try/except ValueError" in body
 
 
@@ -344,8 +343,7 @@ class TestCommentBridgeRegression:
 # ---------------------------------------------------------------------------
 class TestDetailsWrapping:
     def test_short_comment_body_is_not_wrapped(self):
-        """At or below the threshold minus one, the comment body renders
-        identically to its pre-P5 shape — no <details>, no collapse."""
+        """Below the threshold, no <details> collapse."""
         findings = [
             _finding(file=f"f{i}.py", line=i + 1)
             for i in range(_COLLAPSE_THRESHOLD - 1)
@@ -361,13 +359,11 @@ class TestDetailsWrapping:
             _result(findings=findings, milestones=milestones)
         )
         assert "<details>" not in body
-        assert "### Findings" in body
-        assert "### Proposed milestones" in body
+        assert "Findings" in body
+        assert "Milestone" in body
 
     def test_long_comment_body_wraps_findings(self):
-        """At the threshold the findings section collapses inside a
-        <details> block. GitHub renders this natively with a click-to-expand
-        widget; the inner markdown is still valid."""
+        """At the threshold, findings collapse into <details>."""
         findings = [
             _finding(file=f"f{i}.py", line=i + 1)
             for i in range(_COLLAPSE_THRESHOLD)
@@ -379,7 +375,6 @@ class TestDetailsWrapping:
         assert "</details>" in body
         assert "<summary>" in body
         assert f"Findings ({_COLLAPSE_THRESHOLD})" in body
-        # The actual findings are still inside the wrapped block.
         assert "f0.py" in body
         assert f"f{_COLLAPSE_THRESHOLD - 1}.py" in body
 
@@ -391,10 +386,8 @@ class TestDetailsWrapping:
         body = _render_comment_body(
             _result(findings=[_finding()], milestones=milestones)
         )
-        # Two wrapped blocks — one for milestones; findings under threshold
-        # stays inline.
         assert body.count("<details>") == 1
-        assert f"Proposed milestones ({_COLLAPSE_THRESHOLD})" in body
+        assert f"Milestones ({_COLLAPSE_THRESHOLD})" in body
 
     def test_long_issue_body_wraps_findings_checklist(self):
         """The per-milestone issue body collapses when a single milestone
@@ -422,7 +415,7 @@ class TestDetailsWrapping:
             milestone, findings, "r-log/flask_starter"
         )
         assert "<details>" not in body
-        assert "## Findings" in body
+        assert "Findings" in body
 
     def test_collapsed_blocks_have_blank_lines_around_summary(self):
         """Without a blank line after <summary>, GitHub's markdown renderer

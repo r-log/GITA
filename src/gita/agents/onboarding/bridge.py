@@ -3,10 +3,9 @@
 Two bridges:
 
 1. ``build_onboarding_comment_decision`` — wraps the entire result as one
-   ``comment`` Decision. Used by the Week 2 ``--post-to`` flow.
+   ``comment`` Decision. Used by the ``--post-to`` flow.
 2. ``build_onboarding_issue_decisions`` — wraps each milestone as a
-   separate ``create_issue`` Decision. Used by the Week 3
-   ``--create-issues`` flow.
+   separate ``create_issue`` Decision. Used by the ``--create-issues`` flow.
 
 Both are pure functions: they take an ``OnboardingResult`` and return
 ``Decision`` objects without any I/O.
@@ -21,18 +20,23 @@ from gita.agents.types import Finding, Milestone, OnboardingResult
 
 logger = logging.getLogger(__name__)
 
-# Findings or milestones counts at or above this threshold get collapsed
-# into <details> blocks so the comment body stays scannable on GitHub.
-_COLLAPSE_THRESHOLD = 4
+_COLLAPSE_THRESHOLD = 6
+
+_SEVERITY_BADGE: dict[str, str] = {
+    "critical": "\U0001f534",  # red circle
+    "high": "\U0001f7e0",      # orange circle
+    "medium": "\U0001f7e1",    # yellow circle
+    "low": "\U0001f535",       # blue circle
+}
 
 
-# ---------------------------------------------------------------------------
-# Shared rendering helpers
-# ---------------------------------------------------------------------------
+def _severity_icon(severity: str) -> str:
+    return _SEVERITY_BADGE.get(severity.lower(), "\u26aa")
+
+
 def _wrap_details(
     summary: str, body_lines: list[str], *, collapse: bool
 ) -> list[str]:
-    """Optionally wrap a block in a collapsible ``<details>`` section."""
     if not collapse:
         return body_lines
     wrapped = ["<details>", f"<summary>{summary}</summary>", ""]
@@ -41,96 +45,139 @@ def _wrap_details(
     return wrapped
 
 
-def _render_finding_block(index: int, finding: Finding) -> list[str]:
-    block = [
-        f"**{index + 1}. [{finding.severity.upper()}] {finding.kind}** "
-        f"— `{finding.file}:{finding.line}`",
-        "",
-        finding.description,
+# ---------------------------------------------------------------------------
+# Finding card (shared between comment + issue renderers)
+# ---------------------------------------------------------------------------
+def _render_finding_card(index: int, finding: Finding) -> list[str]:
+    icon = _severity_icon(finding.severity)
+    lines = [
+        f"> {icon} **{index + 1}. {finding.severity.upper()}** \u2014 "
+        f"_{finding.kind}_ at `{finding.file}:{finding.line}`",
+        ">",
+        f"> {finding.description}",
     ]
     if finding.fix_sketch:
-        block.append("")
-        block.append(f"_Fix sketch:_ {finding.fix_sketch}")
-    block.append("")
-    return block
+        lines.append(">")
+        lines.append(f"> \U0001f4a1 {finding.fix_sketch}")
+    lines.append("")
+    return lines
 
 
-def _render_milestone_block(milestone: Milestone) -> list[str]:
-    block = [
-        f"**{milestone.title}** _(confidence {milestone.confidence:.2f})_",
+# ---------------------------------------------------------------------------
+# Milestone card
+# ---------------------------------------------------------------------------
+def _render_milestone_card(
+    milestone: Milestone, findings: list[Finding]
+) -> list[str]:
+    conf_pct = f"{milestone.confidence:.0%}"
+    lines = [
+        f"#### \U0001f3af {milestone.title}",
         "",
-        milestone.summary,
+        f"> {milestone.summary}",
+        "",
     ]
     if milestone.finding_indices:
-        citations = ", ".join(
-            f"finding {i + 1}" for i in milestone.finding_indices
-        )
-        block.append("")
-        block.append(f"_Addresses:_ {citations}")
-    block.append("")
-    return block
+        cited = [
+            findings[i]
+            for i in milestone.finding_indices
+            if 0 <= i < len(findings)
+        ]
+        if cited:
+            for finding in cited:
+                icon = _severity_icon(finding.severity)
+                lines.append(
+                    f"- {icon} `{finding.file}:{finding.line}` \u2014 "
+                    f"{finding.description[:80]}"
+                    f"{'...' if len(finding.description) > 80 else ''}"
+                )
+            lines.append("")
+    lines.append(f"_Confidence: {conf_pct}_")
+    lines.append("")
+    return lines
 
 
 # ---------------------------------------------------------------------------
-# Comment bridge (Week 2 Day 7)
+# Comment bridge — full onboarding review as one comment
 # ---------------------------------------------------------------------------
 def _render_comment_body(result: OnboardingResult) -> str:
-    """Render the OnboardingResult as a markdown comment body."""
     lines: list[str] = [
-        f"## GITA onboarding review for `{result.repo_name}`",
+        f"## \U0001f4cb Onboarding Review \u2014 `{result.repo_name}`",
         "",
-        result.project_summary,
+        f"> {result.project_summary}",
+        "",
+        f"\U0001f4ca {len(result.findings)} finding"
+        f"{'s' if len(result.findings) != 1 else ''}"
+        f" \u00b7 {len(result.milestones)} milestone"
+        f"{'s' if len(result.milestones) != 1 else ''}"
+        f" \u00b7 confidence {result.confidence:.0%}",
         "",
     ]
 
+    # --- Findings ---
     if result.findings:
-        heading = f"### Findings ({len(result.findings)})"
         collapse = len(result.findings) >= _COLLAPSE_THRESHOLD
-        findings_block: list[str] = []
+        findings_block: list[str] = [
+            "---",
+            "",
+            f"### \U0001f50e Findings ({len(result.findings)})",
+            "",
+        ]
         for i, finding in enumerate(result.findings):
-            findings_block.extend(_render_finding_block(i, finding))
+            findings_block.extend(_render_finding_card(i, finding))
+
         if collapse:
             lines.extend(
                 _wrap_details(
-                    f"Findings ({len(result.findings)}) — click to expand",
+                    f"\U0001f50e Findings ({len(result.findings)}) "
+                    f"\u2014 click to expand",
                     findings_block,
                     collapse=True,
                 )
             )
             lines.append("")
         else:
-            lines.append(heading)
-            lines.append("")
             lines.extend(findings_block)
     else:
-        lines.append("_No concrete findings — the reviewed files looked clean._")
+        lines.append(
+            "\u2705 No concrete findings \u2014 "
+            "the reviewed files looked clean."
+        )
         lines.append("")
 
+    # --- Milestones ---
     if result.milestones:
-        heading = f"### Proposed milestones ({len(result.milestones)})"
         collapse = len(result.milestones) >= _COLLAPSE_THRESHOLD
-        milestones_block: list[str] = []
+        milestones_block: list[str] = [
+            "---",
+            "",
+            f"### \U0001f5fa\ufe0f Proposed Milestones "
+            f"({len(result.milestones)})",
+            "",
+        ]
         for milestone in result.milestones:
-            milestones_block.extend(_render_milestone_block(milestone))
+            milestones_block.extend(
+                _render_milestone_card(milestone, result.findings)
+            )
+
         if collapse:
             lines.extend(
                 _wrap_details(
-                    f"Proposed milestones ({len(result.milestones)}) — "
-                    f"click to expand",
+                    f"\U0001f5fa\ufe0f Milestones "
+                    f"({len(result.milestones)}) \u2014 click to expand",
                     milestones_block,
                     collapse=True,
                 )
             )
             lines.append("")
         else:
-            lines.append(heading)
-            lines.append("")
             lines.extend(milestones_block)
 
+    # --- Footer ---
+    lines.append("")
     lines.append("---")
     lines.append(
-        f"_Generated by GITA v0.1.0 against the local index. "
-        f"Overall confidence: {result.confidence:.2f}._"
+        f"<sub>\U0001f916 GITA v0.1.0 \u00b7 onboarding agent \u00b7 "
+        f"confidence {result.confidence:.0%}</sub>"
     )
     return "\n".join(lines)
 
@@ -163,7 +210,7 @@ def build_onboarding_comment_decision(
 
 
 # ---------------------------------------------------------------------------
-# Issue bridge (Week 3 Day 4)
+# Issue bridge — one create_issue Decision per milestone
 # ---------------------------------------------------------------------------
 def _render_issue_body(
     milestone: Milestone,
@@ -171,7 +218,13 @@ def _render_issue_body(
     source_repo: str,
 ) -> str:
     """Render an issue body for a single milestone."""
-    lines: list[str] = [milestone.summary.strip(), ""]
+    conf_pct = f"{milestone.confidence:.0%}"
+    lines: list[str] = [
+        f"> {milestone.summary.strip()}",
+        "",
+        f"_Confidence: {conf_pct}_",
+        "",
+    ]
 
     cited = [
         findings[i]
@@ -179,35 +232,39 @@ def _render_issue_body(
         if 0 <= i < len(findings)
     ]
     if cited:
-        checklist: list[str] = []
+        collapse = len(cited) >= _COLLAPSE_THRESHOLD
+        checklist: list[str] = [
+            f"## \U0001f50e Findings ({len(cited)})",
+            "",
+        ]
         for finding in cited:
+            icon = _severity_icon(finding.severity)
             checklist.append(
-                f"- [ ] **[{finding.severity.upper()}] {finding.kind}** "
-                f"at `{finding.file}:{finding.line}` — {finding.description}"
+                f"- [ ] {icon} **{finding.severity.upper()}** "
+                f"_{finding.kind}_ at `{finding.file}:{finding.line}`"
             )
+            checklist.append(f"  {finding.description}")
             if finding.fix_sketch:
-                checklist.append(
-                    f"      _Fix sketch:_ {finding.fix_sketch}"
-                )
+                checklist.append(f"  \U0001f4a1 {finding.fix_sketch}")
+            checklist.append("")
 
-        if len(cited) >= _COLLAPSE_THRESHOLD:
+        if collapse:
             lines.extend(
                 _wrap_details(
-                    f"Findings ({len(cited)}) — click to expand",
+                    f"\U0001f50e Findings ({len(cited)}) "
+                    f"\u2014 click to expand",
                     checklist,
                     collapse=True,
                 )
             )
         else:
-            lines.append(f"## Findings ({len(cited)})")
-            lines.append("")
             lines.extend(checklist)
         lines.append("")
 
     lines.append("---")
     lines.append(
-        f"_Generated by GITA v0.1.0 onboarding agent against `{source_repo}`. "
-        f"Milestone confidence: {milestone.confidence:.2f}._"
+        f"<sub>\U0001f916 GITA v0.1.0 \u00b7 onboarding agent \u00b7 "
+        f"source: `{source_repo}`</sub>"
     )
     return "\n".join(lines)
 
