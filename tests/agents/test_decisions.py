@@ -16,6 +16,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.agents.decisions import (
     DEFAULT_THRESHOLDS,
@@ -27,6 +29,7 @@ from gita.agents.decisions import (
     execute_decision,
     get_threshold,
 )
+from gita.db.models import AgentAction
 
 
 # ---------------------------------------------------------------------------
@@ -324,3 +327,262 @@ class TestProtocolCompliance:
         """Structural typing check — FakeActionClient should be an ActionClient."""
         client: ActionClient = FakeActionClient()
         assert callable(client.execute)
+
+
+# ---------------------------------------------------------------------------
+# Dedupe integration — pre-gate + post-record plumbing with a real DB session.
+# ---------------------------------------------------------------------------
+async def _count_rows(db_session: AsyncSession) -> int:
+    result = await db_session.execute(select(func.count()).select_from(AgentAction))
+    return result.scalar_one()
+
+
+class TestDedupeValidation:
+    async def test_session_without_agent_raises(self, db_session: AsyncSession):
+        decision = _make_decision(action="comment", confidence=0.9)
+        with pytest.raises(ValueError, match="'agent' is required"):
+            await execute_decision(
+                decision,
+                mode=WriteMode.SHADOW,
+                session=db_session,
+            )
+
+    async def test_session_with_empty_agent_raises(self, db_session: AsyncSession):
+        decision = _make_decision(action="comment", confidence=0.9)
+        with pytest.raises(ValueError, match="'agent' is required"):
+            await execute_decision(
+                decision,
+                mode=WriteMode.SHADOW,
+                session=db_session,
+                agent="",
+            )
+
+    async def test_no_session_works_without_agent(self):
+        """Backward-compat: old call shape (no session, no agent) still works."""
+        decision = _make_decision(action="comment", confidence=0.9)
+        result = await execute_decision(decision, mode=WriteMode.SHADOW)
+        assert result.outcome == Outcome.SHADOW_LOGGED
+
+
+class TestDedupeShadowMode:
+    async def test_shadow_first_run_records(self, db_session: AsyncSession):
+        decision = _make_decision(action="comment", confidence=0.9)
+        result = await execute_decision(
+            decision,
+            mode=WriteMode.SHADOW,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+
+        assert result.outcome == Outcome.SHADOW_LOGGED
+        assert result.side_effect is not None
+        assert "agent_action_id" in result.side_effect
+        assert await _count_rows(db_session) == 1
+
+    async def test_shadow_second_run_dedupes(self, db_session: AsyncSession):
+        decision = _make_decision(action="comment", confidence=0.9)
+        first = await execute_decision(
+            decision,
+            mode=WriteMode.SHADOW,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+        second = await execute_decision(
+            decision,
+            mode=WriteMode.SHADOW,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+
+        assert first.outcome == Outcome.SHADOW_LOGGED
+        assert second.outcome == Outcome.DEDUPED
+        assert second.side_effect is not None
+        assert second.side_effect["previous_outcome"] == "shadow_logged"
+        assert await _count_rows(db_session) == 1
+
+
+class TestDedupeFullMode:
+    async def test_full_mode_first_run_executes_and_records(
+        self, db_session: AsyncSession
+    ):
+        client = FakeActionClient()
+        decision = _make_decision(action="comment", confidence=0.9)
+        result = await execute_decision(
+            decision,
+            mode=WriteMode.FULL,
+            client=client,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+
+        assert result.outcome == Outcome.EXECUTED
+        assert len(client.calls) == 1
+        assert await _count_rows(db_session) == 1
+
+    async def test_full_mode_second_run_dedupes_and_skips_client(
+        self, db_session: AsyncSession
+    ):
+        client = FakeActionClient()
+        decision = _make_decision(action="comment", confidence=0.9)
+        await execute_decision(
+            decision,
+            mode=WriteMode.FULL,
+            client=client,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+
+        second = await execute_decision(
+            decision,
+            mode=WriteMode.FULL,
+            client=client,
+            session=db_session,
+            agent="onboarding",
+        )
+
+        assert second.outcome == Outcome.DEDUPED
+        # Client was only called on the first run.
+        assert len(client.calls) == 1
+
+    async def test_error_outcome_not_recorded(self, db_session: AsyncSession):
+        """Client-side failure must not dedupe — retries should still execute."""
+        client = FakeActionClient(should_raise=True)
+        decision = _make_decision(action="comment", confidence=0.9)
+        result = await execute_decision(
+            decision,
+            mode=WriteMode.FULL,
+            client=client,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+
+        assert result.outcome == Outcome.ERROR
+        assert await _count_rows(db_session) == 0
+
+    async def test_rejected_no_client_not_recorded(self, db_session: AsyncSession):
+        decision = _make_decision(action="comment", confidence=0.9)
+        result = await execute_decision(
+            decision,
+            mode=WriteMode.FULL,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+
+        assert result.outcome == Outcome.REJECTED_NO_CLIENT
+        assert await _count_rows(db_session) == 0
+
+
+class TestDedupeCommentModeDowngrade:
+    async def test_create_issue_downgrade_records_and_dedupes(
+        self, db_session: AsyncSession
+    ):
+        """Week 3 acceptance regression: a downgraded create_issue in comment
+        mode must dedupe against itself on a second run."""
+        client = FakeActionClient()
+        decision = Decision(
+            action="create_issue",
+            target={"repo": "owner/repo", "issue": 42},
+            payload={"title": "Fix SQL injection", "body": "details"},
+            evidence=["e1"],
+            confidence=0.9,
+        )
+
+        first = await execute_decision(
+            decision,
+            mode=WriteMode.COMMENT,
+            client=client,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+
+        second = await execute_decision(
+            decision,
+            mode=WriteMode.COMMENT,
+            client=client,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+
+        # First run posted a downgrade explanation comment.
+        assert first.outcome == Outcome.DOWNGRADED_WRITE_MODE
+        assert first.executed is True
+        # Second run deduped — client only saw the first run.
+        assert second.outcome == Outcome.DEDUPED
+        assert len(client.calls) == 1
+        assert client.calls[0].action == "comment"  # downgraded
+        assert await _count_rows(db_session) == 1
+
+
+class TestDedupeAgentScoping:
+    async def test_different_agent_does_not_dedupe(
+        self, db_session: AsyncSession
+    ):
+        client = FakeActionClient()
+        decision = _make_decision(action="comment", confidence=0.9)
+
+        await execute_decision(
+            decision,
+            mode=WriteMode.FULL,
+            client=client,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+
+        other = await execute_decision(
+            decision,
+            mode=WriteMode.FULL,
+            client=client,
+            session=db_session,
+            agent="pr_reviewer",
+        )
+        await db_session.commit()
+
+        assert other.outcome == Outcome.EXECUTED
+        assert len(client.calls) == 2
+        assert await _count_rows(db_session) == 2
+
+
+class TestDedupedResultShape:
+    async def test_deduped_result_carries_previous_external_id(
+        self, db_session: AsyncSession
+    ):
+        class IdentifyingClient(FakeActionClient):
+            async def execute(self, decision: Decision) -> dict[str, Any]:
+                self.calls.append(decision)
+                return {"ok": True, "id": "gh_comment_98765"}
+
+        client = IdentifyingClient()
+        decision = _make_decision(action="comment", confidence=0.9)
+
+        first = await execute_decision(
+            decision,
+            mode=WriteMode.FULL,
+            client=client,
+            session=db_session,
+            agent="onboarding",
+        )
+        await db_session.commit()
+        assert first.side_effect is not None
+        assert first.side_effect.get("id") == "gh_comment_98765"
+
+        second = await execute_decision(
+            decision,
+            mode=WriteMode.FULL,
+            client=client,
+            session=db_session,
+            agent="onboarding",
+        )
+        assert second.outcome == Outcome.DEDUPED
+        assert second.side_effect is not None
+        assert second.side_effect["external_id"] == "gh_comment_98765"
+        assert second.side_effect["previous_outcome"] == "executed"

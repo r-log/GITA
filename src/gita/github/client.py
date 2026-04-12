@@ -1,9 +1,9 @@
 """Minimal GitHub App client.
 
-Scope for Week 2: **one action only** — posting a comment on an issue. The
-``ActionClient`` protocol from ``gita.agents.decisions`` lets the decision
-framework route ``action="comment"`` decisions through this client. Every
-other action raises ``NotImplementedError`` until Week 3 wires issue CRUD.
+Week 2 shipped ``comment`` only. Week 3 expands the dispatch to cover the
+write path onboarding needs: ``create_issue``, ``close_issue``,
+``edit_issue``, ``add_label``, ``remove_label``. Every other action still
+raises ``NotImplementedError`` so unknown dispatch shapes fail loud.
 
 Architecture:
 - ``GithubClient`` is instantiated once per process and reused.
@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -85,25 +86,104 @@ class GithubClient:
     async def execute(self, decision: Decision) -> dict[str, Any]:
         """Dispatch a decision to its matching GitHub API call.
 
-        Week 2 only supports ``action="comment"``. Any other action raises
-        ``NotImplementedError`` so the decision framework surfaces a clear
-        error rather than silently doing nothing.
+        Validation is per-action — each branch extracts the fields it
+        needs and raises ``ValueError`` with a pointer to the offending
+        target/payload if they're wrong. Unknown actions raise
+        ``NotImplementedError`` so the decision framework surfaces a
+        clear error rather than silently doing nothing.
         """
-        if decision.action == "comment":
-            repo_full_name = decision.target.get("repo")
+        action = decision.action
+        repo_full_name = decision.target.get("repo")
+        if not repo_full_name:
+            raise ValueError(
+                f"{action} decision must have target.repo; "
+                f"got {decision.target=}"
+            )
+        owner, repo = str(repo_full_name).split("/", 1)
+
+        if action == "comment":
             issue = decision.target.get("issue")
             body = decision.payload.get("body")
-            if not repo_full_name or issue is None or not body:
+            if issue is None or not body:
                 raise ValueError(
-                    "comment decision must have target.repo, target.issue, "
-                    f"and payload.body; got {decision.target=} {decision.payload=}"
+                    "comment decision must have target.issue and payload.body; "
+                    f"got {decision.target=} {decision.payload=}"
                 )
-            owner, repo = str(repo_full_name).split("/", 1)
             return await self._post_comment(owner, repo, int(issue), str(body))
 
+        if action == "create_issue":
+            title = decision.payload.get("title")
+            if not title:
+                raise ValueError(
+                    "create_issue decision must have payload.title; "
+                    f"got {decision.payload=}"
+                )
+            body = decision.payload.get("body") or ""
+            labels = list(decision.payload.get("labels") or [])
+            return await self._create_issue(
+                owner, repo, str(title), str(body), labels
+            )
+
+        if action == "close_issue":
+            issue = decision.target.get("issue")
+            if issue is None:
+                raise ValueError(
+                    "close_issue decision must have target.issue; "
+                    f"got {decision.target=}"
+                )
+            return await self._close_issue(owner, repo, int(issue))
+
+        if action == "edit_issue":
+            issue = decision.target.get("issue")
+            if issue is None:
+                raise ValueError(
+                    "edit_issue decision must have target.issue; "
+                    f"got {decision.target=}"
+                )
+            title = decision.payload.get("title")
+            body = decision.payload.get("body")
+            if title is None and body is None:
+                raise ValueError(
+                    "edit_issue decision must include at least one of "
+                    "payload.title or payload.body; "
+                    f"got {decision.payload=}"
+                )
+            return await self._edit_issue(
+                owner,
+                repo,
+                int(issue),
+                title=str(title) if title is not None else None,
+                body=str(body) if body is not None else None,
+            )
+
+        if action == "add_label":
+            issue = decision.target.get("issue")
+            labels = decision.payload.get("labels") or []
+            if issue is None or not labels:
+                raise ValueError(
+                    "add_label decision must have target.issue and a "
+                    "non-empty payload.labels list; "
+                    f"got {decision.target=} {decision.payload=}"
+                )
+            return await self._add_labels(
+                owner, repo, int(issue), [str(label) for label in labels]
+            )
+
+        if action == "remove_label":
+            issue = decision.target.get("issue")
+            label = decision.payload.get("label")
+            if issue is None or not label:
+                raise ValueError(
+                    "remove_label decision must have target.issue and "
+                    "payload.label; "
+                    f"got {decision.target=} {decision.payload=}"
+                )
+            return await self._remove_label(
+                owner, repo, int(issue), str(label)
+            )
+
         raise NotImplementedError(
-            f"GithubClient does not support action {decision.action!r} yet "
-            "(Week 2 ships comments only)"
+            f"GithubClient does not support action {action!r}"
         )
 
     # -----------------------------------------------------------------
@@ -165,22 +245,23 @@ class GithubClient:
         return await self._get_installation_token(installation_id)
 
     # -----------------------------------------------------------------
-    # Comment posting
+    # Action handlers
     # -----------------------------------------------------------------
+    def _repo_auth_headers(self, token: str) -> dict[str, str]:
+        return {
+            "Authorization": f"token {token}",
+            "Accept": _ACCEPT,
+            "X-GitHub-Api-Version": _API_VERSION,
+        }
+
     async def _post_comment(
         self, owner: str, repo: str, issue: int, body: str
     ) -> dict[str, Any]:
         token = await self._installation_token_for_repo(owner, repo)
-        url = (
-            f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}/comments"
-        )
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}/comments"
         response = await self.http.post(
             url,
-            headers={
-                "Authorization": f"token {token}",
-                "Accept": _ACCEPT,
-                "X-GitHub-Api-Version": _API_VERSION,
-            },
+            headers=self._repo_auth_headers(token),
             json={"body": body},
         )
         response.raise_for_status()
@@ -198,4 +279,172 @@ class GithubClient:
             "html_url": data.get("html_url"),
             "issue": issue,
             "repo": f"{owner}/{repo}",
+        }
+
+    async def _create_issue(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str],
+    ) -> dict[str, Any]:
+        token = await self._installation_token_for_repo(owner, repo)
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues"
+        payload: dict[str, Any] = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+        response = await self.http.post(
+            url,
+            headers=self._repo_auth_headers(token),
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        logger.info(
+            "github_issue_created owner=%s repo=%s issue=%s labels=%s",
+            owner,
+            repo,
+            data.get("number"),
+            labels,
+        )
+        return {
+            "kind": "issue",
+            "id": data.get("number"),
+            "node_id": data.get("node_id"),
+            "html_url": data.get("html_url"),
+            "repo": f"{owner}/{repo}",
+            "title": title,
+        }
+
+    async def _close_issue(
+        self, owner: str, repo: str, issue: int
+    ) -> dict[str, Any]:
+        token = await self._installation_token_for_repo(owner, repo)
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}"
+        response = await self.http.patch(
+            url,
+            headers=self._repo_auth_headers(token),
+            json={"state": "closed"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        logger.info(
+            "github_issue_closed owner=%s repo=%s issue=%s state=%s",
+            owner,
+            repo,
+            issue,
+            data.get("state"),
+        )
+        return {
+            "kind": "close_issue",
+            "id": data.get("number", issue),
+            "html_url": data.get("html_url"),
+            "state": data.get("state"),
+            "repo": f"{owner}/{repo}",
+        }
+
+    async def _edit_issue(
+        self,
+        owner: str,
+        repo: str,
+        issue: int,
+        *,
+        title: str | None,
+        body: str | None,
+    ) -> dict[str, Any]:
+        token = await self._installation_token_for_repo(owner, repo)
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}"
+        payload: dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = title
+        if body is not None:
+            payload["body"] = body
+        response = await self.http.patch(
+            url,
+            headers=self._repo_auth_headers(token),
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        logger.info(
+            "github_issue_edited owner=%s repo=%s issue=%s fields=%s",
+            owner,
+            repo,
+            issue,
+            sorted(payload.keys()),
+        )
+        return {
+            "kind": "edit_issue",
+            "id": data.get("number", issue),
+            "html_url": data.get("html_url"),
+            "repo": f"{owner}/{repo}",
+        }
+
+    async def _add_labels(
+        self,
+        owner: str,
+        repo: str,
+        issue: int,
+        labels: list[str],
+    ) -> dict[str, Any]:
+        token = await self._installation_token_for_repo(owner, repo)
+        url = (
+            f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}/labels"
+        )
+        response = await self.http.post(
+            url,
+            headers=self._repo_auth_headers(token),
+            json={"labels": labels},
+        )
+        response.raise_for_status()
+        data = response.json()
+        applied = (
+            [row.get("name") for row in data] if isinstance(data, list) else []
+        )
+        logger.info(
+            "github_labels_added owner=%s repo=%s issue=%s labels=%s applied=%s",
+            owner,
+            repo,
+            issue,
+            labels,
+            applied,
+        )
+        return {
+            "kind": "add_label",
+            "id": issue,
+            "repo": f"{owner}/{repo}",
+            "labels": applied,
+        }
+
+    async def _remove_label(
+        self,
+        owner: str,
+        repo: str,
+        issue: int,
+        label: str,
+    ) -> dict[str, Any]:
+        token = await self._installation_token_for_repo(owner, repo)
+        encoded_label = quote(label, safe="")
+        url = (
+            f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}/labels/"
+            f"{encoded_label}"
+        )
+        response = await self.http.delete(
+            url,
+            headers=self._repo_auth_headers(token),
+        )
+        response.raise_for_status()
+        logger.info(
+            "github_label_removed owner=%s repo=%s issue=%s label=%s",
+            owner,
+            repo,
+            issue,
+            label,
+        )
+        return {
+            "kind": "remove_label",
+            "id": issue,
+            "repo": f"{owner}/{repo}",
+            "label": label,
         }

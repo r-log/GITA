@@ -426,8 +426,69 @@ def _overall_confidence(
 # ---------------------------------------------------------------------------
 # OnboardingResult → Decision bridge
 # ---------------------------------------------------------------------------
+# Findings or milestones counts at or above this threshold get collapsed
+# into <details> blocks so the comment body stays scannable on GitHub.
+# GitHub renders <details> natively; its content is still valid markdown.
+_COLLAPSE_THRESHOLD = 4
+
+
+def _wrap_details(
+    summary: str, body_lines: list[str], *, collapse: bool
+) -> list[str]:
+    """Optionally wrap a block in a collapsible ``<details>`` section.
+
+    When ``collapse`` is False we return the body as-is (no wrapper) so short
+    comments render identically to their pre-P5 shape. When True we wrap
+    with a ``<details>``/``</details>`` pair and a ``<summary>``, with blank
+    lines around the inner block so GitHub's markdown renderer still
+    interprets ``**bold**`` and headings inside.
+    """
+    if not collapse:
+        return body_lines
+    wrapped = ["<details>", f"<summary>{summary}</summary>", ""]
+    wrapped.extend(body_lines)
+    wrapped.append("</details>")
+    return wrapped
+
+
+def _render_finding_block(index: int, finding: Finding) -> list[str]:
+    block = [
+        f"**{index + 1}. [{finding.severity.upper()}] {finding.kind}** "
+        f"— `{finding.file}:{finding.line}`",
+        "",
+        finding.description,
+    ]
+    if finding.fix_sketch:
+        block.append("")
+        block.append(f"_Fix sketch:_ {finding.fix_sketch}")
+    block.append("")
+    return block
+
+
+def _render_milestone_block(milestone: Milestone) -> list[str]:
+    block = [
+        f"**{milestone.title}** _(confidence {milestone.confidence:.2f})_",
+        "",
+        milestone.summary,
+    ]
+    if milestone.finding_indices:
+        citations = ", ".join(
+            f"finding {i + 1}" for i in milestone.finding_indices
+        )
+        block.append("")
+        block.append(f"_Addresses:_ {citations}")
+    block.append("")
+    return block
+
+
 def _render_comment_body(result: OnboardingResult) -> str:
-    """Render the OnboardingResult as a markdown comment body."""
+    """Render the OnboardingResult as a markdown comment body.
+
+    Findings and milestones each collapse into ``<details>`` blocks when
+    their count hits ``_COLLAPSE_THRESHOLD``. Short results render the
+    same as pre-P5 so the existing contract-proven Day 7 comment shape
+    is preserved for small repos.
+    """
     lines: list[str] = [
         f"## GITA onboarding review for `{result.repo_name}`",
         "",
@@ -436,37 +497,48 @@ def _render_comment_body(result: OnboardingResult) -> str:
     ]
 
     if result.findings:
-        lines.append(f"### Findings ({len(result.findings)})")
-        lines.append("")
+        heading = f"### Findings ({len(result.findings)})"
+        collapse = len(result.findings) >= _COLLAPSE_THRESHOLD
+        findings_block: list[str] = []
         for i, finding in enumerate(result.findings):
-            lines.append(
-                f"**{i + 1}. [{finding.severity.upper()}] {finding.kind}** "
-                f"— `{finding.file}:{finding.line}`"
+            findings_block.extend(_render_finding_block(i, finding))
+        if collapse:
+            lines.extend(
+                _wrap_details(
+                    f"Findings ({len(result.findings)}) — click to expand",
+                    findings_block,
+                    collapse=True,
+                )
             )
             lines.append("")
-            lines.append(finding.description)
-            if finding.fix_sketch:
-                lines.append("")
-                lines.append(f"_Fix sketch:_ {finding.fix_sketch}")
+        else:
+            lines.append(heading)
             lines.append("")
+            lines.extend(findings_block)
     else:
         lines.append("_No concrete findings — the reviewed files looked clean._")
         lines.append("")
 
     if result.milestones:
-        lines.append(f"### Proposed milestones ({len(result.milestones)})")
-        lines.append("")
+        heading = f"### Proposed milestones ({len(result.milestones)})"
+        collapse = len(result.milestones) >= _COLLAPSE_THRESHOLD
+        milestones_block: list[str] = []
         for milestone in result.milestones:
-            lines.append(f"**{milestone.title}** _(confidence {milestone.confidence:.2f})_")
-            lines.append("")
-            lines.append(milestone.summary)
-            if milestone.finding_indices:
-                citations = ", ".join(
-                    f"finding {i + 1}" for i in milestone.finding_indices
+            milestones_block.extend(_render_milestone_block(milestone))
+        if collapse:
+            lines.extend(
+                _wrap_details(
+                    f"Proposed milestones ({len(result.milestones)}) — "
+                    f"click to expand",
+                    milestones_block,
+                    collapse=True,
                 )
-                lines.append("")
-                lines.append(f"_Addresses:_ {citations}")
+            )
             lines.append("")
+        else:
+            lines.append(heading)
+            lines.append("")
+            lines.extend(milestones_block)
 
     lines.append("---")
     lines.append(
@@ -509,3 +581,148 @@ def build_onboarding_comment_decision(
         evidence=evidence,
         confidence=result.confidence,
     )
+
+
+# ---------------------------------------------------------------------------
+# OnboardingResult → list[Decision] (one create_issue per milestone)
+# ---------------------------------------------------------------------------
+def _render_issue_body(
+    milestone: Milestone,
+    findings: list[Finding],
+    source_repo: str,
+) -> str:
+    """Render an issue body for a single milestone.
+
+    Layout: the milestone summary as the lede, then a checklist of the
+    findings it addresses (``- [ ] ...`` so each finding becomes a
+    GitHub-renderable task item), then a footer identifying the source
+    repo and overall provenance. Findings that the milestone doesn't
+    reference are deliberately not included — one issue per milestone is
+    the whole point.
+
+    If the milestone cites a lot of findings (hitting
+    ``_COLLAPSE_THRESHOLD``) the findings checklist collapses inside a
+    ``<details>`` block so the issue preview stays scannable on GitHub's
+    issue list.
+    """
+    lines: list[str] = [milestone.summary.strip(), ""]
+
+    cited = [
+        findings[i]
+        for i in milestone.finding_indices
+        if 0 <= i < len(findings)
+    ]
+    if cited:
+        checklist: list[str] = []
+        for finding in cited:
+            checklist.append(
+                f"- [ ] **[{finding.severity.upper()}] {finding.kind}** "
+                f"at `{finding.file}:{finding.line}` — {finding.description}"
+            )
+            if finding.fix_sketch:
+                checklist.append(
+                    f"      _Fix sketch:_ {finding.fix_sketch}"
+                )
+
+        if len(cited) >= _COLLAPSE_THRESHOLD:
+            lines.extend(
+                _wrap_details(
+                    f"Findings ({len(cited)}) — click to expand",
+                    checklist,
+                    collapse=True,
+                )
+            )
+        else:
+            lines.append(f"## Findings ({len(cited)})")
+            lines.append("")
+            lines.extend(checklist)
+        lines.append("")
+
+    lines.append("---")
+    lines.append(
+        f"_Generated by GITA v0.1.0 onboarding agent against `{source_repo}`. "
+        f"Milestone confidence: {milestone.confidence:.2f}._"
+    )
+    return "\n".join(lines)
+
+
+def build_onboarding_issue_decisions(
+    result: OnboardingResult,
+    target_repo: str,
+    *,
+    fallback_comment_target: int | None = None,
+    default_labels: list[str] | None = None,
+) -> list[Decision]:
+    """Wrap an OnboardingResult as a list of ``create_issue`` Decisions.
+
+    One Decision per milestone. Each carries:
+
+    - ``target.repo`` — the repo where the issue should be created
+    - ``target.fallback_issue`` — if set, any confidence- or write-mode-
+      downgrade will land its explanation comment there. Required for
+      comment-mode runs (no issue exists yet to downgrade in place).
+    - ``payload.title`` — the milestone title
+    - ``payload.body`` — rendered markdown (summary + cited findings
+      checklist + provenance footer)
+    - ``payload.labels`` — optional, defaults to nothing since unknown
+      labels fail the GitHub API with 422 and we haven't wired label
+      validation yet
+    - ``evidence`` — milestone title, overall confidence, one bullet per
+      cited finding so the downgrade comment (if any) carries a useful
+      chain for human reviewers
+    - ``confidence`` — copied from the milestone's self-assessed value
+
+    Milestones with zero valid finding indices are skipped (already
+    pre-filtered in ``run_onboarding``, but belt-and-suspenders).
+    """
+    if not result.milestones:
+        return []
+
+    decisions: list[Decision] = []
+    for milestone in result.milestones:
+        cited_indices = [
+            i for i in milestone.finding_indices if 0 <= i < len(result.findings)
+        ]
+        if not cited_indices:
+            logger.warning(
+                "skipping_milestone_no_valid_findings title=%s",
+                milestone.title,
+            )
+            continue
+
+        evidence = [
+            f"milestone: {milestone.title}",
+            f"agent overall confidence: {result.confidence:.2f}",
+            f"source repo: {result.repo_name}",
+        ]
+        for idx in cited_indices:
+            finding = result.findings[idx]
+            evidence.append(
+                f"{finding.severity} {finding.kind} at "
+                f"{finding.file}:{finding.line}"
+            )
+
+        target: dict[str, Any] = {"repo": target_repo}
+        if fallback_comment_target is not None:
+            target["fallback_issue"] = fallback_comment_target
+
+        payload: dict[str, Any] = {
+            "title": milestone.title,
+            "body": _render_issue_body(
+                milestone, result.findings, result.repo_name
+            ),
+        }
+        if default_labels:
+            payload["labels"] = list(default_labels)
+
+        decisions.append(
+            Decision(
+                action="create_issue",
+                target=target,
+                payload=payload,
+                evidence=evidence,
+                confidence=milestone.confidence,
+            )
+        )
+
+    return decisions

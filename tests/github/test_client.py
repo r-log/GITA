@@ -46,6 +46,7 @@ def _make_transport(
 def _default_handler(request: httpx.Request) -> httpx.Response:
     """Routes requests based on URL path to the expected response shape."""
     path = request.url.path
+    method = request.method
     if path.endswith("/installation"):
         return httpx.Response(
             200, json={"id": 999, "app_id": 123456}
@@ -68,7 +69,43 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                 "body": "hi",
             },
         )
-    return httpx.Response(404, json={"message": "Unexpected URL"})
+    # POST /repos/o/r/issues — create_issue
+    if method == "POST" and path.endswith("/issues"):
+        return httpx.Response(
+            201,
+            json={
+                "number": 777,
+                "node_id": "I_kwDO",
+                "html_url": "https://github.com/o/r/issues/777",
+                "title": "ignored",
+                "state": "open",
+            },
+        )
+    # POST /repos/o/r/issues/N/labels — add_labels
+    if method == "POST" and path.endswith("/labels"):
+        return httpx.Response(
+            200,
+            json=[
+                {"name": "bug"},
+                {"name": "critical"},
+            ],
+        )
+    # DELETE /repos/o/r/issues/N/labels/<label> — remove_label
+    if method == "DELETE" and "/labels/" in path:
+        return httpx.Response(
+            200, json=[{"name": "other"}]
+        )
+    # PATCH /repos/o/r/issues/N — edit_issue or close_issue
+    if method == "PATCH" and "/issues/" in path:
+        return httpx.Response(
+            200,
+            json={
+                "number": 7,
+                "state": "closed",
+                "html_url": "https://github.com/o/r/issues/7",
+            },
+        )
+    return httpx.Response(404, json={"message": f"Unexpected {method} {path}"})
 
 
 @pytest.fixture
@@ -212,17 +249,279 @@ class TestExecuteComment:
 
 
 # ---------------------------------------------------------------------------
+# execute(create_issue)
+# ---------------------------------------------------------------------------
+def _create_issue_decision(
+    repo: str = "owner/repo",
+    title: str = "Fix SQL injection",
+    body: str = "details",
+    labels: list[str] | None = None,
+) -> Decision:
+    payload: dict = {"title": title, "body": body}
+    if labels is not None:
+        payload["labels"] = labels
+    return Decision(
+        action="create_issue",
+        target={"repo": repo},
+        payload=payload,
+        evidence=["e1"],
+        confidence=0.9,
+    )
+
+
+class TestExecuteCreateIssue:
+    async def test_posts_to_issues_endpoint(self, client, capture):
+        result = await client.execute(_create_issue_decision())
+        assert result["kind"] == "issue"
+        assert result["id"] == 777
+        assert (
+            result["html_url"] == "https://github.com/o/r/issues/777"
+        )
+
+        create_requests = [
+            r for r in capture.requests
+            if r.method == "POST" and r.url.path.endswith("/issues")
+        ]
+        assert len(create_requests) == 1
+        assert create_requests[0].url.path == "/repos/owner/repo/issues"
+
+    async def test_body_has_title_body_and_labels(self, client, capture):
+        await client.execute(
+            _create_issue_decision(
+                title="Fix bug", body="long body", labels=["bug", "critical"]
+            )
+        )
+        req = next(
+            r for r in capture.requests
+            if r.method == "POST" and r.url.path.endswith("/issues")
+        )
+        import json
+
+        payload = json.loads(req.content)
+        assert payload["title"] == "Fix bug"
+        assert payload["body"] == "long body"
+        assert payload["labels"] == ["bug", "critical"]
+
+    async def test_labels_omitted_if_empty(self, client, capture):
+        """No labels key in the payload when none are provided, so the
+        default-issue-creator flow doesn't accidentally send an empty list."""
+        await client.execute(_create_issue_decision(labels=None))
+        req = next(
+            r for r in capture.requests
+            if r.method == "POST" and r.url.path.endswith("/issues")
+        )
+        import json
+
+        payload = json.loads(req.content)
+        assert "labels" not in payload
+
+    async def test_uses_installation_token(self, client, capture):
+        await client.execute(_create_issue_decision())
+        req = next(
+            r for r in capture.requests
+            if r.method == "POST" and r.url.path.endswith("/issues")
+        )
+        assert req.headers["Authorization"].startswith("token ")
+
+    async def test_missing_title_raises(self, client):
+        decision = Decision(
+            action="create_issue",
+            target={"repo": "a/b"},
+            payload={"body": "x"},
+            confidence=0.9,
+        )
+        with pytest.raises(ValueError, match="payload.title"):
+            await client.execute(decision)
+
+
+# ---------------------------------------------------------------------------
+# execute(close_issue)
+# ---------------------------------------------------------------------------
+class TestExecuteCloseIssue:
+    async def test_patches_correct_url_with_state_closed(
+        self, client, capture
+    ):
+        decision = Decision(
+            action="close_issue",
+            target={"repo": "owner/repo", "issue": 7},
+            payload={},
+            confidence=0.9,
+        )
+        result = await client.execute(decision)
+        assert result["kind"] == "close_issue"
+        assert result["state"] == "closed"
+
+        patch_requests = [
+            r for r in capture.requests
+            if r.method == "PATCH" and "/issues/" in r.url.path
+        ]
+        assert len(patch_requests) == 1
+        req = patch_requests[0]
+        assert req.url.path == "/repos/owner/repo/issues/7"
+
+        import json
+
+        payload = json.loads(req.content)
+        assert payload == {"state": "closed"}
+        assert req.headers["Authorization"].startswith("token ")
+
+    async def test_missing_issue_raises(self, client):
+        decision = Decision(
+            action="close_issue",
+            target={"repo": "a/b"},  # no issue
+            payload={},
+            confidence=0.9,
+        )
+        with pytest.raises(ValueError, match="target.issue"):
+            await client.execute(decision)
+
+
+# ---------------------------------------------------------------------------
+# execute(edit_issue)
+# ---------------------------------------------------------------------------
+class TestExecuteEditIssue:
+    async def test_patches_with_title_and_body(self, client, capture):
+        decision = Decision(
+            action="edit_issue",
+            target={"repo": "owner/repo", "issue": 7},
+            payload={"title": "New title", "body": "New body"},
+            confidence=0.9,
+        )
+        result = await client.execute(decision)
+        assert result["kind"] == "edit_issue"
+
+        req = next(
+            r for r in capture.requests
+            if r.method == "PATCH" and "/issues/" in r.url.path
+        )
+        assert req.url.path == "/repos/owner/repo/issues/7"
+
+        import json
+
+        payload = json.loads(req.content)
+        assert payload == {"title": "New title", "body": "New body"}
+
+    async def test_partial_edit_sends_only_provided_fields(
+        self, client, capture
+    ):
+        """Editing just the body shouldn't clobber the title with empty str."""
+        decision = Decision(
+            action="edit_issue",
+            target={"repo": "owner/repo", "issue": 7},
+            payload={"body": "only the body"},
+            confidence=0.9,
+        )
+        await client.execute(decision)
+        req = next(
+            r for r in capture.requests
+            if r.method == "PATCH" and "/issues/" in r.url.path
+        )
+        import json
+
+        payload = json.loads(req.content)
+        assert payload == {"body": "only the body"}
+        assert "title" not in payload
+
+    async def test_empty_payload_raises(self, client):
+        decision = Decision(
+            action="edit_issue",
+            target={"repo": "a/b", "issue": 1},
+            payload={},
+            confidence=0.9,
+        )
+        with pytest.raises(ValueError, match="at least one of"):
+            await client.execute(decision)
+
+
+# ---------------------------------------------------------------------------
+# execute(add_label)
+# ---------------------------------------------------------------------------
+class TestExecuteAddLabel:
+    async def test_posts_to_labels_endpoint(self, client, capture):
+        decision = Decision(
+            action="add_label",
+            target={"repo": "owner/repo", "issue": 7},
+            payload={"labels": ["bug", "critical"]},
+            confidence=0.9,
+        )
+        result = await client.execute(decision)
+        assert result["kind"] == "add_label"
+        assert result["labels"] == ["bug", "critical"]
+
+        req = next(
+            r for r in capture.requests
+            if r.method == "POST" and r.url.path.endswith("/labels")
+        )
+        assert req.url.path == "/repos/owner/repo/issues/7/labels"
+
+        import json
+
+        payload = json.loads(req.content)
+        assert payload == {"labels": ["bug", "critical"]}
+        assert req.headers["Authorization"].startswith("token ")
+
+    async def test_empty_labels_raises(self, client):
+        decision = Decision(
+            action="add_label",
+            target={"repo": "a/b", "issue": 1},
+            payload={"labels": []},
+            confidence=0.9,
+        )
+        with pytest.raises(ValueError, match="non-empty payload.labels"):
+            await client.execute(decision)
+
+
+# ---------------------------------------------------------------------------
+# execute(remove_label)
+# ---------------------------------------------------------------------------
+class TestExecuteRemoveLabel:
+    async def test_delete_to_encoded_label_url(self, client, capture):
+        decision = Decision(
+            action="remove_label",
+            target={"repo": "owner/repo", "issue": 7},
+            payload={"label": "wont fix"},  # space triggers percent-encoding
+            confidence=0.9,
+        )
+        result = await client.execute(decision)
+        assert result["kind"] == "remove_label"
+        assert result["label"] == "wont fix"
+
+        req = next(
+            r for r in capture.requests
+            if r.method == "DELETE" and "/labels/" in r.url.path
+        )
+        # The wire-level path must carry the percent-encoded label.
+        # httpx decodes `.path` back to a readable form but preserves the
+        # encoded bytes in `raw_path`.
+        assert (
+            req.url.raw_path
+            == b"/repos/owner/repo/issues/7/labels/wont%20fix"
+        )
+        assert req.headers["Authorization"].startswith("token ")
+
+    async def test_missing_label_raises(self, client):
+        decision = Decision(
+            action="remove_label",
+            target={"repo": "a/b", "issue": 1},
+            payload={},
+            confidence=0.9,
+        )
+        with pytest.raises(ValueError, match="payload.label"):
+            await client.execute(decision)
+
+
+# ---------------------------------------------------------------------------
 # Validation and unsupported actions
 # ---------------------------------------------------------------------------
 class TestExecuteValidation:
     async def test_unsupported_action_raises(self, client):
         decision = Decision(
-            action="create_issue",
+            action="merge_pr",  # hypothetical future action, not wired
             target={"repo": "a/b"},
-            payload={"title": "x", "body": "y"},
+            payload={},
             confidence=0.9,
         )
-        with pytest.raises(NotImplementedError, match="create_issue"):
+        with pytest.raises(NotImplementedError, match="merge_pr"):
             await client.execute(decision)
 
     async def test_comment_missing_repo_raises(self, client):

@@ -1,4 +1,5 @@
 """Auth helpers for the seeded_buggy fixture — full of planted holes."""
+from buggy.decorators import log_access
 
 
 def check_token(token: str) -> bool:
@@ -9,6 +10,7 @@ def check_token(token: str) -> bool:
     return True
 
 
+@log_access
 def login(username: str, password: str) -> dict:
     # PLANTED ISSUE: plaintext password comparison against a stored value.
     # PLANTED ISSUE: bare except swallows all failures silently.
