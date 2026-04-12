@@ -34,6 +34,7 @@ from gita.cli.commands import (  # noqa: E402
     _DEFAULT_MAX_ISSUES,
     cmd_index,
     cmd_onboard,
+    cmd_query_concept,
     cmd_query_history,
     cmd_query_load_bearing,
     cmd_query_neighborhood,
@@ -212,6 +213,23 @@ def _build_parser() -> argparse.ArgumentParser:
     q_hist.add_argument("repo")
     q_hist.add_argument("file_path")
 
+    q_concept = query_sub.add_parser(
+        "concept",
+        help="Search code by natural-language query (full-text search)",
+    )
+    q_concept.add_argument("repo")
+    q_concept.add_argument(
+        "query",
+        nargs="+",
+        help="Natural-language query (e.g. 'authentication' or 'database connection')",
+    )
+    q_concept.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="How many results to return (default 10)",
+    )
+
     return parser
 
 
@@ -225,6 +243,7 @@ _HANDLERS = {
     ("query", "neighborhood"): cmd_query_neighborhood,
     ("query", "load-bearing"): cmd_query_load_bearing,
     ("query", "history"): cmd_query_history,
+    ("query", "concept"): cmd_query_concept,
 }
 
 

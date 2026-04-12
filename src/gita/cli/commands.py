@@ -33,6 +33,7 @@ from gita.agents.pr_reviewer import (
 )
 from gita.agents.types import OnboardingResult
 from gita.cli.formatters import (
+    fmt_concept_result,
     fmt_history_result,
     fmt_ingest,
     fmt_load_bearing_result,
@@ -51,6 +52,7 @@ from gita.github.client import GithubClient
 from gita.indexer.ingest import index_repository
 from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError
+from gita.views.concept import concept_view
 from gita.views.history import history_view
 from gita.views.load_bearing import load_bearing_view
 from gita.views.neighborhood import FileNotFoundError, neighborhood_view
@@ -189,6 +191,23 @@ async def cmd_query_load_bearing(args: argparse.Namespace) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
     print(fmt_load_bearing_result(result))
+    return 0
+
+
+async def cmd_query_concept(args: argparse.Namespace) -> int:
+    query = " ".join(args.query)
+    if not query.strip():
+        print("error: query cannot be empty", file=sys.stderr)
+        return 2
+    async with SessionLocal() as session:
+        try:
+            result = await concept_view(
+                session, args.repo, query, limit=args.limit
+            )
+        except RepoNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    print(fmt_concept_result(result))
     return 0
 
 
