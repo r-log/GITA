@@ -1,15 +1,17 @@
-"""End-to-end ingest: walk a local repo, parse every source file, and persist
+"""End-to-end ingest: walk a local repo, parse source files, and persist
 rows into ``repos`` / ``code_index`` / ``import_edges``.
 
-Week 1 strategy is nuke-and-repave per call: for the given repo, we wipe its
-existing ``code_index`` and ``import_edges`` rows before reinserting. This is
-simple, correct, and cheap for the repo sizes we care about right now.
-Incremental updates arrive in Week 2 alongside push-event handling.
+Two modes:
+- **Full** (nuke-and-repave): wipe existing rows and re-index everything.
+  Used on first index, when ``--full`` is passed, or when the incremental
+  path can't determine what changed.
+- **Incremental**: detect changed files since ``repos.head_sha`` via
+  ``git diff``, delete/re-parse only those files, and re-build their
+  import edges. Much faster for repos with 80+ files where only 3 changed.
 """
 from __future__ import annotations
 
 import logging
-import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,9 +20,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.db.models import CodeIndex, ImportEdge, Repo
+from gita.indexer.diff import FileChange, detect_changes, read_head_sha
 from gita.indexer.imports import discover_package_roots, resolve_import
 from gita.indexer.parsers import parse_file
-from gita.indexer.walker import iter_files
+from gita.indexer.walker import LANGUAGE_BY_EXT, _is_skipped, iter_files
 
 logger = logging.getLogger(__name__)
 
@@ -34,24 +37,13 @@ class IngestResult:
     edges_total: int
     edges_resolved: int
     head_sha: str | None
+    mode: str = "full"  # "full" | "incremental" | "noop"
+    files_deleted: int = 0
 
 
-def _read_head_sha(root: Path) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    sha = result.stdout.strip()
-    return sha or None
-
-
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 async def _get_or_create_repo(
     session: AsyncSession, name: str, root_path: Path
 ) -> Repo:
@@ -62,7 +54,7 @@ async def _get_or_create_repo(
         return existing
     repo = Repo(name=name, root_path=str(root_path))
     session.add(repo)
-    await session.flush()  # materialize repo.id
+    await session.flush()
     return repo
 
 
@@ -76,69 +68,51 @@ async def _clear_repo_rows(session: AsyncSession, repo_id) -> None:
     await session.flush()
 
 
-async def index_repository(
-    session: AsyncSession,
-    repo_name: str,
+def _parse_and_build_row(
+    repo_id,
     root_path: Path,
-    *,
-    include_tests: bool = False,
-    force_full: bool = False,
-) -> IngestResult:
-    """Ingest a local repo into the three tables.
+    relative_path: str,
+    language: str,
+    head_sha: str | None,
+) -> tuple[CodeIndex, int, int] | None:
+    """Read, parse, and build a CodeIndex row for one file.
 
-    Caller owns the transaction — this function does NOT commit. Commit or
-    rollback on the caller's side.
+    Returns ``(row, function_count, class_count)`` or ``None`` on failure.
     """
-    root_path = root_path.resolve()
-    if not root_path.is_dir():
-        raise ValueError(f"root_path is not a directory: {root_path}")
-
-    repo = await _get_or_create_repo(session, repo_name, root_path)
-    head_sha = _read_head_sha(root_path)
-    # Discover package roots ONCE per repo — walks the __init__.py chain to
-    # find every directory that absolute Python imports can resolve against.
-    # Passed into resolve_import() below so src/ and backend/ layouts work.
-    package_roots = discover_package_roots(root_path)
-    await _clear_repo_rows(session, repo.id)
-
-    code_rows: list[CodeIndex] = []
-    functions_total = 0
-    classes_total = 0
-
-    # Pass 1 — parse each file and collect CodeIndex rows
-    for discovered in iter_files(root_path, include_tests=include_tests):
-        try:
-            content = discovered.path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError) as exc:
-            logger.warning(
-                "file_read_failed path=%s error=%s",
-                discovered.relative_path,
-                exc,
-            )
-            continue
-
-        structure = parse_file(
-            discovered.path, content, discovered.language
+    abs_path = root_path / relative_path
+    try:
+        content = abs_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        logger.warning(
+            "file_read_failed path=%s error=%s", relative_path, exc
         )
-        structure_json = structure.to_jsonb()
-        functions_total += len(structure.functions)
-        classes_total += len(structure.classes)
+        return None
 
-        row = CodeIndex(
-            repo_id=repo.id,
-            file_path=discovered.relative_path,
-            language=discovered.language,
-            content=content,
-            line_count=content.count("\n") + (0 if content.endswith("\n") else 1),
-            indexed_at_sha=head_sha,
-            structure=structure_json,
-        )
-        code_rows.append(row)
+    structure = parse_file(abs_path, content, language)
+    structure_json = structure.to_jsonb()
 
-    session.add_all(code_rows)
-    await session.flush()
+    row = CodeIndex(
+        repo_id=repo_id,
+        file_path=relative_path,
+        language=language,
+        content=content,
+        line_count=content.count("\n") + (0 if content.endswith("\n") else 1),
+        indexed_at_sha=head_sha,
+        structure=structure_json,
+    )
+    return row, len(structure.functions), len(structure.classes)
 
-    # Pass 2 — build import edges from the already-persisted structures
+
+def _build_edges(
+    repo_id,
+    root_path: Path,
+    code_rows: list[CodeIndex],
+    package_roots: list[Path],
+) -> tuple[list[ImportEdge], int]:
+    """Build import edge rows for a list of CodeIndex rows.
+
+    Returns ``(edge_rows, edges_resolved)``.
+    """
     edge_rows: list[ImportEdge] = []
     edges_resolved = 0
 
@@ -167,7 +141,7 @@ async def index_repository(
                     dst_file = None
             edge_rows.append(
                 ImportEdge(
-                    repo_id=repo.id,
+                    repo_id=repo_id,
                     src_file=row.file_path,
                     dst_file=dst_file,
                     raw_import=raw,
@@ -175,6 +149,47 @@ async def index_repository(
                 )
             )
 
+    return edge_rows, edges_resolved
+
+
+# ---------------------------------------------------------------------------
+# Full index (nuke-and-repave)
+# ---------------------------------------------------------------------------
+async def _full_index(
+    session: AsyncSession,
+    repo: Repo,
+    root_path: Path,
+    head_sha: str | None,
+    package_roots: list[Path],
+    include_tests: bool,
+) -> IngestResult:
+    await _clear_repo_rows(session, repo.id)
+
+    code_rows: list[CodeIndex] = []
+    functions_total = 0
+    classes_total = 0
+
+    for discovered in iter_files(root_path, include_tests=include_tests):
+        result = _parse_and_build_row(
+            repo.id,
+            root_path,
+            discovered.relative_path,
+            discovered.language,
+            head_sha,
+        )
+        if result is None:
+            continue
+        row, fn_count, cls_count = result
+        code_rows.append(row)
+        functions_total += fn_count
+        classes_total += cls_count
+
+    session.add_all(code_rows)
+    await session.flush()
+
+    edge_rows, edges_resolved = _build_edges(
+        repo.id, root_path, code_rows, package_roots
+    )
     session.add_all(edge_rows)
 
     repo.head_sha = head_sha
@@ -189,4 +204,187 @@ async def index_repository(
         edges_total=len(edge_rows),
         edges_resolved=edges_resolved,
         head_sha=head_sha,
+        mode="full",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Incremental index (selective update)
+# ---------------------------------------------------------------------------
+def _is_indexable(relative_path: str, include_tests: bool) -> str | None:
+    """Return the language if the file passes the walker's filter, else None."""
+    p = Path(relative_path)
+    language = LANGUAGE_BY_EXT.get(p.suffix)
+    if language is None:
+        return None
+    if _is_skipped(p, include_tests):
+        return None
+    return language
+
+
+async def _incremental_index(
+    session: AsyncSession,
+    repo: Repo,
+    root_path: Path,
+    head_sha: str | None,
+    package_roots: list[Path],
+    changes: list[FileChange],
+    include_tests: bool,
+) -> IngestResult:
+    files_deleted = 0
+    code_rows: list[CodeIndex] = []
+    functions_total = 0
+    classes_total = 0
+
+    for change in changes:
+        if change.status == "deleted":
+            # Remove the file's code_index row + its outgoing import edges.
+            await session.execute(
+                delete(ImportEdge)
+                .where(ImportEdge.repo_id == repo.id)
+                .where(ImportEdge.src_file == change.relative_path)
+            )
+            await session.execute(
+                delete(CodeIndex)
+                .where(CodeIndex.repo_id == repo.id)
+                .where(CodeIndex.file_path == change.relative_path)
+            )
+            files_deleted += 1
+            continue
+
+        # added or modified — check if it's an indexable source file.
+        language = _is_indexable(change.relative_path, include_tests)
+        if language is None:
+            continue
+
+        if change.status == "modified":
+            # Remove old row + old outgoing edges before re-inserting.
+            await session.execute(
+                delete(ImportEdge)
+                .where(ImportEdge.repo_id == repo.id)
+                .where(ImportEdge.src_file == change.relative_path)
+            )
+            await session.execute(
+                delete(CodeIndex)
+                .where(CodeIndex.repo_id == repo.id)
+                .where(CodeIndex.file_path == change.relative_path)
+            )
+
+        result = _parse_and_build_row(
+            repo.id,
+            root_path,
+            change.relative_path,
+            language,
+            head_sha,
+        )
+        if result is None:
+            continue
+        row, fn_count, cls_count = result
+        code_rows.append(row)
+        functions_total += fn_count
+        classes_total += cls_count
+
+    await session.flush()
+    session.add_all(code_rows)
+    await session.flush()
+
+    # Rebuild import edges for the newly parsed files.
+    edge_rows, edges_resolved = _build_edges(
+        repo.id, root_path, code_rows, package_roots
+    )
+    session.add_all(edge_rows)
+
+    repo.head_sha = head_sha
+    repo.indexed_at = datetime.now(UTC)
+    await session.flush()
+
+    logger.info(
+        "incremental_index repo=%s added_or_modified=%d deleted=%d edges=%d",
+        repo.name,
+        len(code_rows),
+        files_deleted,
+        len(edge_rows),
+    )
+
+    return IngestResult(
+        repo_id=str(repo.id),
+        files_indexed=len(code_rows),
+        functions_extracted=functions_total,
+        classes_extracted=classes_total,
+        edges_total=len(edge_rows),
+        edges_resolved=edges_resolved,
+        head_sha=head_sha,
+        mode="incremental",
+        files_deleted=files_deleted,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+async def index_repository(
+    session: AsyncSession,
+    repo_name: str,
+    root_path: Path,
+    *,
+    include_tests: bool = False,
+    force_full: bool = False,
+) -> IngestResult:
+    """Ingest a local repo into the three tables.
+
+    Tries incremental update when possible. Falls back to full re-index
+    when ``force_full=True``, the repo has no ``head_sha`` (first index),
+    or ``git diff`` fails.
+
+    Caller owns the transaction — this function does NOT commit.
+    """
+    root_path = root_path.resolve()
+    if not root_path.is_dir():
+        raise ValueError(f"root_path is not a directory: {root_path}")
+
+    repo = await _get_or_create_repo(session, repo_name, root_path)
+    head_sha = read_head_sha(root_path)
+    package_roots = discover_package_roots(root_path)
+
+    # Decide: full or incremental?
+    use_full = force_full or repo.head_sha is None
+
+    if not use_full and head_sha is not None:
+        if repo.head_sha == head_sha:
+            # Nothing changed since last index.
+            logger.info(
+                "index_noop repo=%s head_sha=%s", repo_name, head_sha
+            )
+            repo.indexed_at = datetime.now(UTC)
+            await session.flush()
+            return IngestResult(
+                repo_id=str(repo.id),
+                files_indexed=0,
+                functions_extracted=0,
+                classes_extracted=0,
+                edges_total=0,
+                edges_resolved=0,
+                head_sha=head_sha,
+                mode="noop",
+            )
+
+        changes = detect_changes(root_path, repo.head_sha)
+        if changes is not None:
+            return await _incremental_index(
+                session,
+                repo,
+                root_path,
+                head_sha,
+                package_roots,
+                changes,
+                include_tests,
+            )
+        # detect_changes returned None → fallback to full.
+        logger.warning(
+            "incremental_fallback_to_full repo=%s reason=detect_changes_failed",
+            repo_name,
+        )
+
+    return await _full_index(
+        session, repo, root_path, head_sha, package_roots, include_tests
     )

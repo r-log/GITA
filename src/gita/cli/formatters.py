@@ -22,19 +22,39 @@ def fmt_ingest(name: str, root: Path, elapsed: float, result: IngestResult) -> s
         if result.edges_total
         else 0.0
     )
-    return (
-        f"Indexed {name!r}\n"
-        f"  root:      {root}\n"
-        f"  files:     {result.files_indexed}\n"
-        f"  functions: {result.functions_extracted}\n"
-        f"  classes:   {result.classes_extracted}\n"
+    mode_label = {
+        "full": "full re-index",
+        "incremental": "incremental update",
+        "noop": "no changes detected",
+    }.get(result.mode, result.mode)
+
+    lines = [
+        f"Indexed {name!r} ({mode_label})",
+        f"  root:      {root}",
+    ]
+    if result.mode == "noop":
+        lines.append(f"  head:      {result.head_sha or '<not a git repo>'}")
+        lines.append(f"  elapsed:   {elapsed:.2f}s")
+        return "\n".join(lines)
+
+    if result.mode == "incremental" and result.files_deleted > 0:
+        lines.append(
+            f"  files:     {result.files_indexed} updated, "
+            f"{result.files_deleted} deleted"
+        )
+    else:
+        lines.append(f"  files:     {result.files_indexed}")
+    lines.extend([
+        f"  functions: {result.functions_extracted}",
+        f"  classes:   {result.classes_extracted}",
         f"  imports:   {result.edges_total} "
         f"({result.edges_resolved} resolved, "
         f"{result.edges_total - result.edges_resolved} unresolved, "
-        f"{resolved_pct:.0f}% rate)\n"
-        f"  head:      {result.head_sha or '<not a git repo>'}\n"
-        f"  elapsed:   {elapsed:.2f}s"
-    )
+        f"{resolved_pct:.0f}% rate)",
+        f"  head:      {result.head_sha or '<not a git repo>'}",
+        f"  elapsed:   {elapsed:.2f}s",
+    ])
+    return "\n".join(lines)
 
 
 def fmt_repos(rows: list[tuple[Repo, int, int]]) -> str:
