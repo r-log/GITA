@@ -97,7 +97,7 @@ async def db_session(test_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         async with test_engine.begin() as conn:
             await conn.execute(
                 text(
-                    "TRUNCATE TABLE import_edges, code_index, repos "
+                    "TRUNCATE TABLE agent_actions, import_edges, code_index, repos "
                     "RESTART IDENTITY CASCADE"
                 )
             )

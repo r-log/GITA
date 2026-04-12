@@ -71,9 +71,12 @@ class LLMClient(Protocol):
     returned JSON against it and populate ``LLMResponse.parsed``. On
     validation failure it must raise ``LLMSchemaError``.
 
-    ``temperature`` defaults to a low value so structured-output calls are
-    as deterministic as the model allows. Override per-call for creative
-    tasks.
+    ``temperature`` defaults to ``0.0`` so structured-output calls are as
+    deterministic as the model allows. Week 3 Day 4 observed that
+    title-based dedupe signatures miss when the LLM rephrases equivalent
+    milestones between runs; dropping the temperature is the cheapest fix
+    that tightens variance without blocking exploratory prompts from
+    overriding per-call.
     """
 
     async def call(
@@ -84,7 +87,7 @@ class LLMClient(Protocol):
         response_schema: type[BaseModel] | None = None,
         model: str | None = None,
         max_tokens: int = 4096,
-        temperature: float = 0.1,
+        temperature: float = 0.0,
     ) -> LLMResponse:
         ...
 
@@ -127,7 +130,7 @@ class OpenRouterClient:
         response_schema: type[BaseModel] | None = None,
         model: str | None = None,
         max_tokens: int = 4096,
-        temperature: float = 0.1,
+        temperature: float = 0.0,
     ) -> LLMResponse:
         model_name = model or self.default_model
         payload: dict[str, Any] = {
@@ -218,7 +221,7 @@ class FakeLLMClient:
         response_schema: type[BaseModel] | None = None,
         model: str | None = None,
         max_tokens: int = 4096,
-        temperature: float = 0.1,
+        temperature: float = 0.0,
     ) -> LLMResponse:
         self.calls.append(
             {

@@ -38,8 +38,10 @@ from gita.agents.decisions import (  # noqa: E402
 from gita.agents.onboarding import (  # noqa: E402
     OnboardingError,
     build_onboarding_comment_decision,
+    build_onboarding_issue_decisions,
     run_onboarding,
 )
+from gita.agents.decisions import Decision, DecisionResult  # noqa: E402
 from gita.agents.types import OnboardingResult  # noqa: E402
 from gita.config import settings  # noqa: E402
 from gita.db.models import CodeIndex, ImportEdge, Repo  # noqa: E402
@@ -466,11 +468,44 @@ def _parse_post_to(value: str) -> tuple[str, int]:
     return repo_full, issue_number
 
 
+def _parse_target_repo(value: str) -> str:
+    """Validate ``owner/repo`` shape (used by ``--create-issues``)."""
+    if value.count("/") != 1 or not all(value.split("/")):
+        raise ValueError(
+            f"--create-issues expects owner/repo, got {value!r}"
+        )
+    return value
+
+
+def _print_decision_summary(decision: Decision, result: DecisionResult) -> None:
+    """One-line-ish summary per Decision in the ``--create-issues`` loop."""
+    title = decision.payload.get("title", "(no title)")
+    outcome = result.outcome.value
+    side = result.side_effect or {}
+    url = side.get("html_url")
+    external_id = side.get("id") or side.get("external_id")
+    print(f"  [{outcome}] {title}")
+    if url:
+        print(f"          url: {url}")
+    elif external_id is not None:
+        print(f"          id:  {external_id}")
+    if result.error:
+        print(f"          error: {result.error}")
+
+
 async def cmd_onboard(args: argparse.Namespace) -> int:
     if not settings.openrouter_api_key:
         print(
             "error: OPENROUTER_API_KEY is not set in .env — cannot call the "
             "onboarding LLM",
+            file=sys.stderr,
+        )
+        return 2
+
+    # --- Flag parsing + mutual exclusion ---
+    if args.post_to and args.create_issues:
+        print(
+            "error: --post-to and --create-issues are mutually exclusive",
             file=sys.stderr,
         )
         return 2
@@ -482,6 +517,30 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+
+    create_target_repo: str | None = None
+    if args.create_issues:
+        try:
+            create_target_repo = _parse_target_repo(args.create_issues)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    mode = WriteMode(settings.write_mode)
+
+    # --create-issues in comment mode needs a fallback landing issue, since
+    # create_issue can't be downgraded in place (no issue exists yet).
+    if (
+        create_target_repo is not None
+        and mode == WriteMode.COMMENT
+        and args.fallback_issue is None
+    ):
+        print(
+            "error: --create-issues with WRITE_MODE=comment requires "
+            "--fallback-issue N so downgrades have somewhere to land",
+            file=sys.stderr,
+        )
+        return 2
 
     model = args.model or settings.ai_default_model
     async with OpenRouterClient(
@@ -505,13 +564,30 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
 
     print(_fmt_onboarding_result(result))
 
-    if post_target is None:
+    if post_target is None and create_target_repo is None:
         return 0
 
-    # --- Posting flow: wrap the result in a Decision and route through
-    # execute_decision with the current WRITE_MODE from settings. ---
+    if post_target is not None:
+        return await _run_post_flow(result, post_target, mode)
+
+    assert create_target_repo is not None  # narrows type for mypy
+    return await _run_create_issues_flow(
+        result,
+        create_target_repo,
+        fallback_issue=args.fallback_issue,
+        mode=mode,
+    )
+
+
+# ---------------------------------------------------------------------------
+# --post-to flow (Week 2 Day 7 bridge — single comment)
+# ---------------------------------------------------------------------------
+async def _run_post_flow(
+    result: OnboardingResult,
+    post_target: tuple[str, int],
+    mode: WriteMode,
+) -> int:
     repo_full, issue_number = post_target
-    mode = WriteMode(settings.write_mode)
     decision = build_onboarding_comment_decision(
         result, repo_full_name=repo_full, issue_number=issue_number
     )
@@ -520,20 +596,27 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
     print(f"--- Posting flow (WRITE_MODE={mode.value}) ---")
     print(f"target: {repo_full}#{issue_number}")
     print(f"decision confidence: {decision.confidence:.2f}")
-    print(f"evidence:")
+    print("evidence:")
     for bullet in decision.evidence:
         print(f"  - {bullet}")
 
     if mode == WriteMode.SHADOW:
-        # Shadow mode: route through the gate with no client attached.
-        # This logs the decision and returns without any network I/O.
-        decision_result = await execute_decision(decision, mode=mode)
+        async with SessionLocal() as session:
+            decision_result = await execute_decision(
+                decision,
+                mode=mode,
+                session=session,
+                agent="onboarding",
+            )
+            await session.commit()
         print()
         print(f"outcome: {decision_result.outcome.value}")
-        print("(shadow mode — no comment was posted; flip WRITE_MODE=comment to post for real)")
+        print(
+            "(shadow mode — no comment was posted; "
+            "flip WRITE_MODE=comment to post for real)"
+        )
         return 0
 
-    # comment / full mode — instantiate the real GitHub client.
     if (
         not settings.github_app_id
         or not settings.github_app_private_key_path
@@ -549,10 +632,15 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
         app_id=settings.github_app_id,
         private_key_path=settings.github_app_private_key_path,
     )
-    async with GithubClient(auth=auth) as gh:
+    async with GithubClient(auth=auth) as gh, SessionLocal() as session:
         decision_result = await execute_decision(
-            decision, mode=mode, client=gh
+            decision,
+            mode=mode,
+            client=gh,
+            session=session,
+            agent="onboarding",
         )
+        await session.commit()
 
     print()
     print(f"outcome: {decision_result.outcome.value}")
@@ -564,6 +652,90 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
         print(f"error: {decision_result.error}", file=sys.stderr)
         return 1
     return 0
+
+
+# ---------------------------------------------------------------------------
+# --create-issues flow (Week 3 Day 4 bridge — one Decision per milestone)
+# ---------------------------------------------------------------------------
+async def _run_create_issues_flow(
+    result: OnboardingResult,
+    target_repo: str,
+    *,
+    fallback_issue: int | None,
+    mode: WriteMode,
+) -> int:
+    decisions = build_onboarding_issue_decisions(
+        result,
+        target_repo=target_repo,
+        fallback_comment_target=fallback_issue,
+    )
+
+    print()
+    print(f"--- Create-issues flow (WRITE_MODE={mode.value}) ---")
+    print(f"target repo: {target_repo}")
+    if fallback_issue is not None:
+        print(f"fallback issue (for downgrades): #{fallback_issue}")
+    print(f"milestones → decisions: {len(decisions)}")
+
+    if not decisions:
+        print("(nothing to create — zero milestones with valid findings)")
+        return 0
+
+    # Non-shadow modes need credentials and a real client.
+    gh: GithubClient | None = None
+    if mode != WriteMode.SHADOW:
+        if (
+            not settings.github_app_id
+            or not settings.github_app_private_key_path
+        ):
+            print(
+                "error: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be "
+                "set in .env when WRITE_MODE is not shadow",
+                file=sys.stderr,
+            )
+            return 2
+        auth = GithubAppAuth.from_files(
+            app_id=settings.github_app_id,
+            private_key_path=settings.github_app_private_key_path,
+        )
+        gh = GithubClient(auth=auth)
+
+    executed = 0
+    deduped = 0
+    errors = 0
+    try:
+        async with SessionLocal() as session:
+            for decision in decisions:
+                decision_result = await execute_decision(
+                    decision,
+                    mode=mode,
+                    client=gh,
+                    session=session,
+                    agent="onboarding",
+                )
+                _print_decision_summary(decision, decision_result)
+                if decision_result.outcome == Outcome.EXECUTED:
+                    executed += 1
+                elif decision_result.outcome == Outcome.DEDUPED:
+                    deduped += 1
+                elif decision_result.error:
+                    errors += 1
+            await session.commit()
+    finally:
+        if gh is not None:
+            await gh.aclose()
+
+    print()
+    print(
+        f"summary: {len(decisions)} decisions  "
+        f"executed={executed}  deduped={deduped}  errors={errors}"
+    )
+    if mode == WriteMode.SHADOW:
+        print(
+            "(shadow mode — no issues were created; "
+            "flip WRITE_MODE=full to create real issues)"
+        )
+    return 1 if errors else 0
 
 
 async def cmd_query_history(args: argparse.Namespace) -> int:
@@ -631,9 +803,31 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="OWNER/REPO#ISSUE",
         help=(
-            "Wrap the onboarding output as a GitHub comment Decision and "
-            "route through execute_decision. Behavior depends on WRITE_MODE: "
-            "shadow = log only (default), comment = post a comment."
+            "Wrap the onboarding output as a single GitHub comment Decision "
+            "and route through execute_decision. Behavior depends on "
+            "WRITE_MODE: shadow = log only (default), comment = post a comment."
+        ),
+    )
+    onboard_p.add_argument(
+        "--create-issues",
+        default=None,
+        metavar="OWNER/REPO",
+        help=(
+            "Wrap each milestone as a create_issue Decision against the "
+            "target repo and route each through execute_decision. "
+            "Mutually exclusive with --post-to. In WRITE_MODE=comment, "
+            "--fallback-issue is required so downgrades have a landing "
+            "place."
+        ),
+    )
+    onboard_p.add_argument(
+        "--fallback-issue",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Issue number on the target repo where --create-issues "
+            "downgrade comments land when WRITE_MODE=comment."
         ),
     )
 
