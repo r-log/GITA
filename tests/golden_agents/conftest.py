@@ -1,8 +1,8 @@
 """Gate the golden-agent tests behind ``GITA_RUN_LLM_TESTS=1``.
 
-These tests call the real onboarding agent, which makes **real OpenRouter
-calls that cost money**. They should only run when the developer
-explicitly flips a flag, not on every ``pytest`` run.
+These tests call real agents, which make **real OpenRouter calls that cost
+money**. They should only run when the developer explicitly flips a flag,
+not on every ``pytest`` run.
 
 The ``test_checklist.py`` module in the same directory is a pure unit test
 of the checklist runner — no LLM — and is NOT gated.
@@ -24,8 +24,9 @@ RUN_LLM_TESTS = os.environ.get("GITA_RUN_LLM_TESTS") == "1"
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Skip every ``test_onboarding_*`` under ``tests/golden_agents/``
-    unless ``GITA_RUN_LLM_TESTS=1`` is set in the environment."""
+    """Skip every LLM-dependent test under ``tests/golden_agents/``
+    unless ``GITA_RUN_LLM_TESTS=1`` is set. Only ``test_checklist.py``
+    (a pure unit test of the checklist runner) runs unconditionally."""
     if RUN_LLM_TESTS:
         return
 
@@ -35,9 +36,8 @@ def pytest_collection_modifyitems(
         )
     )
     for item in items:
-        # Only gate onboarding agent tests; the checklist unit tests
-        # run unconditionally.
-        if "golden_agents/test_onboarding_" in item.nodeid.replace("\\", "/"):
+        normalized = item.nodeid.replace("\\", "/")
+        if "golden_agents/" in normalized and "test_checklist" not in normalized:
             item.add_marker(skip_marker)
 
 

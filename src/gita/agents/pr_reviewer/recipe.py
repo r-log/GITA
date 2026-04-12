@@ -226,10 +226,12 @@ async def run_pr_review(
     findings = _convert_findings(findings_response.parsed.findings)
 
     # Stage 2.5: architectural guardrails.
+    # Pass diff_hunks so the line-range check accepts lines added by the PR
+    # even though they're beyond the indexed file length.
     original_count = len(findings)
     if findings:
         findings, dropped = await verify_findings(
-            session, repo.id, findings
+            session, repo.id, findings, diff_hunks=diff_hunks
         )
         if dropped:
             logger.info(
