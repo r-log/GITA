@@ -38,5 +38,14 @@ CHECKLIST = Checklist(
         r"set up (?:ci|cd)",
         r"improve code quality",  # classic v1 boilerplate phrase
         r"add (?:more )?documentation",
+        # P6 hallucination guards — Week 3 Day 6 observed the agent
+        # falsely flagging decorators.py:170's split-getattr pattern as
+        # a "syntax error". The prompt now warns against this, but we
+        # keep the checklist tripwire here so any regression on real
+        # AMASS fails the gated test loudly.
+        r"unclosed\s*paren",
+        r"syntax\s*error",
+        r"unparseable",
+        r"cannot\s*parse",
     ],
 )
