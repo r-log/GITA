@@ -101,3 +101,32 @@ async def db_session(test_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
                     "RESTART IDENTITY CASCADE"
                 )
             )
+
+
+# ---------------------------------------------------------------------------
+# Shared fixture: index tests/fixtures/synthetic_py into the test DB.
+# Available to any test via pytest's conftest inheritance. Used by the views
+# tests and the agent tests.
+# ---------------------------------------------------------------------------
+from pathlib import Path as _Path  # noqa: E402
+
+from gita.indexer.ingest import index_repository as _index_repository  # noqa: E402
+
+_SYNTH_REPO_PATH = (
+    _Path(__file__).parent / "fixtures" / "synthetic_py"
+).resolve()
+_SYNTH_REPO_NAME = "synthetic_py"
+
+
+@pytest_asyncio.fixture
+async def indexed_synth_py(
+    db_session: AsyncSession,
+) -> AsyncIterator[tuple[AsyncSession, str]]:
+    """Ingest synthetic_py, commit, and yield ``(session, repo_name)``.
+
+    Reused by tests in ``tests/views/`` and ``tests/agents/``. The outer
+    ``db_session`` fixture truncates the three tables after each test.
+    """
+    await _index_repository(db_session, _SYNTH_REPO_NAME, _SYNTH_REPO_PATH)
+    await db_session.commit()
+    yield db_session, _SYNTH_REPO_NAME

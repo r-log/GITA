@@ -24,7 +24,7 @@ CHECKLIST = Checklist(
     # Dense fixture — demand more findings.
     min_findings=3,
     require_file_line=True,
-    max_milestones=4,
+    max_milestones=5,  # matches the "0 to 5" upper bound in the grouping prompt
     banned_milestone_titles=[
         r"testing.*qa",
         r"ci/?cd",
@@ -39,7 +39,9 @@ CHECKLIST = Checklist(
         r"(?:bare\s*except|hardcoded|mutable\s*default|plaintext\s*password|commented[- ]?out)",
     ],
     must_not_mention=[
-        r"\bgeneric\b",
         r"add unit tests",
+        r"set up (?:ci|cd)",
+        r"improve (?:test )?coverage",
+        r"add (?:more )?documentation",
     ],
 )
