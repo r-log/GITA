@@ -56,8 +56,20 @@ def compute_signature(decision: Decision) -> str:
     action = decision.action
 
     if action == "create_issue":
-        title = str(decision.payload.get("title", "")).strip().lower()
-        material = f"{repo}\ncreate_issue\n{title}"
+        # Prefer _signature_keys (sorted file:line citations) over the title.
+        # Title-based signatures miss when the LLM rephrases equivalent
+        # milestones between runs (observed Day 7 flip-back: 2/5 title
+        # drifts at temperature=0). Citation-based signatures dedupe on
+        # the *underlying findings* regardless of how the LLM phrases
+        # the milestone title. The bridge pre-computes _signature_keys;
+        # fall back to title for manually-built decisions.
+        sig_keys = decision.payload.get("_signature_keys")
+        if sig_keys and isinstance(sig_keys, list):
+            keys_str = "\n".join(sorted(str(k) for k in sig_keys))
+            material = f"{repo}\ncreate_issue\n{keys_str}"
+        else:
+            title = str(decision.payload.get("title", "")).strip().lower()
+            material = f"{repo}\ncreate_issue\n{title}"
     elif action == "comment":
         issue = decision.target.get("issue")
         body = str(decision.payload.get("body", "")).strip()[:_BODY_CAP_CHARS]

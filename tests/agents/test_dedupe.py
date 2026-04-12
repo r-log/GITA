@@ -73,7 +73,69 @@ class TestSignatureIsHexString:
 
 
 class TestCreateIssueSignature:
-    def test_title_identifies(self):
+    def test_signature_keys_identify(self):
+        """When _signature_keys is present, the title is irrelevant.
+        Two decisions citing the same file:line set dedupe even if the
+        LLM rephrased the milestone title."""
+        a = _decision(
+            "create_issue",
+            issue=None,
+            payload={
+                "title": "Fix SQL injection",
+                "_signature_keys": ["db.py:42", "db.py:99"],
+            },
+        )
+        b = _decision(
+            "create_issue",
+            issue=None,
+            payload={
+                "title": "Eliminate SQL injection risks",  # rephrased!
+                "_signature_keys": ["db.py:42", "db.py:99"],
+            },
+        )
+        assert compute_signature(a) == compute_signature(b)
+
+    def test_different_citations_different_signature(self):
+        a = _decision(
+            "create_issue",
+            issue=None,
+            payload={
+                "title": "Fix SQL injection",
+                "_signature_keys": ["db.py:42"],
+            },
+        )
+        b = _decision(
+            "create_issue",
+            issue=None,
+            payload={
+                "title": "Fix SQL injection",
+                "_signature_keys": ["db.py:42", "auth.py:10"],
+            },
+        )
+        assert compute_signature(a) != compute_signature(b)
+
+    def test_signature_keys_order_does_not_matter(self):
+        a = _decision(
+            "create_issue",
+            issue=None,
+            payload={
+                "title": "X",
+                "_signature_keys": ["b.py:2", "a.py:1"],
+            },
+        )
+        b = _decision(
+            "create_issue",
+            issue=None,
+            payload={
+                "title": "X",
+                "_signature_keys": ["a.py:1", "b.py:2"],
+            },
+        )
+        assert compute_signature(a) == compute_signature(b)
+
+    def test_fallback_to_title_when_no_signature_keys(self):
+        """Decisions built without the bridge (e.g. manual) still dedupe
+        on title, preserving backward compat."""
         a = _decision(
             "create_issue",
             issue=None,
@@ -87,20 +149,7 @@ class TestCreateIssueSignature:
         # Same title → same signature even with different bodies.
         assert compute_signature(a) == compute_signature(b)
 
-    def test_different_title_different_signature(self):
-        a = _decision(
-            "create_issue",
-            issue=None,
-            payload={"title": "Fix SQL injection", "body": "x"},
-        )
-        b = _decision(
-            "create_issue",
-            issue=None,
-            payload={"title": "Fix XSS", "body": "x"},
-        )
-        assert compute_signature(a) != compute_signature(b)
-
-    def test_title_is_case_insensitive(self):
+    def test_title_fallback_is_case_insensitive(self):
         a = _decision(
             "create_issue",
             issue=None,
@@ -113,14 +162,18 @@ class TestCreateIssueSignature:
         )
         assert compute_signature(a) == compute_signature(b)
 
-    def test_title_is_whitespace_stripped(self):
+    def test_different_title_different_signature_without_keys(self):
         a = _decision(
-            "create_issue", issue=None, payload={"title": "Fix bug"}
+            "create_issue",
+            issue=None,
+            payload={"title": "Fix SQL injection"},
         )
         b = _decision(
-            "create_issue", issue=None, payload={"title": "  Fix bug  "}
+            "create_issue",
+            issue=None,
+            payload={"title": "Fix XSS"},
         )
-        assert compute_signature(a) == compute_signature(b)
+        assert compute_signature(a) != compute_signature(b)
 
 
 class TestCommentSignature:

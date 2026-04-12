@@ -54,6 +54,15 @@ is almost always wrong. In particular:
   the parser would reject. Otherwise, do not use the words "syntax
   error", "unclosed", "unparseable", or "won't parse".
 
+**Default values and function signatures — verify before claiming.**
+When you describe a bug involving default parameter values, **quote the
+exact function signature you are reading** so the claim can be verified.
+Do NOT state default values from memory or assumption. For example, if
+you see `def execute_query(query, fetch_one=False, fetch_all=True)`,
+then `fetch_one` defaults to `False` — do not claim "both default to
+True" unless the text you were shown says so. A factually wrong claim
+about a default value is worse than no finding at all.
+
 If you genuinely can't find concrete issues in a file, skip it. Return
 fewer findings rather than padding with vague ones. Zero findings is a
 valid answer.
