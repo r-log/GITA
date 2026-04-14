@@ -29,6 +29,19 @@ class Settings(BaseSettings):
         default=None, alias="GITHUB_APP_PRIVATE_KEY_PATH"
     )
 
+    # Webhook HMAC secret. Required for the FastAPI webhook receiver to
+    # verify that incoming payloads actually came from GitHub.
+    github_webhook_secret: str | None = Field(
+        default=None, alias="GITHUB_WEBHOOK_SECRET"
+    )
+
+    # Redis URL for the ARQ job queue. Required when running the worker.
+    # Uses 127.0.0.1 instead of localhost — on Windows, localhost can
+    # resolve to IPv6 (::1) while Docker only binds IPv4.
+    redis_url: str = Field(
+        default="redis://127.0.0.1:6379", alias="REDIS_URL"
+    )
+
     # LLM provider (OpenRouter). Optional at import time — only required
     # when an agent actually makes an LLM call. Tests use a FakeLLMClient.
     openrouter_api_key: str | None = Field(

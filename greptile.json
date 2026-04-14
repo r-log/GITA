@@ -1,0 +1,66 @@
+{
+  "instructions": "This is GITA — a GitHub assistant that indexes repos (tree-sitter), serves a query API (FastAPI), runs background jobs (arq), and ships agents (PR reviewer, onboarding). Python 3.12, async-first. Favor concise feedback tied to real bugs, async correctness, and DB safety; skip nits already covered by ruff.",
+  "strictness": 2,
+  "commentTypes": ["logic", "syntax"],
+  "ignorePatterns": "*.md\n*.scm\ntests/fixtures/**\n.claude/**\nalembic/versions/**",
+  "ignoreKeywords": "rename\nformatting\nlinter\nruff\ntypo",
+  "triggerOnUpdates": true,
+  "triggerOnDrafts": false,
+  "summarySection": { "included": true, "collapsible": false, "defaultOpen": true },
+  "issuesTableSection": { "included": true, "collapsible": true, "defaultOpen": true },
+  "confidenceScoreSection": { "included": true, "collapsible": true, "defaultOpen": false },
+  "sequenceDiagramSection": { "included": false, "collapsible": true, "defaultOpen": false },
+  "customContext": {
+    "rules": [
+      {
+        "scope": ["src/gita/**/*.py"],
+        "rule": "All I/O (DB, HTTP, filesystem reads of repo content) must be async. Flag any sync DB calls, `requests` usage, or blocking file reads inside async functions; suggest `httpx.AsyncClient`, async SQLAlchemy, or `asyncio.to_thread` for unavoidable sync work."
+      },
+      {
+        "scope": ["src/gita/db/**/*.py", "src/gita/indexer/**/*.py", "src/gita/jobs/**/*.py"],
+        "rule": "SQLAlchemy sessions must be scoped per-request/per-job and committed or rolled back explicitly. Flag detached-instance risks, missing `await session.commit()`, and N+1 patterns in indexer hot paths."
+      },
+      {
+        "scope": ["src/gita/web/**/*.py"],
+        "rule": "FastAPI endpoints: validate inputs with Pydantic models, never accept raw dicts. Flag endpoints that leak internal exceptions, skip auth, or return ORM objects directly instead of response schemas."
+      },
+      {
+        "scope": ["src/gita/github/**/*.py"],
+        "rule": "GitHub App calls must use installation tokens via the JWT helper, respect rate limits, and handle 404/410 (deleted repos) explicitly. Never log tokens or full webhook payloads."
+      },
+      {
+        "scope": ["src/gita/agents/**/*.py", "src/gita/llm/**/*.py"],
+        "rule": "LLM calls should use prompt caching where the system prompt or repo context is reused. Flag missing `cache_control` blocks on stable prefixes, and any prompt assembly that mixes static + dynamic content in a way that defeats caching."
+      },
+      {
+        "scope": ["src/gita/agents/**/*.py"],
+        "rule": "Output rendered to GitHub (PR comments, onboarding cards) should preserve the prettified card/badge layout — severity icons, headers, collapsible sections. Flag regressions to plain-text dumps."
+      },
+      {
+        "scope": ["src/gita/jobs/**/*.py", "src/gita/worker.py"],
+        "rule": "arq jobs must be idempotent and bounded — no unbounded retries, no jobs that re-enqueue themselves without a guard. Flag missing timeouts and unhandled exceptions that would poison the queue."
+      },
+      {
+        "scope": ["tests/**/*.py"],
+        "rule": "Use `pytest-asyncio` (auto mode is on). Tests touching the DB should use a real test DB or transactional fixtures, not mocks of the session. Flag overuse of `MagicMock` for SQLAlchemy or httpx."
+      },
+      {
+        "scope": ["**/*.py"],
+        "rule": "Secrets (GitHub App private key, DB URL, API keys) come from `gita.config` settings — never hardcoded, never read from `os.environ` directly outside `config.py`."
+      }
+    ],
+    "files": [
+      {
+        "scope": ["**/*.py"],
+        "path": "pyproject.toml",
+        "description": "Authoritative dependency + tooling config. Ruff selects E/F/I/UP/B/SIM with line-length 100; don't comment on style issues already covered."
+      }
+    ],
+    "other": [
+      {
+        "scope": ["src/gita/**/*.py", "tests/**/*.py"],
+        "content": "Project layout: `agents/` = PR reviewer + onboarding agents, `cli/` = `gita` entrypoint, `db/` = async SQLAlchemy models + migrations, `github/` = App auth + API client, `indexer/` = tree-sitter parsing + incremental git-diff indexing, `jobs/` + `worker.py` = arq background jobs, `llm/` = Anthropic client wrapper, `views/` = query/response schemas, `web/` = FastAPI app. Roadmap: Week 6+ adds branch creation and test generation — review comments that would block that direction (e.g., agents that can't write files) should be flagged."
+      }
+    ]
+  }
+}
