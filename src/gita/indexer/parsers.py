@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 QUERIES_DIR = Path(__file__).parent / "queries"
 
 
+_DOCSTRING_CAP = 200
+
+
 @dataclass
 class Symbol:
     name: str
@@ -26,6 +29,9 @@ class Symbol:
     start_line: int  # 1-indexed
     end_line: int    # 1-indexed, inclusive
     parent_class: str | None = None
+    signature: str | None = None    # e.g. "def foo(x: int, y: str) -> bool"
+    docstring: str | None = None    # first line, capped at _DOCSTRING_CAP chars
+    decorators: list[str] = field(default_factory=list)  # e.g. ["@property"]
 
 
 @dataclass
@@ -105,6 +111,72 @@ def _is_async_function(node) -> bool:
     return False
 
 
+def _extract_python_signature(func_node, source: bytes) -> str | None:
+    """Build a signature string like ``def foo(x: int) -> bool`` from the AST."""
+    name_node = func_node.child_by_field_name("name")
+    params_node = func_node.child_by_field_name("parameters")
+    if name_node is None or params_node is None:
+        return None
+
+    is_async = _is_async_function(func_node)
+    prefix = "async def" if is_async else "def"
+    name = _node_text(name_node, source)
+    params = _node_text(params_node, source)
+
+    # Return type annotation: look for a 'type' node after '->' in children.
+    return_type = ""
+    for child in func_node.children:
+        if child.type == "type":
+            return_type = f" -> {_node_text(child, source)}"
+            break
+
+    return f"{prefix} {name}{params}{return_type}"
+
+
+def _extract_python_docstring(func_or_class_node, source: bytes) -> str | None:
+    """Extract the first line of the docstring from a function or class body.
+
+    In Python's AST, a docstring is the first ``expression_statement``
+    child of the ``block`` that contains a ``string`` node.
+    """
+    body = func_or_class_node.child_by_field_name("body")
+    if body is None:
+        return None
+    for child in body.children:
+        if child.type == "expression_statement":
+            for sub in child.children:
+                if sub.type == "string":
+                    raw = _node_text(sub, source)
+                    # Strip quotes (""", ''', ", ')
+                    for q in ('"""', "'''", '"', "'"):
+                        if raw.startswith(q) and raw.endswith(q):
+                            raw = raw[len(q) : -len(q)]
+                            break
+                    first_line = raw.strip().split("\n")[0].strip()
+                    if not first_line:
+                        return None
+                    return first_line[:_DOCSTRING_CAP]
+            break  # only check the first statement
+    return None
+
+
+def _extract_decorators(node, source: bytes) -> list[str]:
+    """Extract decorator strings from a ``decorated_definition`` parent.
+
+    If the function/class is wrapped in a ``decorated_definition``, its
+    ``decorator`` children appear as siblings before the actual definition.
+    """
+    parent = node.parent
+    if parent is None or parent.type != "decorated_definition":
+        return []
+    decorators = []
+    for child in parent.children:
+        if child.type == "decorator":
+            text = _node_text(child, source).strip()
+            decorators.append(text)
+    return decorators
+
+
 def _extract_python(source: bytes, tree) -> FileStructure:
     query = _load_query("python")
     if query is None:
@@ -133,6 +205,9 @@ def _extract_python(source: bytes, tree) -> FileStructure:
                 start_line=func_node.start_point[0] + 1,
                 end_line=func_node.end_point[0] + 1,
                 parent_class=parent_class,
+                signature=_extract_python_signature(func_node, source),
+                docstring=_extract_python_docstring(func_node, source),
+                decorators=_extract_decorators(func_node, source),
             )
         )
 
@@ -146,6 +221,8 @@ def _extract_python(source: bytes, tree) -> FileStructure:
                 kind="class",
                 start_line=class_node.start_point[0] + 1,
                 end_line=class_node.end_point[0] + 1,
+                docstring=_extract_python_docstring(class_node, source),
+                decorators=_extract_decorators(class_node, source),
             )
         )
 

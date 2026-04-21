@@ -169,3 +169,103 @@ def test_structure_serialization(fixture):
     data = s.to_jsonb()
     assert set(data.keys()) == {"functions", "classes", "imports"}
     json.dumps(data)  # raises if anything is not serializable
+
+
+# ---------------------------------------------------------------------------
+# Signature extraction
+# ---------------------------------------------------------------------------
+class TestSignatureExtraction:
+    def test_typed_params_and_return(self):
+        s = _parse_fixture("simple_module.py")
+        add = next(f for f in s.functions if f.name == "add")
+        assert add.signature == "def add(a: int, b: int) -> int"
+
+    def test_no_return_type(self):
+        s = _parse_fixture("simple_module.py")
+        mul = next(f for f in s.functions if f.name == "multiply")
+        assert mul.signature == "def multiply(a: int, b: int) -> int"
+
+    def test_async_function_signature(self):
+        s = _parse_fixture("simple_module.py")
+        fetch = next(f for f in s.functions if f.name == "fetch_data")
+        assert fetch.signature is not None
+        assert fetch.signature.startswith("async def fetch_data(")
+        assert "-> Optional[str]" in fetch.signature
+
+    def test_method_signature(self):
+        s = _parse_fixture("decorator_heavy.py")
+        name_fn = next(f for f in s.functions if f.name == "name")
+        assert name_fn.signature is not None
+        assert "self" in name_fn.signature
+        assert "-> str" in name_fn.signature
+
+    def test_no_params_function(self):
+        s = _parse_fixture("decorator_heavy.py")
+        dec = next(f for f in s.functions if f.name == "decorated_function")
+        assert dec.signature == "def decorated_function()"
+
+
+# ---------------------------------------------------------------------------
+# Docstring extraction
+# ---------------------------------------------------------------------------
+class TestDocstringExtraction:
+    def test_single_line_docstring(self):
+        s = _parse_fixture("simple_module.py")
+        add = next(f for f in s.functions if f.name == "add")
+        assert add.docstring == "Add two numbers."
+
+    def test_no_docstring(self):
+        s = _parse_fixture("simple_module.py")
+        mul = next(f for f in s.functions if f.name == "multiply")
+        assert mul.docstring is None
+
+    def test_function_without_body_docstring(self):
+        s = _parse_fixture("decorator_heavy.py")
+        dec = next(f for f in s.functions if f.name == "decorated_function")
+        assert dec.docstring is None
+
+    def test_module_docstring_not_on_class(self):
+        """Module-level docstrings shouldn't leak onto functions."""
+        s = _parse_fixture("simple_module.py")
+        # The module has a docstring but individual functions shouldn't pick it up
+        mul = next(f for f in s.functions if f.name == "multiply")
+        assert mul.docstring is None
+
+
+# ---------------------------------------------------------------------------
+# Decorator extraction
+# ---------------------------------------------------------------------------
+class TestDecoratorExtraction:
+    def test_single_decorator(self):
+        s = _parse_fixture("decorator_heavy.py")
+        dec = next(f for f in s.functions if f.name == "decorated_function")
+        assert dec.decorators == ["@my_decorator"]
+
+    def test_staticmethod(self):
+        s = _parse_fixture("decorator_heavy.py")
+        sm = next(f for f in s.functions if f.name == "static_method")
+        assert "@staticmethod" in sm.decorators
+
+    def test_classmethod(self):
+        s = _parse_fixture("decorator_heavy.py")
+        cm = next(f for f in s.functions if f.name == "class_method")
+        assert "@classmethod" in cm.decorators
+
+    def test_property_decorator(self):
+        s = _parse_fixture("decorator_heavy.py")
+        name_fn = next(f for f in s.functions if f.name == "name")
+        assert "@property" in name_fn.decorators
+
+    def test_no_decorators(self):
+        s = _parse_fixture("simple_module.py")
+        add = next(f for f in s.functions if f.name == "add")
+        assert add.decorators == []
+
+    def test_serialization_includes_new_fields(self):
+        """JSONB output includes signature, docstring, decorators."""
+        s = _parse_fixture("simple_module.py")
+        data = s.to_jsonb()
+        fn = next(f for f in data["functions"] if f["name"] == "add")
+        assert "signature" in fn
+        assert "docstring" in fn
+        assert "decorators" in fn
