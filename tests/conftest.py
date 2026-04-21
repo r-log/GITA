@@ -63,6 +63,9 @@ async def _bootstrap_test_db() -> None:
 
     engine = create_async_engine(_TEST_DB_URL, echo=False, poolclass=NullPool)
     async with engine.begin() as conn:
+        # Enable pgvector extension before creating tables — the code_index
+        # table has a vector(1536) column that requires it.
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
     await engine.dispose()
 

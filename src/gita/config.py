@@ -51,6 +51,13 @@ class Settings(BaseSettings):
         default="moonshotai/kimi-k2.5", alias="AI_DEFAULT_MODEL"
     )
 
+    # OpenAI API key — used for file-level embeddings (text-embedding-3-small).
+    # Optional: when absent, indexing skips embedding computation and
+    # concept_view falls back to keyword-only FTS.
+    openai_api_key: str | None = Field(
+        default=None, alias="OPENAI_API_KEY"
+    )
+
     @field_validator("write_mode")
     @classmethod
     def _validate_write_mode(cls, v: str) -> str:

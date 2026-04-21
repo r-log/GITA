@@ -15,6 +15,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:  # pragma: no cover
+    Vector = None  # type: ignore[assignment,misc]
+
 
 class Base(DeclarativeBase):
     pass
@@ -64,6 +69,10 @@ class CodeIndex(Base):
     line_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     indexed_at_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     structure: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    embedding = mapped_column(
+        Vector(1536) if Vector is not None else Text,
+        nullable=True,
+    )
 
     repo: Mapped[Repo] = relationship(back_populates="files")
 
