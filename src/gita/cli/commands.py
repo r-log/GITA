@@ -76,11 +76,16 @@ async def cmd_index(args: argparse.Namespace) -> int:
         return 2
     name = args.name or root.name
     force_full = getattr(args, "full", False)
+    github_full_name = getattr(args, "github", None)
 
     async with SessionLocal() as session:
         t0 = time.time()
         result = await index_repository(
-            session, name, root, force_full=force_full
+            session,
+            name,
+            root,
+            force_full=force_full,
+            github_full_name=github_full_name,
         )
         await session.commit()
         elapsed = time.time() - t0

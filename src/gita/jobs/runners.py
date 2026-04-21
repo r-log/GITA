@@ -14,6 +14,8 @@ arrive after the first review already covered that SHA.
 from __future__ import annotations
 
 import logging
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
@@ -30,8 +32,9 @@ from gita.config import settings
 from gita.db.session import SessionLocal
 from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
+from gita.indexer.ingest import index_repository
 from gita.llm.client import OpenRouterClient
-from gita.views._common import RepoNotFoundError
+from gita.views._common import RepoNotFoundError, resolve_repo
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +99,22 @@ async def run_pr_review_job(
     owner, repo = repo_full_name.split("/", 1)
     mode = WriteMode(settings.write_mode)
 
+    # --- Early repo resolution (before any external calls) ---
+    async with SessionLocal() as session:
+        try:
+            repo_obj = await resolve_repo(session, repo_full_name)
+            repo_name = repo_obj.name  # canonical short name
+        except RepoNotFoundError:
+            logger.warning(
+                "pr_review_no_index repo=%s — skipping", repo_full_name
+            )
+            return {
+                "status": "error",
+                "reason": "repo_not_indexed",
+                "repo": repo_full_name,
+                "pr_number": pr_number,
+            }
+
     # --- Validate required credentials ---
     if not settings.openrouter_api_key:
         raise RuntimeError("OPENROUTER_API_KEY not configured")
@@ -142,10 +161,6 @@ async def run_pr_review_job(
     diff_hunks = parse_pr_files(pr_files_json)
     model = settings.ai_default_model
 
-    # Look up the indexed repo name. The webhook sends "owner/repo" but
-    # the index might use a different name. Try the full name first.
-    repo_name = repo_full_name
-
     async with OpenRouterClient(
         api_key=settings.openrouter_api_key, default_model=model
     ) as llm:
@@ -154,17 +169,6 @@ async def run_pr_review_job(
                 result = await run_pr_review(
                     session, repo_name, pr_info, diff_hunks, llm=llm
                 )
-            except RepoNotFoundError:
-                logger.warning(
-                    "pr_review_no_index repo=%s — skipping",
-                    repo_name,
-                )
-                return {
-                    "status": "error",
-                    "reason": "repo_not_indexed",
-                    "repo": repo_full_name,
-                    "pr_number": pr_number,
-                }
             except PRReviewError as exc:
                 logger.error(
                     "pr_review_failed repo=%s pr=%d error=%s",
@@ -238,12 +242,26 @@ async def run_onboarding_job(
 
     mode = WriteMode(settings.write_mode)
 
+    # --- Early repo resolution (before any external calls) ---
+    async with SessionLocal() as session:
+        try:
+            repo_obj = await resolve_repo(session, repo_full_name)
+            repo_name = repo_obj.name  # canonical short name
+        except RepoNotFoundError:
+            logger.warning(
+                "onboarding_no_index repo=%s — skipping", repo_full_name
+            )
+            return {
+                "status": "error",
+                "reason": "repo_not_indexed",
+                "repo": repo_full_name,
+                "issue_number": issue_number,
+            }
+
     if not settings.openrouter_api_key:
         raise RuntimeError("OPENROUTER_API_KEY not configured")
 
     model = settings.ai_default_model
-    # Use the full name as repo_name for index lookup.
-    repo_name = repo_full_name
 
     async with OpenRouterClient(
         api_key=settings.openrouter_api_key, default_model=model
@@ -251,17 +269,6 @@ async def run_onboarding_job(
         async with SessionLocal() as session:
             try:
                 result = await run_onboarding(session, repo_name, llm=llm)
-            except RepoNotFoundError:
-                logger.warning(
-                    "onboarding_no_index repo=%s — skipping",
-                    repo_name,
-                )
-                return {
-                    "status": "error",
-                    "reason": "repo_not_indexed",
-                    "repo": repo_full_name,
-                    "issue_number": issue_number,
-                }
             except OnboardingError as exc:
                 logger.error(
                     "onboarding_failed repo=%s issue=%d error=%s",
@@ -324,4 +331,124 @@ async def run_onboarding_job(
         "findings": len(result.findings),
         "milestones": len(result.milestones),
         "outcome": decision_result.outcome.value,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Git sync helper (fetch + reset to target SHA)
+# ---------------------------------------------------------------------------
+_GIT_TIMEOUT = 120  # seconds
+
+
+def _git_sync(root_path: Path, after_sha: str | None) -> tuple[bool, str]:
+    """Fetch from origin and reset the working tree to a target SHA.
+
+    Returns ``(success, error_message)`` — error_message is empty on success.
+    Safe to call with ``max_jobs=1`` (no concurrent access to the worktree).
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", str(root_path), "fetch", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        return False, f"git fetch failed: {exc}"
+
+    target = after_sha or "origin/HEAD"
+    try:
+        subprocess.run(
+            ["git", "-C", str(root_path), "reset", "--hard", target],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        return False, f"git reset failed: {exc}"
+
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Reindex runner (webhook-triggered via push events)
+# ---------------------------------------------------------------------------
+async def run_reindex_job(
+    repo_full_name: str,
+    after_sha: str | None = None,
+) -> dict[str, Any]:
+    """Fetch latest code and incrementally re-index.
+
+    1. Resolve the repo by github_full_name (Day 1 fallback)
+    2. ``git fetch origin`` + ``git reset --hard <sha>``
+    3. Call ``index_repository()`` (incremental when possible)
+    4. Return a summary dict
+    """
+    # --- Resolve repo early (before git operations) ---
+    async with SessionLocal() as session:
+        try:
+            repo = await resolve_repo(session, repo_full_name)
+            repo_name = repo.name
+            root_path = Path(repo.root_path)
+        except RepoNotFoundError:
+            logger.warning(
+                "reindex_no_index repo=%s — skipping", repo_full_name
+            )
+            return {
+                "status": "error",
+                "reason": "repo_not_indexed",
+                "repo": repo_full_name,
+                "after_sha": after_sha,
+            }
+
+    if not root_path.is_dir():
+        logger.error(
+            "reindex_root_missing repo=%s path=%s", repo_full_name, root_path
+        )
+        return {
+            "status": "error",
+            "reason": "root_path_missing",
+            "repo": repo_full_name,
+            "after_sha": after_sha,
+        }
+
+    # --- Git sync ---
+    ok, err = _git_sync(root_path, after_sha)
+    if not ok:
+        logger.error(
+            "reindex_git_sync_failed repo=%s error=%s", repo_full_name, err
+        )
+        return {
+            "status": "error",
+            "reason": "git_sync_failed",
+            "repo": repo_full_name,
+            "after_sha": after_sha,
+            "detail": err,
+        }
+
+    # --- Re-index ---
+    async with SessionLocal() as session:
+        result = await index_repository(
+            session, repo_name, root_path, github_full_name=repo_full_name
+        )
+        await session.commit()
+
+    logger.info(
+        "reindex_complete repo=%s mode=%s files=%d after_sha=%s",
+        repo_full_name,
+        result.mode,
+        result.files_indexed,
+        after_sha,
+    )
+
+    return {
+        "status": "completed",
+        "repo": repo_full_name,
+        "after_sha": after_sha,
+        "mode": result.mode,
+        "files_indexed": result.files_indexed,
+        "files_deleted": result.files_deleted,
+        "edges_total": result.edges_total,
     }

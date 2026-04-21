@@ -176,6 +176,57 @@ class TestIngestSyntheticPy:
         assert result.classes_extracted >= 1  # User
 
 
+class TestGithubFullName:
+    """Tests for the github_full_name parameter on index_repository."""
+
+    async def test_github_full_name_stored_on_create(self, db_session, synth_root):
+        await index_repository(
+            db_session, "synthetic_py", synth_root, github_full_name="r-log/synthetic"
+        )
+        await db_session.commit()
+
+        repo = (await db_session.execute(select(Repo))).scalar_one()
+        assert repo.github_full_name == "r-log/synthetic"
+
+    async def test_github_full_name_backfilled_on_reindex(self, db_session, synth_root):
+        """If a repo was indexed without github_full_name, a later re-index
+        with the flag set should backfill the column."""
+        await index_repository(db_session, "synthetic_py", synth_root)
+        await db_session.commit()
+
+        repo = (await db_session.execute(select(Repo))).scalar_one()
+        assert repo.github_full_name is None
+
+        await index_repository(
+            db_session, "synthetic_py", synth_root, github_full_name="r-log/synthetic"
+        )
+        await db_session.commit()
+
+        await db_session.refresh(repo)
+        assert repo.github_full_name == "r-log/synthetic"
+
+    async def test_github_full_name_not_overwritten(self, db_session, synth_root):
+        """Once set, github_full_name isn't replaced by a None re-index."""
+        await index_repository(
+            db_session, "synthetic_py", synth_root, github_full_name="r-log/synthetic"
+        )
+        await db_session.commit()
+
+        await index_repository(db_session, "synthetic_py", synth_root)
+        await db_session.commit()
+
+        repo = (await db_session.execute(select(Repo))).scalar_one()
+        assert repo.github_full_name == "r-log/synthetic"
+
+    async def test_github_full_name_optional(self, db_session, synth_root):
+        """Default behaviour: no github_full_name, column stays NULL."""
+        await index_repository(db_session, "synthetic_py", synth_root)
+        await db_session.commit()
+
+        repo = (await db_session.execute(select(Repo))).scalar_one()
+        assert repo.github_full_name is None
+
+
 class TestReindex:
     async def test_reindex_is_idempotent(self, db_session, synth_root):
         """Running index_repository twice should leave the same row counts."""

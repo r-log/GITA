@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.db.models import Repo
@@ -14,12 +14,32 @@ class RepoNotFoundError(LookupError):
 
 
 async def resolve_repo(session: AsyncSession, repo_name: str) -> Repo:
-    """Return the indexed Repo row for ``repo_name`` or raise."""
+    """Return the indexed Repo row for ``repo_name`` or raise.
+
+    Lookup order:
+    1. Exact match on ``Repo.name`` (the short CLI name, e.g. "amass").
+    2. Case-insensitive match on ``Repo.github_full_name`` (the webhook
+       path, e.g. "r-log/AMASS").
+
+    The two-step lookup means CLI callers pay no extra cost (fast path),
+    while webhook-triggered jobs get the fallback they need.
+    """
+    # Fast path — exact short-name match (covers CLI usage).
     stmt = select(Repo).where(Repo.name == repo_name)
     repo = (await session.execute(stmt)).scalar_one_or_none()
-    if repo is None:
-        raise RepoNotFoundError(f"repo not indexed: {repo_name!r}")
-    return repo
+    if repo is not None:
+        return repo
+
+    # Fallback — case-insensitive match on github_full_name.
+    normalized = repo_name.strip().lower()
+    stmt2 = select(Repo).where(
+        func.lower(Repo.github_full_name) == normalized
+    )
+    repo = (await session.execute(stmt2)).scalar_one_or_none()
+    if repo is not None:
+        return repo
+
+    raise RepoNotFoundError(f"repo not indexed: {repo_name!r}")
 
 
 # ---------------------------------------------------------------------------

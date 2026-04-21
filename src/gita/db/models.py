@@ -27,6 +27,9 @@ class Repo(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    github_full_name: Mapped[str | None] = mapped_column(
+        String(255), unique=True, nullable=True
+    )
     root_path: Mapped[str] = mapped_column(Text, nullable=False)
     head_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     indexed_at: Mapped[datetime | None] = mapped_column(

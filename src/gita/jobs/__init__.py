@@ -68,21 +68,15 @@ async def reindex_repo(
     repo_full_name: str,
     after_sha: str | None = None,
 ) -> dict[str, Any]:
-    """Incrementally re-index a repository. Enqueued by ``handle_push_reindex``.
-
-    Day 5 wires the actual re-index runner.
-    """
+    """Incrementally re-index a repository. Enqueued by ``handle_push_reindex``."""
     logger.info(
         "job_start function=reindex_repo repo=%s sha=%s",
         repo_full_name,
         after_sha,
     )
-    # Day 5 wires the actual runner here.
-    return {
-        "status": "stub",
-        "repo": repo_full_name,
-        "after_sha": after_sha,
-    }
+    from gita.jobs.runners import run_reindex_job
+
+    return await run_reindex_job(repo_full_name, after_sha=after_sha)
 
 
 # List of all job functions — used by the ARQ worker settings.

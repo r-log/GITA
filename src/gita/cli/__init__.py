@@ -76,6 +76,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "since the last index and only re-parses those."
         ),
     )
+    index_p.add_argument(
+        "--github",
+        default=None,
+        metavar="OWNER/REPO",
+        help=(
+            "Associate the indexed repo with a GitHub full name "
+            "(e.g. r-log/AMASS). Required for webhook-triggered "
+            "jobs to find this repo by its GitHub name."
+        ),
+    )
 
     sub.add_parser("repos", help="List indexed repos")
 

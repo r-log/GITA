@@ -15,7 +15,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from arq import create_pool
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from gita.web.webhooks import router as webhooks_router
 from gita.worker import _parse_redis_url
@@ -53,10 +53,29 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
     application = FastAPI(
         title="GITA Webhook Receiver",
         description="GitHub Assistant v2 — webhook ingestion endpoint",
-        version="0.6.0",
+        version="0.7.0",
         lifespan=lifespan if use_lifespan else None,
     )
     application.include_router(webhooks_router)
+
+    # --- Health check endpoints ---
+    @application.get("/health")
+    async def health_liveness():
+        """Liveness probe — always 200 if the process is running."""
+        return {"status": "ok"}
+
+    @application.get("/health/ready")
+    async def health_readiness():
+        """Readiness probe — checks ARQ pool availability."""
+        pool = getattr(application.state, "arq_pool", None)
+        if pool is None:
+            return Response(
+                content='{"status": "not_ready", "arq_pool": false}',
+                status_code=503,
+                media_type="application/json",
+            )
+        return {"status": "ready", "arq_pool": True}
+
     return application
 
 

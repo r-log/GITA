@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from gita.jobs import ALL_JOBS
-from gita.worker import WorkerSettings, _parse_redis_url
+from gita.worker import WorkerSettings, _mask_url, _parse_redis_url
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +39,18 @@ class TestParseRedisUrl:
         rs = _parse_redis_url("redis://user:pass@host:6379/0")
         assert rs.username == "user"
         assert rs.password == "pass"
+
+
+class TestMaskUrl:
+    def test_masks_password(self):
+        result = _mask_url("redis://user:secret@host:6379/0")
+        assert "secret" not in result
+        assert "***" in result
+        assert "host" in result
+
+    def test_no_password_unchanged(self):
+        url = "redis://localhost:6379"
+        assert _mask_url(url) == url
 
 
 # ---------------------------------------------------------------------------
@@ -155,15 +167,28 @@ class TestRedisIntegration:
         assert job2 is not None
         assert job1.job_id != job2.job_id
 
-    async def test_startup_hook(self):
-        """Startup hook sets initialized flag in context."""
+    async def test_startup_hook_creates_engine(self):
+        """Startup hook creates a DB engine and sets initialized flag."""
         from gita.worker import startup
         ctx: dict = {}
         await startup(ctx)
         assert ctx["initialized"] is True
+        assert ctx["engine"] is not None
+        # Cleanup
+        await ctx["engine"].dispose()
 
-    async def test_shutdown_hook(self):
-        """Shutdown hook runs without error."""
+    async def test_shutdown_hook_disposes_engine(self):
+        """Shutdown hook disposes the engine created by startup."""
+        from gita.worker import startup, shutdown
+        ctx: dict = {}
+        await startup(ctx)
+        assert ctx.get("engine") is not None
+        await shutdown(ctx)
+        # Engine should still be in ctx but disposed (no assertion on internal state,
+        # just verify it ran without error)
+
+    async def test_shutdown_without_engine(self):
+        """Shutdown is safe when no engine was created."""
         from gita.worker import shutdown
         ctx: dict = {}
-        await shutdown(ctx)
+        await shutdown(ctx)  # should not raise

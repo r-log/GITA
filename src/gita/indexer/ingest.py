@@ -45,14 +45,24 @@ class IngestResult:
 # Shared helpers
 # ---------------------------------------------------------------------------
 async def _get_or_create_repo(
-    session: AsyncSession, name: str, root_path: Path
+    session: AsyncSession,
+    name: str,
+    root_path: Path,
+    *,
+    github_full_name: str | None = None,
 ) -> Repo:
     stmt = select(Repo).where(Repo.name == name)
     existing = (await session.execute(stmt)).scalar_one_or_none()
     if existing is not None:
         existing.root_path = str(root_path)
+        if github_full_name and not existing.github_full_name:
+            existing.github_full_name = github_full_name
         return existing
-    repo = Repo(name=name, root_path=str(root_path))
+    repo = Repo(
+        name=name,
+        root_path=str(root_path),
+        github_full_name=github_full_name,
+    )
     session.add(repo)
     await session.flush()
     return repo
@@ -329,6 +339,7 @@ async def index_repository(
     *,
     include_tests: bool = False,
     force_full: bool = False,
+    github_full_name: str | None = None,
 ) -> IngestResult:
     """Ingest a local repo into the three tables.
 
@@ -336,13 +347,18 @@ async def index_repository(
     when ``force_full=True``, the repo has no ``head_sha`` (first index),
     or ``git diff`` fails.
 
+    ``github_full_name`` (e.g. ``"r-log/AMASS"``) is stored on the Repo
+    row so webhook-triggered jobs can resolve the repo by its GitHub name.
+
     Caller owns the transaction — this function does NOT commit.
     """
     root_path = root_path.resolve()
     if not root_path.is_dir():
         raise ValueError(f"root_path is not a directory: {root_path}")
 
-    repo = await _get_or_create_repo(session, repo_name, root_path)
+    repo = await _get_or_create_repo(
+        session, repo_name, root_path, github_full_name=github_full_name
+    )
     head_sha = read_head_sha(root_path)
     package_roots = discover_package_roots(root_path)
 
