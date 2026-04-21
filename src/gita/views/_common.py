@@ -53,6 +53,8 @@ class SymbolBrief:
     kind: str
     line: int
     parent_class: str | None = None
+    signature: str | None = None
+    docstring: str | None = None
 
 
 def build_symbol_summary(structure: dict) -> list[SymbolBrief]:
@@ -67,6 +69,8 @@ def build_symbol_summary(structure: dict) -> list[SymbolBrief]:
                 name=cls["name"],
                 kind=cls["kind"],
                 line=cls["start_line"],
+                signature=cls.get("signature"),
+                docstring=cls.get("docstring"),
             )
         )
     for fn in structure.get("functions", []):
@@ -76,6 +80,8 @@ def build_symbol_summary(structure: dict) -> list[SymbolBrief]:
                 kind=fn["kind"],
                 line=fn["start_line"],
                 parent_class=fn.get("parent_class"),
+                signature=fn.get("signature"),
+                docstring=fn.get("docstring"),
             )
         )
     briefs.sort(key=lambda b: b.line)

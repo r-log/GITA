@@ -140,3 +140,52 @@ def test_structure_serialization(fixture):
     data = s.to_jsonb()
     assert set(data.keys()) == {"functions", "classes", "imports"}
     json.dumps(data)
+
+
+# ---------------------------------------------------------------------------
+# Signature extraction (JavaScript)
+# ---------------------------------------------------------------------------
+class TestJsSignatureExtraction:
+    def test_untyped_params(self):
+        s = _parse_fixture("simple_module.js")
+        add = next(f for f in s.functions if f.name == "add")
+        assert add.signature == "function add(a, b)"
+
+    def test_async_function(self):
+        s = _parse_fixture("simple_module.js")
+        fetch = next(f for f in s.functions if f.name == "fetchData")
+        assert fetch.signature == "async function fetchData(url)"
+
+
+# ---------------------------------------------------------------------------
+# JSDoc extraction (JavaScript)
+# ---------------------------------------------------------------------------
+class TestJsJsdocExtraction:
+    def test_jsdoc_on_function(self):
+        from gita.indexer.parsers import parse_file
+
+        code = '/** Sum values. */\nfunction sum(arr) { return 0; }\n'
+        s = parse_file(Path("test.js"), code, "javascript")
+        fn = next(f for f in s.functions if f.name == "sum")
+        assert fn.docstring == "Sum values."
+
+    def test_jsdoc_on_class(self):
+        from gita.indexer.parsers import parse_file
+
+        code = '/** My service. */\nclass Service {}\n'
+        s = parse_file(Path("test.js"), code, "javascript")
+        cls = next(c for c in s.classes if c.name == "Service")
+        assert cls.docstring == "My service."
+
+    def test_multiline_jsdoc_takes_first_line(self):
+        from gita.indexer.parsers import parse_file
+
+        code = '/**\n * Calculate total.\n * @param {number[]} values\n */\nfunction total(values) {}\n'
+        s = parse_file(Path("test.js"), code, "javascript")
+        fn = next(f for f in s.functions if f.name == "total")
+        assert fn.docstring == "Calculate total."
+
+    def test_no_jsdoc(self):
+        s = _parse_fixture("simple_module.js")
+        add = next(f for f in s.functions if f.name == "add")
+        assert add.docstring is None

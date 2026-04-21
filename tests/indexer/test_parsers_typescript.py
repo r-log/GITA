@@ -160,3 +160,83 @@ def test_structure_serialization(fixture):
     data = s.to_jsonb()
     assert set(data.keys()) == {"functions", "classes", "imports"}
     json.dumps(data)
+
+
+# ---------------------------------------------------------------------------
+# Signature extraction (TypeScript)
+# ---------------------------------------------------------------------------
+class TestTsSignatureExtraction:
+    def test_typed_params_and_return(self):
+        s = _parse_fixture("simple_module.ts")
+        add = next(f for f in s.functions if f.name == "add")
+        assert add.signature == "function add(a: number, b: number): number"
+
+    def test_async_with_promise_return(self):
+        s = _parse_fixture("simple_module.ts")
+        fetch = next(f for f in s.functions if f.name == "fetchData")
+        assert fetch.signature is not None
+        assert "async function" in fetch.signature
+        assert "Promise<string | null>" in fetch.signature
+
+    def test_method_signature(self):
+        s = _parse_fixture("class_heavy.ts")
+        sound = next(
+            f for f in s.functions
+            if f.name == "sound" and f.parent_class == "Dog"
+        )
+        assert sound.signature is not None
+        assert "sound()" in sound.signature
+        assert ": string" in sound.signature
+
+    def test_constructor_signature(self):
+        s = _parse_fixture("class_heavy.ts")
+        ctor = next(
+            f for f in s.functions
+            if f.name == "constructor" and f.parent_class == "Dog"
+        )
+        assert ctor.signature is not None
+        assert "name: string" in ctor.signature
+
+
+# ---------------------------------------------------------------------------
+# JSDoc extraction (TypeScript)
+# ---------------------------------------------------------------------------
+class TestTsJsdocExtraction:
+    def test_jsdoc_on_function(self):
+        """JSDoc comment before a function is extracted."""
+        from gita.indexer.parsers import parse_file
+
+        code = '/** Add numbers. */\nfunction add(a: number): number { return a; }\n'
+        s = parse_file(Path("test.ts"), code, "typescript")
+        add = next(f for f in s.functions if f.name == "add")
+        assert add.docstring == "Add numbers."
+
+    def test_jsdoc_on_exported_function(self):
+        from gita.indexer.parsers import parse_file
+
+        code = '/** Exported. */\nexport function foo(): void {}\n'
+        s = parse_file(Path("test.ts"), code, "typescript")
+        foo = next(f for f in s.functions if f.name == "foo")
+        assert foo.docstring == "Exported."
+
+    def test_jsdoc_on_method(self):
+        from gita.indexer.parsers import parse_file
+
+        code = 'class C {\n  /** A method. */\n  bar(): void {}\n}\n'
+        s = parse_file(Path("test.ts"), code, "typescript")
+        bar = next(f for f in s.functions if f.name == "bar")
+        assert bar.docstring == "A method."
+
+    def test_no_jsdoc(self):
+        s = _parse_fixture("simple_module.ts")
+        add = next(f for f in s.functions if f.name == "add")
+        assert add.docstring is None
+
+    def test_serialization_includes_new_fields(self):
+        """JSONB output includes signature and docstring."""
+        s = _parse_fixture("simple_module.ts")
+        data = s.to_jsonb()
+        fn = next(f for f in data["functions"] if f["name"] == "add")
+        assert "signature" in fn
+        assert "docstring" in fn
+        assert "decorators" in fn

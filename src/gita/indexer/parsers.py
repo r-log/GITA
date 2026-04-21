@@ -237,6 +237,76 @@ def _extract_python(source: bytes, tree) -> FileStructure:
     return structure
 
 
+def _extract_ts_js_signature(
+    node, source: bytes, *, name: str | None = None, is_async: bool = False
+) -> str | None:
+    """Build a signature from a TS/JS function/method node.
+
+    Looks for ``formal_parameters`` and an optional trailing ``type_annotation``
+    (return type, TS only).
+    """
+    params_node = node.child_by_field_name("parameters")
+    if params_node is None:
+        return None
+    if name is None:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return None
+        name = _node_text(name_node, source)
+
+    params = _node_text(params_node, source)
+    prefix = "async function" if is_async else "function"
+
+    # Return type: look for type_annotation child after formal_parameters.
+    # Tree-sitter node wrappers may differ in identity, so compare by type
+    # and position rather than using ``is``.
+    return_type = ""
+    past_params = False
+    for child in node.children:
+        if child.type == "formal_parameters":
+            past_params = True
+            continue
+        if past_params and child.type == "type_annotation":
+            return_type = _node_text(child, source)  # includes ": Type"
+            break
+
+    return f"{prefix} {name}{params}{return_type}"
+
+
+def _extract_jsdoc(node, source: bytes) -> str | None:
+    """Extract the first line of a JSDoc comment preceding a node.
+
+    Looks for a ``comment`` sibling immediately before the node whose text
+    starts with ``/**``. If the node is wrapped in ``export_statement``,
+    the comment may be a sibling of the export wrapper instead.
+
+    Returns the first meaningful line (stripped of ``*`` prefixes and
+    whitespace), capped at ``_DOCSTRING_CAP`` chars.
+    """
+    # Try direct prev sibling first, then parent's prev sibling
+    # (handles `export function ...` where comment precedes the export).
+    candidates = [node]
+    if node.parent and node.parent.type in ("export_statement", "export_default_declaration"):
+        candidates.append(node.parent)
+
+    for candidate in candidates:
+        prev = candidate.prev_named_sibling
+        if prev is None or prev.type != "comment":
+            continue
+        text = _node_text(prev, source)
+        if not text.startswith("/**"):
+            continue
+        # Strip /** ... */ and * line prefixes
+        text = text[3:]
+        if text.endswith("*/"):
+            text = text[:-2]
+        for line in text.split("\n"):
+            stripped = line.strip().lstrip("*").strip()
+            if stripped and not stripped.startswith("@"):
+                return stripped[:_DOCSTRING_CAP]
+    return None
+
+
 def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
     """Shared extractor for TypeScript and JavaScript.
 
@@ -265,6 +335,10 @@ def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
                 kind=kind,
                 start_line=func_node.start_point[0] + 1,
                 end_line=func_node.end_point[0] + 1,
+                signature=_extract_ts_js_signature(
+                    func_node, source, is_async=is_async
+                ),
+                docstring=_extract_jsdoc(func_node, source),
             )
         )
 
@@ -279,6 +353,7 @@ def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
                 kind="class",
                 start_line=class_node.start_point[0] + 1,
                 end_line=class_node.end_point[0] + 1,
+                docstring=_extract_jsdoc(class_node, source),
             )
         )
 
@@ -293,6 +368,7 @@ def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
                 kind="interface",
                 start_line=iface_node.start_point[0] + 1,
                 end_line=iface_node.end_point[0] + 1,
+                docstring=_extract_jsdoc(iface_node, source),
             )
         )
 
@@ -306,13 +382,18 @@ def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
         )
         is_async = _is_async_function(method_node)
         kind = "async_method" if is_async else "method"
+        name = _node_text(name_node, source)
         structure.functions.append(
             Symbol(
-                name=_node_text(name_node, source),
+                name=name,
                 kind=kind,
                 start_line=method_node.start_point[0] + 1,
                 end_line=method_node.end_point[0] + 1,
                 parent_class=parent,
+                signature=_extract_ts_js_signature(
+                    method_node, source, name=name, is_async=is_async
+                ),
+                docstring=_extract_jsdoc(method_node, source),
             )
         )
 
@@ -324,12 +405,22 @@ def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
             continue
         is_async = _is_async_function(value_node)
         kind = "async_function" if is_async else "function"
+        name = _node_text(name_node, source)
+        # Arrow function signature: parameters are on the value (arrow_function) node
+        sig = _extract_ts_js_signature(
+            value_node, source, name=name, is_async=is_async
+        )
+        # JSDoc for arrow: comment sibling is before the lexical_declaration parent
+        parent_decl = decl_node.parent  # lexical_declaration (const/let/var)
+        docstring = _extract_jsdoc(parent_decl, source) if parent_decl else None
         structure.functions.append(
             Symbol(
-                name=_node_text(name_node, source),
+                name=name,
                 kind=kind,
                 start_line=decl_node.start_point[0] + 1,
                 end_line=decl_node.end_point[0] + 1,
+                signature=sig,
+                docstring=docstring,
             )
         )
 
