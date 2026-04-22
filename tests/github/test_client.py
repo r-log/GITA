@@ -6,13 +6,14 @@ and bodies.
 """
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 
 from gita.agents.decisions import Decision
-from gita.github.client import GithubClient, _CachedToken
+from gita.github.client import FileContents, GithubClient, RefInfo, _CachedToken
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +122,102 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                 "additions": 15,
                 "deletions": 5,
                 "html_url": "https://github.com/owner/repo/pull/10",
+            },
+        )
+    # POST /repos/o/r/git/refs — _create_ref
+    if method == "POST" and path.endswith("/git/refs"):
+        return httpx.Response(
+            201,
+            json={
+                "ref": "refs/heads/gita/tests/example",
+                "node_id": "REF_kwDO",
+                "url": (
+                    "https://api.github.com/repos/owner/repo/git/refs/"
+                    "heads/gita/tests/example"
+                ),
+                "object": {
+                    "sha": "abc1234",
+                    "type": "commit",
+                    "url": (
+                        "https://api.github.com/repos/owner/repo/git/"
+                        "commits/abc1234"
+                    ),
+                },
+            },
+        )
+    # GET /repos/o/r/git/ref/<ref> — get_ref
+    if method == "GET" and "/git/ref/" in path:
+        return httpx.Response(
+            200,
+            json={
+                "ref": "refs/heads/main",
+                "node_id": "REF_kwDO",
+                "url": (
+                    "https://api.github.com/repos/owner/repo/git/refs/"
+                    "heads/main"
+                ),
+                "object": {
+                    "sha": "def5678",
+                    "type": "commit",
+                    "url": (
+                        "https://api.github.com/repos/owner/repo/git/"
+                        "commits/def5678"
+                    ),
+                },
+            },
+        )
+    # GET /repos/o/r/contents/<path> — get_contents
+    if method == "GET" and "/contents/" in path:
+        hello_b64 = base64.b64encode(
+            b"hello world\nsecond line\n"
+        ).decode("ascii")
+        return httpx.Response(
+            200,
+            json={
+                "name": "hello.txt",
+                "path": "src/hello.txt",
+                "sha": "blob1234",
+                "size": 24,
+                "encoding": "base64",
+                "content": hello_b64,
+                "html_url": (
+                    "https://github.com/owner/repo/blob/main/src/hello.txt"
+                ),
+            },
+        )
+    # PUT /repos/o/r/contents/<path> — _create_or_update_file
+    if method == "PUT" and "/contents/" in path:
+        return httpx.Response(
+            201,
+            json={
+                "content": {
+                    "name": "hello.txt",
+                    "path": "src/hello.txt",
+                    "sha": "newblob9999",
+                    "size": 30,
+                    "html_url": (
+                        "https://github.com/owner/repo/blob/branch/"
+                        "src/hello.txt"
+                    ),
+                },
+                "commit": {
+                    "sha": "commit9999",
+                    "html_url": (
+                        "https://github.com/owner/repo/commit/commit9999"
+                    ),
+                },
+            },
+        )
+    # POST /repos/o/r/pulls — _create_pull
+    if method == "POST" and path.endswith("/pulls"):
+        return httpx.Response(
+            201,
+            json={
+                "number": 42,
+                "state": "open",
+                "html_url": "https://github.com/owner/repo/pull/42",
+                "head": {"ref": "gita/tests/example"},
+                "base": {"ref": "main"},
             },
         )
     # GET /repos/o/r/pulls/N/files — get_pr_files
@@ -694,6 +791,457 @@ class TestGetPrFiles:
         files = await client.get_pr_files("owner", "repo", 10)
         assert files[0]["patch"] is not None
         assert "@@ " in files[0]["patch"]
+
+
+# ---------------------------------------------------------------------------
+# Contents API — write helpers (Week 8 Day 1)
+# ---------------------------------------------------------------------------
+class TestCreateRef:
+    async def test_posts_to_git_refs_endpoint(self, client, capture):
+        result = await client._create_ref(
+            "owner", "repo", "refs/heads/gita/tests/example", "sha123"
+        )
+        assert result["kind"] == "create_branch"
+        assert result["ref"] == "refs/heads/gita/tests/example"
+        assert result["sha"] == "abc1234"
+        assert result["repo"] == "owner/repo"
+
+        ref_requests = [
+            r for r in capture.requests if r.url.path.endswith("/git/refs")
+        ]
+        assert len(ref_requests) == 1
+        assert ref_requests[0].method == "POST"
+
+    async def test_payload_has_ref_and_sha(self, client, capture):
+        import json
+
+        await client._create_ref(
+            "owner", "repo", "refs/heads/feature", "deadbeef"
+        )
+        req = next(
+            r for r in capture.requests if r.url.path.endswith("/git/refs")
+        )
+        payload = json.loads(req.content)
+        assert payload == {
+            "ref": "refs/heads/feature",
+            "sha": "deadbeef",
+        }
+
+
+class TestCreateOrUpdateFile:
+    async def test_creates_new_file_without_sha(self, client, capture):
+        result = await client._create_or_update_file(
+            "owner",
+            "repo",
+            "src/hello.txt",
+            "add greeting",
+            "hello world\n",
+            "gita/tests/example",
+        )
+        assert result["kind"] == "create_file"
+        assert result["path"] == "src/hello.txt"
+        assert result["content_sha"] == "newblob9999"
+        assert result["commit_sha"] == "commit9999"
+        assert result["branch"] == "gita/tests/example"
+
+    async def test_updates_existing_file_with_sha(self, client, capture):
+        result = await client._create_or_update_file(
+            "owner",
+            "repo",
+            "src/hello.txt",
+            "edit greeting",
+            "hi\n",
+            "gita/tests/example",
+            sha="oldblobsha",
+        )
+        assert result["kind"] == "update_file"
+        assert result["content_sha"] == "newblob9999"
+
+    async def test_base64_encodes_content(self, client, capture):
+        import json
+
+        await client._create_or_update_file(
+            "owner",
+            "repo",
+            "src/hello.txt",
+            "msg",
+            "hello world\n",
+            "branch",
+        )
+        req = next(
+            r
+            for r in capture.requests
+            if r.method == "PUT" and "/contents/" in r.url.path
+        )
+        payload = json.loads(req.content)
+        assert payload["content"] == base64.b64encode(
+            b"hello world\n"
+        ).decode("ascii")
+        assert payload["branch"] == "branch"
+        assert payload["message"] == "msg"
+        assert "sha" not in payload
+
+    async def test_update_payload_includes_blob_sha(self, client, capture):
+        import json
+
+        await client._create_or_update_file(
+            "owner",
+            "repo",
+            "src/hello.txt",
+            "msg",
+            "hi\n",
+            "branch",
+            sha="oldblobsha",
+        )
+        req = next(
+            r
+            for r in capture.requests
+            if r.method == "PUT" and "/contents/" in r.url.path
+        )
+        payload = json.loads(req.content)
+        assert payload["sha"] == "oldblobsha"
+
+
+class TestCreatePull:
+    async def test_opens_pr(self, client, capture):
+        result = await client._create_pull(
+            "owner",
+            "repo",
+            "Add generated tests",
+            "This PR adds tests generated by GITA.",
+            "gita/tests/example",
+            "main",
+        )
+        assert result["kind"] == "open_pr"
+        assert result["number"] == 42
+        assert result["state"] == "open"
+        assert result["head"] == "gita/tests/example"
+        assert result["base"] == "main"
+
+    async def test_draft_pr_sends_draft_flag(self, client, capture):
+        import json
+
+        await client._create_pull(
+            "owner",
+            "repo",
+            "title",
+            "body",
+            "head-branch",
+            "main",
+            draft=True,
+        )
+        req = next(
+            r for r in capture.requests if r.url.path.endswith("/pulls")
+        )
+        payload = json.loads(req.content)
+        assert payload["draft"] is True
+        assert payload["head"] == "head-branch"
+        assert payload["base"] == "main"
+
+    async def test_default_is_not_draft(self, client, capture):
+        import json
+
+        await client._create_pull(
+            "owner", "repo", "t", "b", "head", "main"
+        )
+        req = next(
+            r for r in capture.requests if r.url.path.endswith("/pulls")
+        )
+        payload = json.loads(req.content)
+        assert "draft" not in payload
+
+
+# ---------------------------------------------------------------------------
+# Contents API — read methods (Week 8 Day 1)
+# ---------------------------------------------------------------------------
+class TestGetRef:
+    async def test_returns_typed_ref_info(self, client, capture):
+        ref_info = await client.get_ref("owner", "repo", "heads/main")
+        assert isinstance(ref_info, RefInfo)
+        assert ref_info.sha == "def5678"
+        assert ref_info.ref == "refs/heads/main"
+
+    async def test_path_preserves_slashes_in_ref(self, client, capture):
+        await client.get_ref(
+            "owner", "repo", "heads/gita/tests/example"
+        )
+        ref_request = next(
+            r for r in capture.requests if "/git/ref/" in r.url.path
+        )
+        assert ref_request.url.path.endswith(
+            "/git/ref/heads/gita/tests/example"
+        )
+
+
+class TestGetContents:
+    async def test_returns_decoded_content(self, client, capture):
+        contents = await client.get_contents(
+            "owner", "repo", "src/hello.txt"
+        )
+        assert isinstance(contents, FileContents)
+        assert contents.content == "hello world\nsecond line\n"
+        assert contents.sha == "blob1234"
+        assert contents.encoding == "base64"
+
+    async def test_ref_query_param_when_supplied(self, client, capture):
+        await client.get_contents(
+            "owner",
+            "repo",
+            "src/hello.txt",
+            ref="gita/tests/example",
+        )
+        contents_request = next(
+            r
+            for r in capture.requests
+            if r.method == "GET" and "/contents/" in r.url.path
+        )
+        assert "ref=gita%2Ftests%2Fexample" in str(
+            contents_request.url.query
+        )
+
+    async def test_directory_response_raises(self, test_auth, capture):
+        """GitHub returns a JSON array for directory paths — reject loud."""
+
+        def dir_handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/installation"):
+                return httpx.Response(200, json={"id": 999})
+            if "/access_tokens" in request.url.path:
+                return httpx.Response(
+                    201,
+                    json={
+                        "token": "ghs_x",
+                        "expires_at": _iso_in(3600),
+                    },
+                )
+            return httpx.Response(
+                200, json=[{"name": "a.py"}, {"name": "b.py"}]
+            )
+
+        http = httpx.AsyncClient(
+            transport=_make_transport(dir_handler, capture),
+            base_url="https://api.github.com",
+        )
+        client = GithubClient(auth=test_auth, http=http)
+        with pytest.raises(ValueError, match="directory"):
+            await client.get_contents("owner", "repo", "src")
+
+
+# ---------------------------------------------------------------------------
+# execute(create_branch / update_file / open_pr)  —  Week 8 Day 2 dispatch
+# ---------------------------------------------------------------------------
+def _create_branch_decision(
+    repo: str = "owner/repo",
+    ref: str = "refs/heads/gita/tests/foo",
+    base_sha: str = "baseshasha",
+) -> Decision:
+    return Decision(
+        action="create_branch",
+        target={"repo": repo},
+        payload={"ref": ref, "base_sha": base_sha},
+        evidence=["e1"],
+        confidence=0.95,
+    )
+
+
+def _update_file_decision(
+    repo: str = "owner/repo",
+    path: str = "tests/test_foo.py",
+    content: str = "def test_ok(): assert True\n",
+    message: str = "gita: add generated tests",
+    branch: str = "gita/tests/foo",
+    sha: str | None = None,
+) -> Decision:
+    payload: dict = {
+        "path": path,
+        "content": content,
+        "message": message,
+        "branch": branch,
+    }
+    if sha is not None:
+        payload["sha"] = sha
+    return Decision(
+        action="update_file",
+        target={"repo": repo},
+        payload=payload,
+        evidence=["e1"],
+        confidence=0.95,
+    )
+
+
+def _open_pr_decision(
+    repo: str = "owner/repo",
+    title: str = "Add generated tests",
+    body: str = "gita test-gen",
+    head: str = "gita/tests/foo",
+    base: str = "main",
+    draft: bool = False,
+) -> Decision:
+    return Decision(
+        action="open_pr",
+        target={"repo": repo},
+        payload={
+            "title": title,
+            "body": body,
+            "head": head,
+            "base": base,
+            "draft": draft,
+        },
+        evidence=["e1"],
+        confidence=0.95,
+    )
+
+
+class TestExecuteCreateBranch:
+    async def test_posts_to_git_refs(self, client, capture):
+        result = await client.execute(_create_branch_decision())
+        assert result["kind"] == "create_branch"
+        assert result["ref"] == "refs/heads/gita/tests/example"
+        ref_requests = [
+            r for r in capture.requests if r.url.path.endswith("/git/refs")
+        ]
+        assert len(ref_requests) == 1
+        assert ref_requests[0].method == "POST"
+
+    async def test_payload_shape(self, client, capture):
+        import json
+
+        await client.execute(
+            _create_branch_decision(
+                ref="refs/heads/gita/tests/bar", base_sha="deadbeef"
+            )
+        )
+        req = next(
+            r for r in capture.requests if r.url.path.endswith("/git/refs")
+        )
+        assert json.loads(req.content) == {
+            "ref": "refs/heads/gita/tests/bar",
+            "sha": "deadbeef",
+        }
+
+    async def test_missing_base_sha_raises(self, client):
+        decision = Decision(
+            action="create_branch",
+            target={"repo": "a/b"},
+            payload={"ref": "refs/heads/x"},
+            confidence=0.95,
+        )
+        with pytest.raises(ValueError, match="payload.base_sha"):
+            await client.execute(decision)
+
+    async def test_missing_ref_raises(self, client):
+        decision = Decision(
+            action="create_branch",
+            target={"repo": "a/b"},
+            payload={"base_sha": "abc"},
+            confidence=0.95,
+        )
+        with pytest.raises(ValueError, match="payload.ref"):
+            await client.execute(decision)
+
+
+class TestExecuteUpdateFile:
+    async def test_creates_when_no_sha(self, client, capture):
+        result = await client.execute(_update_file_decision())
+        assert result["kind"] == "create_file"
+        assert result["path"] == "src/hello.txt"  # from mock fixture
+        content_requests = [
+            r
+            for r in capture.requests
+            if r.method == "PUT" and "/contents/" in r.url.path
+        ]
+        assert len(content_requests) == 1
+
+    async def test_updates_when_sha_given(self, client, capture):
+        result = await client.execute(
+            _update_file_decision(sha="oldblobsha")
+        )
+        assert result["kind"] == "update_file"
+
+    async def test_payload_content_is_base64(self, client, capture):
+        import json
+
+        await client.execute(
+            _update_file_decision(content="hello world\n")
+        )
+        req = next(
+            r
+            for r in capture.requests
+            if r.method == "PUT" and "/contents/" in r.url.path
+        )
+        payload = json.loads(req.content)
+        assert payload["content"] == base64.b64encode(
+            b"hello world\n"
+        ).decode("ascii")
+        assert payload["message"] == "gita: add generated tests"
+        assert payload["branch"] == "gita/tests/foo"
+
+    async def test_missing_path_raises(self, client):
+        decision = Decision(
+            action="update_file",
+            target={"repo": "a/b"},
+            payload={
+                "content": "x",
+                "message": "m",
+                "branch": "b",
+            },
+            confidence=0.95,
+        )
+        with pytest.raises(ValueError, match="payload.path"):
+            await client.execute(decision)
+
+    async def test_empty_content_is_valid(self, client, capture):
+        """An empty file body is a valid write — don't trip the payload
+        guard on ``content == ''`` (only None should raise)."""
+        result = await client.execute(
+            _update_file_decision(content="")
+        )
+        assert result["kind"] == "create_file"
+
+
+class TestExecuteOpenPr:
+    async def test_posts_to_pulls_endpoint(self, client, capture):
+        result = await client.execute(_open_pr_decision())
+        assert result["kind"] == "open_pr"
+        assert result["number"] == 42
+        assert result["state"] == "open"
+        pulls_requests = [
+            r
+            for r in capture.requests
+            if r.method == "POST" and r.url.path.endswith("/pulls")
+        ]
+        assert len(pulls_requests) == 1
+
+    async def test_draft_flag_propagates(self, client, capture):
+        import json
+
+        await client.execute(_open_pr_decision(draft=True))
+        req = next(
+            r
+            for r in capture.requests
+            if r.method == "POST" and r.url.path.endswith("/pulls")
+        )
+        payload = json.loads(req.content)
+        assert payload["draft"] is True
+
+    async def test_missing_head_raises(self, client):
+        decision = Decision(
+            action="open_pr",
+            target={"repo": "a/b"},
+            payload={"title": "t", "base": "main"},
+            confidence=0.95,
+        )
+        with pytest.raises(ValueError, match="payload.head"):
+            await client.execute(decision)
+
+    async def test_missing_title_raises(self, client):
+        decision = Decision(
+            action="open_pr",
+            target={"repo": "a/b"},
+            payload={"head": "h", "base": "main"},
+            confidence=0.95,
+        )
+        with pytest.raises(ValueError, match="payload.title"):
+            await client.execute(decision)
 
 
 # ---------------------------------------------------------------------------

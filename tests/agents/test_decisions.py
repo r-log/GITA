@@ -114,6 +114,15 @@ class TestThresholds:
         with pytest.raises(KeyError):
             get_threshold("create_issue", {"comment": 0.3})
 
+    def test_code_actions_default_to_higher_threshold(self):
+        """Week 8: ``create_branch`` / ``update_file`` / ``open_pr`` sit
+        above the comment/issue gate because generated code has a larger
+        blast radius than generated prose."""
+        for action in ("create_branch", "update_file", "open_pr"):
+            assert get_threshold(action) == 0.9, action
+        assert get_threshold("create_branch") > get_threshold("create_issue")
+        assert get_threshold("open_pr") > get_threshold("comment")
+
 
 # ---------------------------------------------------------------------------
 # Shadow mode: never executes, always logs

@@ -18,6 +18,7 @@ Architecture:
 """
 from __future__ import annotations
 
+import base64
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -180,6 +181,68 @@ class GithubClient:
                 )
             return await self._remove_label(
                 owner, repo, int(issue), str(label)
+            )
+
+        if action == "create_branch":
+            ref_name = decision.payload.get("ref")
+            base_sha = decision.payload.get("base_sha")
+            if not ref_name or not base_sha:
+                raise ValueError(
+                    "create_branch decision must have payload.ref and "
+                    "payload.base_sha; "
+                    f"got {decision.payload=}"
+                )
+            return await self._create_ref(
+                owner, repo, str(ref_name), str(base_sha)
+            )
+
+        if action == "update_file":
+            path = decision.payload.get("path")
+            content = decision.payload.get("content")
+            message = decision.payload.get("message")
+            branch = decision.payload.get("branch")
+            if (
+                not path
+                or content is None
+                or not message
+                or not branch
+            ):
+                raise ValueError(
+                    "update_file decision must have payload.path, "
+                    "payload.content, payload.message, payload.branch; "
+                    f"got {decision.payload=}"
+                )
+            sha = decision.payload.get("sha")
+            return await self._create_or_update_file(
+                owner,
+                repo,
+                str(path),
+                str(message),
+                str(content),
+                str(branch),
+                sha=str(sha) if sha is not None else None,
+            )
+
+        if action == "open_pr":
+            title = decision.payload.get("title")
+            body = decision.payload.get("body") or ""
+            head = decision.payload.get("head")
+            base = decision.payload.get("base")
+            if not title or not head or not base:
+                raise ValueError(
+                    "open_pr decision must have payload.title, "
+                    "payload.head, payload.base; "
+                    f"got {decision.payload=}"
+                )
+            draft = bool(decision.payload.get("draft", False))
+            return await self._create_pull(
+                owner,
+                repo,
+                str(title),
+                str(body),
+                str(head),
+                str(base),
+                draft=draft,
             )
 
         raise NotImplementedError(
@@ -450,6 +513,158 @@ class GithubClient:
         }
 
     # -----------------------------------------------------------------
+    # Contents API write helpers
+    #
+    # Private — dispatched by ``execute()`` in Week 8 Day 2 when the
+    # corresponding action types (``create_branch``, ``update_file``,
+    # ``open_pr``) land in the Decision framework.
+    # -----------------------------------------------------------------
+    async def _create_ref(
+        self,
+        owner: str,
+        repo: str,
+        ref_name: str,
+        sha: str,
+    ) -> dict[str, Any]:
+        """Create a git ref (typically a branch).
+
+        ``ref_name`` is the full ref path (e.g. ``"refs/heads/feature"``).
+        Returns the branch ref GitHub actually stored + the source SHA
+        so callers can log/audit the exact branch point.
+        """
+        token = await self._installation_token_for_repo(owner, repo)
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/git/refs"
+        response = await self.http.post(
+            url,
+            headers=self._repo_auth_headers(token),
+            json={"ref": ref_name, "sha": sha},
+        )
+        response.raise_for_status()
+        data = response.json()
+        logger.info(
+            "github_ref_created owner=%s repo=%s ref=%s sha=%s",
+            owner,
+            repo,
+            ref_name,
+            sha,
+        )
+        return {
+            "kind": "create_branch",
+            "ref": data.get("ref"),
+            "sha": data.get("object", {}).get("sha"),
+            "url": data.get("url"),
+            "repo": f"{owner}/{repo}",
+        }
+
+    async def _create_or_update_file(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        message: str,
+        content: str,
+        branch: str,
+        sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a file via the Contents API.
+
+        ``content`` is the raw UTF-8 string; GitHub expects base64, so
+        we encode here. When ``sha`` is supplied this is an update
+        (GitHub requires the existing blob SHA to prevent lost-update
+        races); when omitted it's a create.
+        """
+        token = await self._installation_token_for_repo(owner, repo)
+        encoded_path = quote(path, safe="/")
+        url = (
+            f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{encoded_path}"
+        )
+        payload: dict[str, Any] = {
+            "message": message,
+            "content": base64.b64encode(content.encode("utf-8")).decode(
+                "ascii"
+            ),
+            "branch": branch,
+        }
+        if sha is not None:
+            payload["sha"] = sha
+        response = await self.http.put(
+            url,
+            headers=self._repo_auth_headers(token),
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        content_data = data.get("content", {}) or {}
+        commit_data = data.get("commit", {}) or {}
+        logger.info(
+            "github_file_written owner=%s repo=%s path=%s branch=%s "
+            "mode=%s commit=%s",
+            owner,
+            repo,
+            path,
+            branch,
+            "update" if sha is not None else "create",
+            commit_data.get("sha"),
+        )
+        return {
+            "kind": "update_file" if sha is not None else "create_file",
+            "path": content_data.get("path", path),
+            "content_sha": content_data.get("sha"),
+            "commit_sha": commit_data.get("sha"),
+            "html_url": content_data.get("html_url"),
+            "branch": branch,
+            "repo": f"{owner}/{repo}",
+        }
+
+    async def _create_pull(
+        self,
+        owner: str,
+        repo: str,
+        title: str,
+        body: str,
+        head: str,
+        base: str,
+        draft: bool = False,
+    ) -> dict[str, Any]:
+        """Open a pull request from ``head`` into ``base``."""
+        token = await self._installation_token_for_repo(owner, repo)
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls"
+        payload: dict[str, Any] = {
+            "title": title,
+            "body": body,
+            "head": head,
+            "base": base,
+        }
+        if draft:
+            payload["draft"] = True
+        response = await self.http.post(
+            url,
+            headers=self._repo_auth_headers(token),
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        logger.info(
+            "github_pr_opened owner=%s repo=%s pr=%s head=%s base=%s "
+            "draft=%s",
+            owner,
+            repo,
+            data.get("number"),
+            head,
+            base,
+            draft,
+        )
+        return {
+            "kind": "open_pr",
+            "number": data.get("number"),
+            "html_url": data.get("html_url"),
+            "head": head,
+            "base": base,
+            "state": data.get("state"),
+            "repo": f"{owner}/{repo}",
+        }
+
+    # -----------------------------------------------------------------
     # PR reading (not part of ActionClient — called directly by agents)
     # -----------------------------------------------------------------
     async def get_pr(
@@ -522,6 +737,86 @@ class GithubClient:
         )
         return all_files
 
+    # -----------------------------------------------------------------
+    # Contents API read methods (called directly by agents during recipe
+    # execution — not part of the ActionClient write path)
+    # -----------------------------------------------------------------
+    async def get_ref(
+        self, owner: str, repo: str, ref: str
+    ) -> "RefInfo":
+        """Fetch a git ref (branch or tag).
+
+        ``ref`` is the short ref (e.g. ``"heads/main"``), NOT the fully
+        qualified ``"refs/heads/main"`` — this matches GitHub's
+        ``GET /git/ref/{ref}`` convention.
+        """
+        token = await self._installation_token_for_repo(owner, repo)
+        encoded_ref = quote(ref, safe="/")
+        url = (
+            f"{_GITHUB_API}/repos/{owner}/{repo}/git/ref/{encoded_ref}"
+        )
+        response = await self.http.get(
+            url,
+            headers=self._repo_auth_headers(token),
+        )
+        response.raise_for_status()
+        data = response.json()
+        return RefInfo(
+            ref=data.get("ref", ""),
+            sha=data.get("object", {}).get("sha", ""),
+            url=data.get("url", ""),
+        )
+
+    async def get_contents(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        *,
+        ref: str | None = None,
+    ) -> "FileContents":
+        """Fetch a file's contents from the repo.
+
+        Returns a ``FileContents`` with base64-decoded UTF-8 content and
+        the blob SHA needed for update-file calls. Only single-file
+        reads are supported here — directory reads return a JSON array
+        and raise ``ValueError``. Callers always ask for a specific
+        file path in the test-generation flow.
+        """
+        token = await self._installation_token_for_repo(owner, repo)
+        encoded_path = quote(path, safe="/")
+        url = (
+            f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{encoded_path}"
+        )
+        if ref is not None:
+            url += f"?ref={quote(ref, safe='')}"
+        response = await self.http.get(
+            url,
+            headers=self._repo_auth_headers(token),
+        )
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, list):
+            raise ValueError(
+                f"get_contents(path={path!r}) returned a directory "
+                "listing; pass a file path, not a directory"
+            )
+        encoding = data.get("encoding", "base64")
+        raw_content = data.get("content", "") or ""
+        if encoding == "base64":
+            decoded = base64.b64decode(
+                raw_content.replace("\n", "")
+            ).decode("utf-8")
+        else:
+            decoded = raw_content
+        return FileContents(
+            path=data.get("path", path),
+            content=decoded,
+            sha=data.get("sha", ""),
+            encoding=encoding,
+            size=int(data.get("size", 0)),
+        )
+
 
 # ---------------------------------------------------------------------------
 # PR data types (outside the class so they're importable without a client)
@@ -542,3 +837,28 @@ class PRInfo:
     additions: int
     deletions: int
     html_url: str
+
+
+@dataclass
+class RefInfo:
+    """Typed representation of a git ref (branch or tag)."""
+
+    ref: str  # e.g. "refs/heads/main"
+    sha: str  # commit SHA the ref points at
+    url: str  # GitHub API URL for the ref
+
+
+@dataclass
+class FileContents:
+    """Typed representation of a file fetched from a repo.
+
+    ``content`` is already decoded from base64 into a UTF-8 string.
+    ``sha`` is the blob SHA — required when calling
+    ``_create_or_update_file`` with ``sha=`` to update this file.
+    """
+
+    path: str
+    content: str
+    sha: str
+    encoding: str
+    size: int

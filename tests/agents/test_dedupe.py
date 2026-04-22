@@ -270,6 +270,183 @@ class TestRemoveLabelSignature:
         assert compute_signature(a) != compute_signature(b)
 
 
+class TestCreateBranchSignature:
+    def test_same_ref_and_sha_same_signature(self):
+        a = _decision(
+            "create_branch",
+            issue=None,
+            payload={"ref": "refs/heads/gita/tests/foo", "base_sha": "abc123"},
+        )
+        b = _decision(
+            "create_branch",
+            issue=None,
+            payload={"ref": "refs/heads/gita/tests/foo", "base_sha": "abc123"},
+        )
+        assert compute_signature(a) == compute_signature(b)
+
+    def test_different_ref_different_signature(self):
+        a = _decision(
+            "create_branch",
+            issue=None,
+            payload={"ref": "refs/heads/one", "base_sha": "abc123"},
+        )
+        b = _decision(
+            "create_branch",
+            issue=None,
+            payload={"ref": "refs/heads/two", "base_sha": "abc123"},
+        )
+        assert compute_signature(a) != compute_signature(b)
+
+    def test_different_base_sha_different_signature(self):
+        """Branching the same name from a different source SHA is a
+        genuinely different intent — different tree, different tests."""
+        a = _decision(
+            "create_branch",
+            issue=None,
+            payload={"ref": "refs/heads/foo", "base_sha": "abc123"},
+        )
+        b = _decision(
+            "create_branch",
+            issue=None,
+            payload={"ref": "refs/heads/foo", "base_sha": "def456"},
+        )
+        assert compute_signature(a) != compute_signature(b)
+
+
+class TestUpdateFileSignature:
+    def test_same_branch_path_content_same_signature(self):
+        a = _decision(
+            "update_file",
+            issue=None,
+            payload={
+                "branch": "gita/tests/foo",
+                "path": "tests/test_foo.py",
+                "content": "def test_ok(): assert True\n",
+            },
+        )
+        b = _decision(
+            "update_file",
+            issue=None,
+            payload={
+                "branch": "gita/tests/foo",
+                "path": "tests/test_foo.py",
+                "content": "def test_ok(): assert True\n",
+            },
+        )
+        assert compute_signature(a) == compute_signature(b)
+
+    def test_different_content_different_signature(self):
+        a = _decision(
+            "update_file",
+            issue=None,
+            payload={
+                "branch": "b",
+                "path": "p.py",
+                "content": "one\n",
+            },
+        )
+        b = _decision(
+            "update_file",
+            issue=None,
+            payload={
+                "branch": "b",
+                "path": "p.py",
+                "content": "two\n",
+            },
+        )
+        assert compute_signature(a) != compute_signature(b)
+
+    def test_different_path_different_signature(self):
+        a = _decision(
+            "update_file",
+            issue=None,
+            payload={"branch": "b", "path": "a.py", "content": "x"},
+        )
+        b = _decision(
+            "update_file",
+            issue=None,
+            payload={"branch": "b", "path": "z.py", "content": "x"},
+        )
+        assert compute_signature(a) != compute_signature(b)
+
+    def test_message_does_not_affect_signature(self):
+        """Commit message is rendered text — not identity. Changing the
+        commit message between runs must not break dedupe."""
+        a = _decision(
+            "update_file",
+            issue=None,
+            payload={
+                "branch": "b",
+                "path": "p.py",
+                "content": "x",
+                "message": "one message",
+            },
+        )
+        b = _decision(
+            "update_file",
+            issue=None,
+            payload={
+                "branch": "b",
+                "path": "p.py",
+                "content": "x",
+                "message": "a totally different message",
+            },
+        )
+        assert compute_signature(a) == compute_signature(b)
+
+
+class TestOpenPrSignature:
+    def test_same_head_and_base_same_signature(self):
+        a = _decision(
+            "open_pr",
+            issue=None,
+            payload={"head": "gita/tests/foo", "base": "main"},
+        )
+        b = _decision(
+            "open_pr",
+            issue=None,
+            payload={"head": "gita/tests/foo", "base": "main"},
+        )
+        assert compute_signature(a) == compute_signature(b)
+
+    def test_different_head_different_signature(self):
+        a = _decision(
+            "open_pr",
+            issue=None,
+            payload={"head": "a", "base": "main"},
+        )
+        b = _decision(
+            "open_pr",
+            issue=None,
+            payload={"head": "b", "base": "main"},
+        )
+        assert compute_signature(a) != compute_signature(b)
+
+    def test_title_does_not_affect_signature(self):
+        """GitHub itself rejects a second PR with the same head→base
+        while the first is open, so title drift must not produce a new
+        signature that tries to open a duplicate."""
+        a = _decision(
+            "open_pr",
+            issue=None,
+            payload={
+                "head": "h",
+                "base": "main",
+                "title": "First title",
+            },
+        )
+        b = _decision(
+            "open_pr",
+            issue=None,
+            payload={
+                "head": "h",
+                "base": "main",
+                "title": "Completely different title",
+            },
+        )
+        assert compute_signature(a) == compute_signature(b)
+
+
 class TestSignaturesDifferAcrossActions:
     def test_same_repo_different_action_different_signature(self):
         """A close_issue and a comment on the same issue must not collide."""

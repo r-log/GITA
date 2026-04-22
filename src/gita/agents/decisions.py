@@ -72,6 +72,12 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     "edit_issue": 0.75,
     "create_issue": 0.7,
     "close_issue": 0.8,
+    # Code-writing actions (Week 8): higher bar than any comment path.
+    # Bad tests merged into a real repo are harder to unwind than a
+    # misphrased issue, so the gate sits at 0.90 by default.
+    "create_branch": 0.9,
+    "update_file": 0.9,
+    "open_pr": 0.9,
 }
 
 # Actions that produce comments (always allowed in WriteMode.COMMENT).
@@ -149,6 +155,11 @@ def get_threshold(
     return table[action]
 
 
+# Cap a proposed-file preview in the downgrade body so an auto-generated
+# 500-line test doesn't wall-of-text the fallback issue.
+_PREVIEW_LINES = 40
+
+
 def _render_downgrade_body(original: Decision, reason: str) -> str:
     """Build the body of a downgraded-to-comment message."""
     lines = [
@@ -162,8 +173,73 @@ def _render_downgrade_body(original: Decision, reason: str) -> str:
         for ev in original.evidence:
             lines.append(f"- {ev}")
         lines.append("")
+
+    preview_block = _render_action_preview(original)
+    if preview_block:
+        lines.extend(preview_block)
+        lines.append("")
+
     lines.append(f"_Confidence: {original.confidence:.2f}_")
     return "\n".join(lines)
+
+
+def _render_action_preview(original: Decision) -> list[str] | None:
+    """Action-specific preview block for downgraded comments.
+
+    Keeps the bridge's evidence list flat (simple one-line bullets) by
+    rendering bulkier payload excerpts — the proposed file contents,
+    branch/base pair, PR head/base — outside the bullet list. Returns
+    ``None`` when the action doesn't define a preview.
+    """
+    action = original.action
+    payload = original.payload
+
+    if action == "update_file":
+        path = payload.get("path")
+        content = payload.get("content")
+        if path is None or content is None:
+            return None
+        preview = _preview_content(str(content))
+        return [
+            f"**Proposed content of `{path}`:**",
+            "",
+            "```python",
+            preview,
+            "```",
+        ]
+
+    if action == "create_branch":
+        ref = payload.get("ref")
+        base_sha = payload.get("base_sha")
+        if not ref or not base_sha:
+            return None
+        return [
+            f"**Proposed branch:** `{ref}` from `{str(base_sha)[:7]}`",
+        ]
+
+    if action == "open_pr":
+        title = payload.get("title")
+        head = payload.get("head")
+        base = payload.get("base")
+        if not title or not head or not base:
+            return None
+        return [
+            f"**Proposed PR:** `{title}`",
+            f"- head: `{head}`",
+            f"- base: `{base}`",
+        ]
+
+    return None
+
+
+def _preview_content(content: str) -> str:
+    """Cap a long file preview to keep the downgrade body readable."""
+    lines = content.splitlines()
+    if len(lines) <= _PREVIEW_LINES:
+        return content
+    head = "\n".join(lines[:_PREVIEW_LINES])
+    remaining = len(lines) - _PREVIEW_LINES
+    return f"{head}\n# ... ({remaining} more lines)"
 
 
 def _downgrade_to_comment(original: Decision, reason: str) -> Decision:

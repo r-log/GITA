@@ -91,6 +91,32 @@ def compute_signature(decision: Decision) -> str:
         issue = decision.target.get("issue")
         label = str(decision.payload.get("label", ""))
         material = f"{repo}\nremove_label\n{issue}\n{label}"
+    elif action == "create_branch":
+        # Identity = (ref name, base SHA). Retrying the same branch from the
+        # same source commit is a no-op; branching the same name from a
+        # different SHA is a *different* intent (fresh content).
+        ref_name = str(decision.payload.get("ref", ""))
+        base_sha = str(decision.payload.get("base_sha", ""))
+        material = f"{repo}\ncreate_branch\n{ref_name}\n{base_sha}"
+    elif action == "update_file":
+        # Identity = (branch, path, content-hash). Writing the same bytes to
+        # the same path on the same branch dedupes even across restarts; a
+        # different path or branch or content is a new decision.
+        branch = str(decision.payload.get("branch", ""))
+        path = str(decision.payload.get("path", ""))
+        raw_content = decision.payload.get("content", "") or ""
+        content_hash = hashlib.sha256(
+            str(raw_content).encode("utf-8")
+        ).hexdigest()
+        material = (
+            f"{repo}\nupdate_file\n{branch}\n{path}\n{content_hash}"
+        )
+    elif action == "open_pr":
+        # Identity = (head, base) branch pair. GitHub itself rejects opening
+        # two PRs with the same head→base pair, so we dedupe on that too.
+        head = str(decision.payload.get("head", ""))
+        base = str(decision.payload.get("base", ""))
+        material = f"{repo}\nopen_pr\n{head}\n{base}"
     else:
         raise ValueError(
             f"no signature shape configured for action {action!r}"

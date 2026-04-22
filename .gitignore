@@ -46,13 +46,8 @@ claude.md
 plans/
 PROJECT_SUMMARY.md
 scripts/
-NOTES.md
-NOTES-week2.md
-NOTES-week3.md
-NOTES-week4.md
-NOTES-week5.md
+notes/
 BOTTLENECKS.md
-NOTES-week6.md
 # Bake-off results
 tests/bakeoff/results/
 
