@@ -6,7 +6,12 @@ from __future__ import annotations
 
 import math
 
-from gita.indexer.embeddings import EMBEDDING_DIMS, FakeEmbeddingClient
+from gita.indexer.embeddings import (
+    EMBEDDING_DIMS,
+    FakeEmbeddingClient,
+    OpenAIEmbeddingClient,
+    make_embedding_client,
+)
 
 
 class TestFakeEmbeddingClient:
@@ -55,3 +60,26 @@ class TestFakeEmbeddingClient:
         client = FakeEmbeddingClient(dims=64)
         vectors = await client.embed(["test"])
         assert len(vectors[0]) == 64
+
+
+class TestMakeEmbeddingClient:
+    def test_returns_none_when_no_api_key(self, monkeypatch):
+        from gita import config as config_module
+
+        monkeypatch.setattr(config_module.settings, "openai_api_key", None)
+        assert make_embedding_client() is None
+
+    def test_returns_none_when_api_key_is_empty_string(self, monkeypatch):
+        from gita import config as config_module
+
+        monkeypatch.setattr(config_module.settings, "openai_api_key", "")
+        assert make_embedding_client() is None
+
+    def test_returns_openai_client_when_key_set(self, monkeypatch):
+        from gita import config as config_module
+
+        monkeypatch.setattr(
+            config_module.settings, "openai_api_key", "sk-test"
+        )
+        client = make_embedding_client()
+        assert isinstance(client, OpenAIEmbeddingClient)

@@ -196,3 +196,142 @@ class TestConceptViewSymbolBoost:
 
         ranks = [m.rank for m in result.matches]
         assert ranks == sorted(ranks, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Hybrid mode: FTS + vector similarity
+# ---------------------------------------------------------------------------
+import pytest_asyncio  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+from gita.indexer.embeddings import FakeEmbeddingClient  # noqa: E402
+from gita.indexer.ingest import index_repository as _index_repository  # noqa: E402
+
+
+_SYNTH_REPO_PATH = (
+    _Path(__file__).parent.parent / "fixtures" / "synthetic_py"
+).resolve()
+
+
+@pytest_asyncio.fixture
+async def indexed_synth_py_with_embeddings(
+    db_session: AsyncSession,
+):
+    """Index synthetic_py with FakeEmbeddingClient so the embedding column
+    is populated. Mirrors ``indexed_synth_py`` but enables the hybrid path.
+    """
+    await _index_repository(
+        db_session,
+        "synthetic_py",
+        _SYNTH_REPO_PATH,
+        embedding_client=FakeEmbeddingClient(),
+    )
+    await db_session.commit()
+    yield db_session, "synthetic_py"
+
+
+class TestConceptViewMode:
+    async def test_defaults_to_fts_mode(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        session, repo_name = indexed_synth_py
+        result = await concept_view(session, repo_name, "email")
+        assert result.mode == "fts"
+
+    async def test_hybrid_without_client_still_fts(
+        self,
+        indexed_synth_py_with_embeddings: tuple[AsyncSession, str],
+    ):
+        """Even when embeddings exist, omitting the client keeps FTS mode."""
+        session, repo_name = indexed_synth_py_with_embeddings
+        result = await concept_view(session, repo_name, "email")
+        assert result.mode == "fts"
+
+    async def test_hybrid_mode_activates_with_client_and_embeddings(
+        self,
+        indexed_synth_py_with_embeddings: tuple[AsyncSession, str],
+    ):
+        session, repo_name = indexed_synth_py_with_embeddings
+        result = await concept_view(
+            session,
+            repo_name,
+            "email",
+            embedding_client=FakeEmbeddingClient(),
+        )
+        assert result.mode == "hybrid"
+
+    async def test_hybrid_falls_back_when_no_embeddings_populated(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        """Client provided but the repo has no embeddings → FTS mode."""
+        session, repo_name = indexed_synth_py
+        result = await concept_view(
+            session,
+            repo_name,
+            "email",
+            embedding_client=FakeEmbeddingClient(),
+        )
+        assert result.mode == "fts"
+
+
+class TestConceptViewHybridResults:
+    async def test_hybrid_still_finds_keyword_matches(
+        self,
+        indexed_synth_py_with_embeddings: tuple[AsyncSession, str],
+    ):
+        """Hybrid mode should not lose FTS hits."""
+        session, repo_name = indexed_synth_py_with_embeddings
+        result = await concept_view(
+            session,
+            repo_name,
+            "email",
+            embedding_client=FakeEmbeddingClient(),
+        )
+        paths = [m.file_path for m in result.matches]
+        assert any("utils.py" in p for p in paths)
+
+    async def test_hybrid_ranks_descending(
+        self,
+        indexed_synth_py_with_embeddings: tuple[AsyncSession, str],
+    ):
+        session, repo_name = indexed_synth_py_with_embeddings
+        result = await concept_view(
+            session,
+            repo_name,
+            "User",
+            embedding_client=FakeEmbeddingClient(),
+        )
+        ranks = [m.rank for m in result.matches]
+        assert ranks == sorted(ranks, reverse=True)
+
+    async def test_hybrid_nonexistent_query_returns_empty(
+        self,
+        indexed_synth_py_with_embeddings: tuple[AsyncSession, str],
+    ):
+        """Even in hybrid mode, a truly unrelated query should return
+        nothing. FakeEmbeddingClient produces hash-based vectors so the
+        distance to any file is effectively random — the strict
+        ``_SEMANTIC_DISTANCE_MAX`` guard filters it out."""
+        session, repo_name = indexed_synth_py_with_embeddings
+        result = await concept_view(
+            session,
+            repo_name,
+            "xyznonexistent",
+            embedding_client=FakeEmbeddingClient(),
+        )
+        assert result.matches == []
+        assert result.total_matches == 0
+
+    async def test_query_embedded_once_per_call(
+        self,
+        indexed_synth_py_with_embeddings: tuple[AsyncSession, str],
+    ):
+        """The query text is embedded exactly once regardless of how
+        many files are being compared against."""
+        session, repo_name = indexed_synth_py_with_embeddings
+        client = FakeEmbeddingClient()
+        await concept_view(
+            session, repo_name, "user model", embedding_client=client
+        )
+        assert client.call_count == 1
+        assert client.total_texts == 1

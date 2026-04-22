@@ -32,6 +32,7 @@ from gita.config import settings
 from gita.db.session import SessionLocal
 from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
+from gita.indexer.embeddings import make_embedding_client
 from gita.indexer.ingest import index_repository
 from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError, resolve_repo
@@ -429,11 +430,20 @@ async def run_reindex_job(
         }
 
     # --- Re-index ---
-    async with SessionLocal() as session:
-        result = await index_repository(
-            session, repo_name, root_path, github_full_name=repo_full_name
-        )
-        await session.commit()
+    embedding_client = make_embedding_client()
+    try:
+        async with SessionLocal() as session:
+            result = await index_repository(
+                session,
+                repo_name,
+                root_path,
+                github_full_name=repo_full_name,
+                embedding_client=embedding_client,
+            )
+            await session.commit()
+    finally:
+        if embedding_client is not None:
+            await embedding_client.close()
 
     logger.info(
         "reindex_complete repo=%s mode=%s files=%d after_sha=%s",
@@ -450,5 +460,6 @@ async def run_reindex_job(
         "mode": result.mode,
         "files_indexed": result.files_indexed,
         "files_deleted": result.files_deleted,
+        "files_embedded": result.files_embedded,
         "edges_total": result.edges_total,
     }

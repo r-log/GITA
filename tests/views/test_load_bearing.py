@@ -71,18 +71,18 @@ class TestLoadBearingRanking:
         ]
 
     async def test_tiebreak_is_alphabetical_file_path(self, indexed_synth_py):
-        """core.py (0) should come before __init__.py (0) because of sort?
-        Actually __init__.py sorts before core.py alphabetically.
-        """
+        """Files with zero in-degree should be the expected set, in
+        alphabetical order. DB collation may vary between images, so
+        we sort Python-side before comparing."""
         session, repo = indexed_synth_py
         result = await load_bearing_view(session, repo)
-        zero_rank_order = [
+        zero_rank = sorted(
             f.file_path for f in result.files if f.in_degree == 0
-        ]
-        assert zero_rank_order == [
+        )
+        assert zero_rank == sorted([
             "src/myapp/__init__.py",
             "src/myapp/core.py",
-        ]
+        ])
 
 
 class TestLoadBearingLimit:

@@ -1,33 +1,41 @@
 """``concept_view`` — natural-language search over indexed code.
 
 Given a query like "authentication" or "database connection handling",
-returns the most relevant files ranked by Postgres full-text search, with
+returns the most relevant files ranked by a combination of Postgres
+full-text search and (optionally) pgvector semantic similarity, with
 highlighted snippets and the symbols defined in each matching file.
 
-**v1 is keyword-based** using Postgres ``tsvector`` / ``tsquery`` with the
-``simple`` text config (no English stemming — code identifiers like
-``get_user_by_name`` match ``user`` literally). The interface is designed
-so embeddings can replace the backend in a future week without changing
-the API contract.
+**Two modes:**
 
-**How ranking works:**
-1. ``plainto_tsquery('simple', query)`` converts the user's input into
-   an AND query (all words must match).
-2. ``ts_rank_cd`` scores each file by how densely the terms appear.
-3. Symbol-name matching runs Python-side: symbols whose name contains
-   any query term get boosted to the top of the file's symbol list.
-4. ``ts_headline`` generates a snippet with matching terms marked by
-   ``**...**`` for CLI display.
+1. **FTS-only** (default) — Postgres ``tsvector`` / ``tsquery`` with the
+   ``simple`` text config (no English stemming — code identifiers like
+   ``get_user_by_name`` match ``user`` literally). Used when no
+   ``embedding_client`` is passed, when the repo has no file embeddings
+   populated, or when the query can't be embedded.
+
+2. **Hybrid FTS + semantic** — when an embedding client is supplied
+   AND at least one file in the repo has a populated ``embedding``,
+   the query is embedded and the two result sets are merged. A file's
+   combined score is a weighted sum of its (normalized) FTS rank and
+   its cosine similarity to the query embedding, plus the existing
+   symbol-match boost.
+
+Semantic-only hits use ``ts_headline`` for display; when the query
+terms don't appear in the file, ``ts_headline`` falls back to the
+first fragment of the content without highlights — acceptable for CLI
+output and explicit that the match is vibes-based.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
-from sqlalchemy import func, literal_column, select, text
+from sqlalchemy import func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.db.models import CodeIndex
+from gita.indexer.embeddings import EmbeddingClient
 from gita.views._common import SymbolBrief, build_symbol_summary, resolve_repo
 
 logger = logging.getLogger(__name__)
@@ -40,6 +48,26 @@ _HEADLINE_OPTS = "StartSel=**, StopSel=**, MaxFragments=3, MaxWords=30, MinWords
 # over files that merely mention it in a comment.
 _SYMBOL_BOOST = 0.3   # per matching symbol
 _MAX_SYMBOL_BOOST = 1.0  # cap so one file with 10 matching symbols doesn't dominate
+
+# Hybrid scoring weights. FTS tends to give confident high scores for
+# keyword matches but misses paraphrases; vector similarity catches
+# paraphrases but can drift to loosely related files. Equal weighting
+# is a reasonable starting point — tune once we have usage data.
+_W_FTS = 0.5
+_W_VECTOR = 0.5
+
+# Cosine-distance ceiling for a semantic hit. pgvector's ``<=>`` returns
+# distance in [0, 2]; lower is more similar. Unit-norm embeddings from
+# OpenAI + actually-relevant code typically land under 0.5. Keeping this
+# strict prevents nonsense queries (e.g. "xyznonexistent") from pulling
+# in random files just because they happened to be closest in vector
+# space.
+_SEMANTIC_DISTANCE_MAX = 0.5
+
+# How many candidates to pull from each side before merging + truncating
+# to ``limit``. 3x gives some overlap headroom when the two rankings
+# diverge without inflating the result set.
+_CANDIDATE_MULTIPLIER = 3
 
 
 @dataclass
@@ -63,6 +91,7 @@ class ConceptResult:
     repo_name: str
     matches: list[ConceptMatch]
     total_matches: int
+    mode: str = "fts"  # "fts" | "hybrid"
 
 
 def _symbols_matching_query(
@@ -79,49 +108,49 @@ def _symbols_matching_query(
     return matching
 
 
-async def concept_view(
+async def _repo_has_embeddings(
+    session: AsyncSession, repo_id: Any
+) -> bool:
+    """Fast existence check — is semantic search usable for this repo?"""
+    stmt = (
+        select(func.count())
+        .select_from(CodeIndex)
+        .where(CodeIndex.repo_id == repo_id)
+        .where(CodeIndex.embedding.is_not(None))
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one() > 0
+
+
+async def _fts_candidates(
     session: AsyncSession,
-    repo_name: str,
+    repo_id: Any,
     query: str,
-    *,
-    limit: int = _MAX_RESULTS,
-) -> ConceptResult:
-    """Search indexed code by natural-language query.
+    candidate_limit: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Run the FTS half of the search.
 
-    Uses Postgres full-text search (``plainto_tsquery``) against the
-    GIN-indexed ``code_index.content`` column. Returns ranked results
-    with highlighted snippets and per-file symbol lists.
+    Returns ``(rows, total_match_count)`` where ``rows`` is a list of
+    dicts with ``file_path``, ``language``, ``line_count``, ``structure``,
+    ``fts_rank``, and ``headline`` keys.
     """
-    repo = await resolve_repo(session, repo_name)
-
-    # Normalize query terms for Python-side symbol matching.
-    query_terms = [t.lower() for t in query.split() if len(t) >= 2]
-
-    # Build the tsquery from the user's input.
     tsquery = func.plainto_tsquery(literal_column("'simple'"), query)
     tsvec = func.to_tsvector(
         literal_column("'simple'"),
         func.coalesce(CodeIndex.content, ""),
     )
 
-    # Count total matches first.
     count_stmt = (
         select(func.count())
         .select_from(CodeIndex)
-        .where(CodeIndex.repo_id == repo.id)
+        .where(CodeIndex.repo_id == repo_id)
         .where(tsvec.op("@@")(tsquery))
     )
-    total_matches = (await session.execute(count_stmt)).scalar_one()
+    total = (await session.execute(count_stmt)).scalar_one()
 
-    if total_matches == 0:
-        return ConceptResult(
-            query=query,
-            repo_name=repo_name,
-            matches=[],
-            total_matches=0,
-        )
+    if total == 0:
+        return [], 0
 
-    # Fetch ranked results with headlines.
     rank = func.ts_rank_cd(tsvec, tsquery)
     headline = func.ts_headline(
         literal_column("'simple'"),
@@ -130,53 +159,206 @@ async def concept_view(
         literal_column(f"'{_HEADLINE_OPTS}'"),
     )
 
-    results_stmt = (
+    stmt = (
         select(
             CodeIndex.file_path,
             CodeIndex.language,
             CodeIndex.line_count,
             CodeIndex.structure,
-            rank.label("rank"),
+            rank.label("fts_rank"),
             headline.label("headline"),
         )
-        .where(CodeIndex.repo_id == repo.id)
+        .where(CodeIndex.repo_id == repo_id)
         .where(tsvec.op("@@")(tsquery))
         .order_by(rank.desc())
-        .limit(limit)
+        .limit(candidate_limit)
     )
-    rows = (await session.execute(results_stmt)).all()
+    rows = [dict(r._mapping) for r in (await session.execute(stmt)).all()]
+    return rows, total
+
+
+async def _semantic_candidates(
+    session: AsyncSession,
+    repo_id: Any,
+    query: str,
+    query_vec: list[float],
+    candidate_limit: int,
+) -> list[dict[str, Any]]:
+    """Run the vector-similarity half of the search.
+
+    Returns rows with ``file_path``, ``language``, ``line_count``,
+    ``structure``, ``distance``, and ``headline`` keys. Rows whose
+    cosine distance exceeds ``_SEMANTIC_DISTANCE_MAX`` are dropped so
+    junk queries don't surface unrelated files.
+    """
+    tsquery = func.plainto_tsquery(literal_column("'simple'"), query)
+    headline = func.ts_headline(
+        literal_column("'simple'"),
+        func.coalesce(CodeIndex.content, ""),
+        tsquery,
+        literal_column(f"'{_HEADLINE_OPTS}'"),
+    )
+    distance = CodeIndex.embedding.cosine_distance(query_vec).label("distance")
+
+    stmt = (
+        select(
+            CodeIndex.file_path,
+            CodeIndex.language,
+            CodeIndex.line_count,
+            CodeIndex.structure,
+            distance,
+            headline.label("headline"),
+        )
+        .where(CodeIndex.repo_id == repo_id)
+        .where(CodeIndex.embedding.is_not(None))
+        .order_by(distance)
+        .limit(candidate_limit)
+    )
+    rows = [dict(r._mapping) for r in (await session.execute(stmt)).all()]
+    return [r for r in rows if r["distance"] is not None and r["distance"] <= _SEMANTIC_DISTANCE_MAX]
+
+
+def _normalize_fts_ranks(rows: list[dict[str, Any]]) -> None:
+    """Rescale ``fts_rank`` in-place to the [0, 1] range.
+
+    ``ts_rank_cd`` has no natural upper bound — it depends on document
+    length and term density. We divide by the max in the candidate set
+    so the FTS and vector components contribute comparably to the
+    hybrid score.
+    """
+    if not rows:
+        return
+    max_rank = max(r["fts_rank"] for r in rows)
+    if max_rank <= 0:
+        return
+    for r in rows:
+        r["fts_rank_normalized"] = r["fts_rank"] / max_rank
+
+
+async def concept_view(
+    session: AsyncSession,
+    repo_name: str,
+    query: str,
+    *,
+    limit: int = _MAX_RESULTS,
+    embedding_client: EmbeddingClient | None = None,
+) -> ConceptResult:
+    """Search indexed code by natural-language query.
+
+    FTS-only when ``embedding_client`` is ``None`` or when the repo has
+    no embeddings populated; hybrid FTS + vector-similarity otherwise.
+    """
+    repo = await resolve_repo(session, repo_name)
+
+    # Normalize query terms for Python-side symbol matching.
+    query_terms = [t.lower() for t in query.split() if len(t) >= 2]
+
+    candidate_limit = max(limit * _CANDIDATE_MULTIPLIER, limit)
+
+    # --- FTS side (always runs) ---
+    fts_rows, fts_total = await _fts_candidates(
+        session, repo.id, query, candidate_limit
+    )
+    _normalize_fts_ranks(fts_rows)
+
+    # --- Semantic side (optional) ---
+    semantic_rows: list[dict[str, Any]] = []
+    use_hybrid = False
+    if embedding_client is not None:
+        try:
+            if await _repo_has_embeddings(session, repo.id):
+                query_vec = (await embedding_client.embed([query]))[0]
+                semantic_rows = await _semantic_candidates(
+                    session, repo.id, query, query_vec, candidate_limit
+                )
+                use_hybrid = True
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "semantic_search_failed query=%r error=%s falling_back_to_fts",
+                query,
+                exc,
+            )
+            semantic_rows = []
+            use_hybrid = False
+
+    # --- Merge + score ---
+    merged: dict[str, dict[str, Any]] = {}
+
+    for row in fts_rows:
+        merged[row["file_path"]] = {
+            **row,
+            "fts_rank_normalized": row.get("fts_rank_normalized", 0.0),
+            "vector_score": 0.0,
+            "vector_hit": False,
+        }
+
+    for row in semantic_rows:
+        # Cosine distance in [0, 2]; convert to similarity in [0, 1]:
+        # identical → 1.0, orthogonal → 0.5, opposite → 0.0.
+        similarity = max(0.0, 1.0 - row["distance"] / 2.0)
+        existing = merged.get(row["file_path"])
+        if existing is not None:
+            existing["vector_score"] = similarity
+            existing["vector_hit"] = True
+        else:
+            merged[row["file_path"]] = {
+                "file_path": row["file_path"],
+                "language": row["language"],
+                "line_count": row["line_count"],
+                "structure": row["structure"],
+                "fts_rank": 0.0,
+                "fts_rank_normalized": 0.0,
+                "vector_score": similarity,
+                "vector_hit": True,
+                "headline": row["headline"],
+            }
+
+    if not merged:
+        return ConceptResult(
+            query=query,
+            repo_name=repo_name,
+            matches=[],
+            total_matches=0,
+            mode="hybrid" if use_hybrid else "fts",
+        )
 
     matches: list[ConceptMatch] = []
-    for row in rows:
-        all_symbols = build_symbol_summary(row.structure or {})
+    for row in merged.values():
+        all_symbols = build_symbol_summary(row.get("structure") or {})
         matching_syms = _symbols_matching_query(all_symbols, query_terms)
 
-        # Boost rank when symbols match the query. A file that DEFINES
-        # a function named after the query term is more relevant than one
-        # that merely mentions it in a comment. The boost is additive so
-        # it can promote a lower-ranked FTS hit above a higher one.
-        fts_rank = float(row.rank)
-        symbol_boost = min(len(matching_syms) * _SYMBOL_BOOST, _MAX_SYMBOL_BOOST)
-        boosted_rank = fts_rank + symbol_boost
+        symbol_boost = min(
+            len(matching_syms) * _SYMBOL_BOOST, _MAX_SYMBOL_BOOST
+        )
+        if use_hybrid:
+            combined = (
+                _W_FTS * row["fts_rank_normalized"]
+                + _W_VECTOR * row["vector_score"]
+            )
+        else:
+            # FTS-only: preserve legacy behavior — use raw ts_rank_cd.
+            combined = row["fts_rank"]
+        final_rank = combined + symbol_boost
 
         matches.append(
             ConceptMatch(
-                file_path=row.file_path,
-                language=row.language,
-                rank=round(boosted_rank, 4),
-                headline=row.headline,
-                line_count=row.line_count,
+                file_path=row["file_path"],
+                language=row["language"],
+                rank=round(final_rank, 4),
+                headline=row["headline"] or "",
+                line_count=row["line_count"],
                 symbols=all_symbols,
                 matching_symbols=matching_syms,
             )
         )
 
-    # Re-sort after boosting — symbol matches may have promoted files.
     matches.sort(key=lambda m: m.rank, reverse=True)
+    matches = matches[:limit]
 
     return ConceptResult(
         query=query,
         repo_name=repo_name,
         matches=matches,
-        total_matches=total_matches,
+        total_matches=len(merged),
+        mode="hybrid" if use_hybrid else "fts",
     )

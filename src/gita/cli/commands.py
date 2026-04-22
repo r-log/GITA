@@ -49,6 +49,7 @@ from gita.db.models import CodeIndex, ImportEdge, Repo
 from gita.db.session import SessionLocal
 from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
+from gita.indexer.embeddings import make_embedding_client
 from gita.indexer.ingest import index_repository
 from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError
@@ -78,17 +79,23 @@ async def cmd_index(args: argparse.Namespace) -> int:
     force_full = getattr(args, "full", False)
     github_full_name = getattr(args, "github", None)
 
-    async with SessionLocal() as session:
-        t0 = time.time()
-        result = await index_repository(
-            session,
-            name,
-            root,
-            force_full=force_full,
-            github_full_name=github_full_name,
-        )
-        await session.commit()
-        elapsed = time.time() - t0
+    embedding_client = make_embedding_client()
+    try:
+        async with SessionLocal() as session:
+            t0 = time.time()
+            result = await index_repository(
+                session,
+                name,
+                root,
+                force_full=force_full,
+                github_full_name=github_full_name,
+                embedding_client=embedding_client,
+            )
+            await session.commit()
+            elapsed = time.time() - t0
+    finally:
+        if embedding_client is not None:
+            await embedding_client.close()
     print(fmt_ingest(name, root, elapsed, result))
     return 0
 
@@ -204,14 +211,23 @@ async def cmd_query_concept(args: argparse.Namespace) -> int:
     if not query.strip():
         print("error: query cannot be empty", file=sys.stderr)
         return 2
-    async with SessionLocal() as session:
-        try:
-            result = await concept_view(
-                session, args.repo, query, limit=args.limit
-            )
-        except RepoNotFoundError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
+    embedding_client = make_embedding_client()
+    try:
+        async with SessionLocal() as session:
+            try:
+                result = await concept_view(
+                    session,
+                    args.repo,
+                    query,
+                    limit=args.limit,
+                    embedding_client=embedding_client,
+                )
+            except RepoNotFoundError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+    finally:
+        if embedding_client is not None:
+            await embedding_client.close()
     print(fmt_concept_result(result))
     return 0
 

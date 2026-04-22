@@ -52,6 +52,10 @@ def fmt_ingest(name: str, root: Path, elapsed: float, result: IngestResult) -> s
         f"({result.edges_resolved} resolved, "
         f"{result.edges_total - result.edges_resolved} unresolved, "
         f"{resolved_pct:.0f}% rate)",
+    ])
+    if result.files_embedded:
+        lines.append(f"  embedded:  {result.files_embedded}")
+    lines.extend([
         f"  head:      {result.head_sha or '<not a git repo>'}",
         f"  elapsed:   {elapsed:.2f}s",
     ])

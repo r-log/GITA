@@ -23,6 +23,13 @@ EMBEDDING_DIMS = 1536
 # Max texts per OpenAI embedding batch call.
 _BATCH_SIZE = 2048
 
+# Per-file character cap for embedding input. OpenAI's
+# ``text-embedding-3-small`` accepts up to ~8191 tokens; we truncate by
+# character count as a cheap proxy so we don't ship multi-megabyte files
+# to the API. Leading content is almost always the most informative part
+# of a source file (imports, top-level docstring, module-level classes).
+EMBEDDING_INPUT_CHAR_LIMIT = 8000
+
 
 class EmbeddingClient(Protocol):
     """Async embedding client protocol."""
@@ -104,3 +111,34 @@ class FakeEmbeddingClient:
 
     async def close(self) -> None:
         pass
+
+
+def make_embedding_client() -> EmbeddingClient | None:
+    """Build the default production embedding client, or ``None``.
+
+    Returns an ``OpenAIEmbeddingClient`` when ``settings.openai_api_key`` is
+    set, otherwise ``None`` to signal that callers should skip embedding
+    computation. Ingest treats ``None`` as "leave the embedding column
+    NULL"; concept_view falls back to keyword-only FTS.
+
+    Imported lazily from ``gita.config`` so this module stays importable
+    from tests that patch settings.
+    """
+    from gita.config import settings
+
+    if not settings.openai_api_key:
+        return None
+    return OpenAIEmbeddingClient(api_key=settings.openai_api_key)
+
+
+def prepare_embedding_input(content: str | None) -> str:
+    """Truncate file content to ``EMBEDDING_INPUT_CHAR_LIMIT``.
+
+    Empty/None input returns an empty string — the caller is expected to
+    skip embedding in that case rather than send empty strings to the API.
+    """
+    if not content:
+        return ""
+    if len(content) <= EMBEDDING_INPUT_CHAR_LIMIT:
+        return content
+    return content[:EMBEDDING_INPUT_CHAR_LIMIT]

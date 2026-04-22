@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.db.models import CodeIndex, ImportEdge, Repo
 from gita.indexer.diff import FileChange, detect_changes, read_head_sha
+from gita.indexer.embeddings import EmbeddingClient, prepare_embedding_input
 from gita.indexer.imports import discover_package_roots, resolve_import
 from gita.indexer.parsers import parse_file
 from gita.indexer.walker import LANGUAGE_BY_EXT, _is_skipped, iter_files
@@ -39,6 +40,7 @@ class IngestResult:
     head_sha: str | None
     mode: str = "full"  # "full" | "incremental" | "noop"
     files_deleted: int = 0
+    files_embedded: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +115,48 @@ def _parse_and_build_row(
     return row, len(structure.functions), len(structure.classes)
 
 
+async def _attach_embeddings(
+    rows: list[CodeIndex],
+    client: EmbeddingClient | None,
+) -> int:
+    """Compute and assign ``embedding`` for each row with text content.
+
+    Returns the number of rows that got an embedding. No-ops when
+    ``client`` is None or when the row list is empty. Rows with empty
+    content are skipped (their embedding stays NULL).
+
+    All rows are embedded in a single ``client.embed`` call so the client
+    can batch internally and we pay one round-trip per ingest run.
+    """
+    if client is None or not rows:
+        return 0
+
+    indexed_rows: list[CodeIndex] = []
+    inputs: list[str] = []
+    for row in rows:
+        text = prepare_embedding_input(row.content)
+        if not text:
+            continue
+        indexed_rows.append(row)
+        inputs.append(text)
+
+    if not inputs:
+        return 0
+
+    vectors = await client.embed(inputs)
+    if len(vectors) != len(indexed_rows):
+        logger.warning(
+            "embedding_count_mismatch expected=%d got=%d",
+            len(indexed_rows),
+            len(vectors),
+        )
+        return 0
+
+    for row, vec in zip(indexed_rows, vectors):
+        row.embedding = vec
+    return len(indexed_rows)
+
+
 def _build_edges(
     repo_id,
     root_path: Path,
@@ -172,6 +216,7 @@ async def _full_index(
     head_sha: str | None,
     package_roots: list[Path],
     include_tests: bool,
+    embedding_client: EmbeddingClient | None,
 ) -> IngestResult:
     await _clear_repo_rows(session, repo.id)
 
@@ -197,6 +242,8 @@ async def _full_index(
     session.add_all(code_rows)
     await session.flush()
 
+    files_embedded = await _attach_embeddings(code_rows, embedding_client)
+
     edge_rows, edges_resolved = _build_edges(
         repo.id, root_path, code_rows, package_roots
     )
@@ -215,6 +262,7 @@ async def _full_index(
         edges_resolved=edges_resolved,
         head_sha=head_sha,
         mode="full",
+        files_embedded=files_embedded,
     )
 
 
@@ -240,6 +288,7 @@ async def _incremental_index(
     package_roots: list[Path],
     changes: list[FileChange],
     include_tests: bool,
+    embedding_client: EmbeddingClient | None,
 ) -> IngestResult:
     files_deleted = 0
     code_rows: list[CodeIndex] = []
@@ -298,6 +347,8 @@ async def _incremental_index(
     session.add_all(code_rows)
     await session.flush()
 
+    files_embedded = await _attach_embeddings(code_rows, embedding_client)
+
     # Rebuild import edges for the newly parsed files.
     edge_rows, edges_resolved = _build_edges(
         repo.id, root_path, code_rows, package_roots
@@ -309,11 +360,12 @@ async def _incremental_index(
     await session.flush()
 
     logger.info(
-        "incremental_index repo=%s added_or_modified=%d deleted=%d edges=%d",
+        "incremental_index repo=%s added_or_modified=%d deleted=%d edges=%d embedded=%d",
         repo.name,
         len(code_rows),
         files_deleted,
         len(edge_rows),
+        files_embedded,
     )
 
     return IngestResult(
@@ -326,6 +378,7 @@ async def _incremental_index(
         head_sha=head_sha,
         mode="incremental",
         files_deleted=files_deleted,
+        files_embedded=files_embedded,
     )
 
 
@@ -340,6 +393,7 @@ async def index_repository(
     include_tests: bool = False,
     force_full: bool = False,
     github_full_name: str | None = None,
+    embedding_client: EmbeddingClient | None = None,
 ) -> IngestResult:
     """Ingest a local repo into the three tables.
 
@@ -349,6 +403,12 @@ async def index_repository(
 
     ``github_full_name`` (e.g. ``"r-log/AMASS"``) is stored on the Repo
     row so webhook-triggered jobs can resolve the repo by its GitHub name.
+
+    ``embedding_client`` is optional: when provided, each indexed file's
+    content is embedded and stored in ``code_index.embedding``. When
+    ``None``, the embedding column stays NULL and concept_view will fall
+    back to keyword-only FTS. Incremental updates only embed the files
+    they re-parse — unchanged files keep whatever embedding they had.
 
     Caller owns the transaction — this function does NOT commit.
     """
@@ -394,6 +454,7 @@ async def index_repository(
                 package_roots,
                 changes,
                 include_tests,
+                embedding_client,
             )
         # detect_changes returned None → fallback to full.
         logger.warning(
@@ -402,5 +463,11 @@ async def index_repository(
         )
 
     return await _full_index(
-        session, repo, root_path, head_sha, package_roots, include_tests
+        session,
+        repo,
+        root_path,
+        head_sha,
+        package_roots,
+        include_tests,
+        embedding_client,
     )
