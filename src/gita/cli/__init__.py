@@ -9,6 +9,8 @@ Subcommands:
     gita query history      <repo> <file>
     gita query load-bearing <repo>
     gita onboard <repo> [--post-to | --create-issues]
+    gita review-pr <owner/repo#N> [--post]
+    gita generate-tests <repo> <target_file> [--target-repo OWNER/REPO]
 
 Split into three modules:
 - ``cli.commands``   — async command handlers + onboard flows
@@ -32,6 +34,7 @@ if sys.platform == "win32":
 from gita import __version__  # noqa: E402
 from gita.cli.commands import (  # noqa: E402
     _DEFAULT_MAX_ISSUES,
+    cmd_generate_tests,
     cmd_index,
     cmd_onboard,
     cmd_query_concept,
@@ -190,6 +193,75 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    gen_p = sub.add_parser(
+        "generate-tests",
+        help=(
+            "Generate a pytest test file for a module in an indexed repo, "
+            "optionally branching + opening a PR against a GitHub target"
+        ),
+    )
+    gen_p.add_argument(
+        "repo",
+        help="Indexed repo name (what you passed to `gita index --name`)",
+    )
+    gen_p.add_argument(
+        "target_file",
+        help=(
+            "Repo-relative path of the module to generate tests for "
+            "(e.g. src/myapp/utils.py)"
+        ),
+    )
+    gen_p.add_argument(
+        "--test-file-path",
+        default=None,
+        help=(
+            "Override the default output path (tests/test_<stem>.py). "
+            "Useful for repos whose test layout differs (e.g. "
+            "backend/tests/unit/test_<stem>.py)."
+        ),
+    )
+    gen_p.add_argument(
+        "--target-repo",
+        default=None,
+        metavar="OWNER/REPO",
+        help=(
+            "GitHub repo to push the generated tests to. When omitted, "
+            "the recipe runs locally and prints the result — no branch, "
+            "file, or PR is created."
+        ),
+    )
+    gen_p.add_argument(
+        "--base-branch",
+        default="main",
+        metavar="BRANCH",
+        help="Base branch to branch off + open the PR against (default main)",
+    )
+    gen_p.add_argument(
+        "--base-sha",
+        default=None,
+        metavar="SHA",
+        help=(
+            "Explicit base SHA. When omitted, gita resolves the tip of "
+            "--base-branch via the GitHub API."
+        ),
+    )
+    gen_p.add_argument(
+        "--fallback-issue",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Issue number on --target-repo where downgrade comments land "
+            "when a decision in the chain is below its confidence "
+            "threshold. Required with WRITE_MODE=comment."
+        ),
+    )
+    gen_p.add_argument(
+        "--model",
+        default=None,
+        help="Override the LLM model (defaults to AI_DEFAULT_MODEL)",
+    )
+
     query_p = sub.add_parser("query", help="Query the index")
     query_sub = query_p.add_subparsers(dest="query_type", required=True)
 
@@ -249,6 +321,7 @@ _HANDLERS = {
     "stats": cmd_stats,
     "onboard": cmd_onboard,
     "review-pr": cmd_review_pr,
+    "generate-tests": cmd_generate_tests,
     ("query", "symbol"): cmd_query_symbol,
     ("query", "neighborhood"): cmd_query_neighborhood,
     ("query", "load-bearing"): cmd_query_load_bearing,

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from gita.agents.test_generator import TestGenerationResult
 from gita.agents.types import OnboardingResult, PRReviewResult
 from gita.db.models import Repo
 from gita.indexer.ingest import IngestResult
@@ -354,4 +355,45 @@ def fmt_history_result(result: HistoryResult) -> str:
             result.blame_summary.items(), key=lambda kv: -kv[1]
         ):
             lines.append(f"  {author:<24} {count} lines")
+    return "\n".join(lines)
+
+
+def fmt_test_generation_result(result: TestGenerationResult) -> str:
+    verdict = "verified" if result.verified else "NOT verified"
+    lines = [
+        f"Test generation: {result.target_file}",
+        "",
+        f"output:     {result.test_file_path}",
+        f"size:       {len(result.test_content)} bytes, "
+        f"{len(result.test_content.splitlines())} lines",
+        f"verdict:    {verdict}",
+    ]
+    if result.llm_model:
+        lines.append(f"model:      {result.llm_model}")
+
+    if result.covered_symbols:
+        lines.append("")
+        lines.append(f"covered symbols ({len(result.covered_symbols)}):")
+        for sym in result.covered_symbols:
+            lines.append(f"  - {sym}")
+
+    if result.verification_errors:
+        lines.append("")
+        lines.append(f"verification errors ({len(result.verification_errors)}):")
+        for err in result.verification_errors:
+            # Collapse multi-line errors into a single bullet so the block
+            # scans at a glance; subprocess output can be 10+ lines.
+            first = err.splitlines()[0] if err else ""
+            lines.append(f"  - {first}")
+
+    if result.notes:
+        lines.append("")
+        lines.append("notes:")
+        lines.append(f"  {result.notes}")
+
+    lines.append("")
+    lines.append(
+        f"confidence: {result.confidence:.2f} "
+        f"(llm={result.llm_confidence:.2f}, verified={result.verified})"
+    )
     return "\n".join(lines)

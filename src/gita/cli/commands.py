@@ -31,6 +31,11 @@ from gita.agents.pr_reviewer import (
     parse_pr_files,
     run_pr_review,
 )
+from gita.agents.test_generator import (
+    TestGenerationArtifact,
+    build_test_generation_decisions,
+    run_test_generation,
+)
 from gita.agents.types import OnboardingResult
 from gita.cli.formatters import (
     fmt_concept_result,
@@ -43,6 +48,7 @@ from gita.cli.formatters import (
     fmt_repos,
     fmt_stats,
     fmt_symbol_result,
+    fmt_test_generation_result,
 )
 from gita.config import settings
 from gita.db.models import CodeIndex, ImportEdge, Repo
@@ -697,3 +703,258 @@ async def _run_create_issues_flow(
             "flip WRITE_MODE=full to create real issues)"
         )
     return 1 if errors else 0
+
+
+# ---------------------------------------------------------------------------
+# Generate-tests command (Week 8 Day 5)
+# ---------------------------------------------------------------------------
+def _parse_target_repo_required(value: str) -> str:
+    if value.count("/") != 1 or not all(value.split("/")):
+        raise ValueError(
+            f"--target-repo expects owner/repo, got {value!r}"
+        )
+    return value
+
+
+async def _resolve_repo_root(
+    session,  # AsyncSession
+    repo_name: str,
+) -> Path:
+    """Look up the indexed repo's on-disk root path.
+
+    The recipe's verification gates (py_compile, pytest --collect-only)
+    need the test file dropped somewhere that can resolve the target
+    module's imports. The indexed repo root is the natural answer —
+    dropping the file there doesn't mutate anything that gets pushed
+    (the test is written to a tmp relative path under the root and then
+    discarded after verification).
+    """
+    stmt = select(Repo).where(Repo.name == repo_name)
+    repo = (await session.execute(stmt)).scalar_one_or_none()
+    if repo is None:
+        raise RepoNotFoundError(f"repo {repo_name!r} is not indexed")
+    root = Path(repo.root_path)
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"indexed repo {repo_name!r} root {root} no longer exists"
+        )
+    return root
+
+
+async def cmd_generate_tests(args: argparse.Namespace) -> int:
+    if not settings.openrouter_api_key:
+        print(
+            "error: OPENROUTER_API_KEY is not set in .env — cannot call the "
+            "test-generation LLM",
+            file=sys.stderr,
+        )
+        return 2
+
+    # --- Target-repo + GitHub credential check ---
+    target_repo: str | None = None
+    if args.target_repo:
+        try:
+            target_repo = _parse_target_repo_required(args.target_repo)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    mode = WriteMode(settings.write_mode)
+
+    # GitHub credentials are required whenever we're going to push — either
+    # to resolve base-SHA from the default branch, or to execute the chain.
+    need_github = target_repo is not None
+    if need_github and (
+        not settings.github_app_id
+        or not settings.github_app_private_key_path
+    ):
+        print(
+            "error: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be "
+            "set in .env (needed to resolve base-SHA and push the branch)",
+            file=sys.stderr,
+        )
+        return 2
+
+    if (
+        target_repo is not None
+        and mode == WriteMode.COMMENT
+        and args.fallback_issue is None
+    ):
+        print(
+            "error: --target-repo with WRITE_MODE=comment requires "
+            "--fallback-issue N so downgrades have somewhere to land",
+            file=sys.stderr,
+        )
+        return 2
+
+    model = args.model or settings.ai_default_model
+
+    # --- Run the recipe (LLM + verification) ---
+    try:
+        async with OpenRouterClient(
+            api_key=settings.openrouter_api_key, default_model=model
+        ) as llm:
+            async with SessionLocal() as session:
+                try:
+                    work_dir = await _resolve_repo_root(session, args.repo)
+                except (RepoNotFoundError, FileNotFoundError) as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    return 1
+
+                try:
+                    result = await run_test_generation(
+                        session,
+                        args.repo,
+                        args.target_file,
+                        llm=llm,
+                        work_dir=work_dir,
+                        model=model,
+                        test_file_path=args.test_file_path,
+                    )
+                except FileNotFoundError as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    return 1
+    except Exception as exc:  # noqa: BLE001 — surface LLM errors cleanly
+        print(f"error: test generation failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(fmt_test_generation_result(result))
+
+    if target_repo is None:
+        # Local-only run — recipe result is the whole output.
+        return 0 if result.verified else 1
+
+    # --- Push flow: resolve base SHA + build + execute the 3-decision chain ---
+    owner, repo = target_repo.split("/", 1)
+    auth = GithubAppAuth.from_files(
+        app_id=settings.github_app_id,
+        private_key_path=settings.github_app_private_key_path,
+    )
+    base_branch = args.base_branch
+
+    print()
+    print(f"--- Push flow (WRITE_MODE={mode.value}) ---")
+    print(f"target repo: {target_repo}")
+    print(f"base branch: {base_branch}")
+    if args.fallback_issue is not None:
+        print(f"fallback issue (for downgrades): #{args.fallback_issue}")
+
+    # Resolve base SHA from args or from GitHub.
+    base_sha = args.base_sha
+    existing_test_sha: str | None = None
+    async with GithubClient(auth=auth) as gh:
+        if base_sha is None:
+            try:
+                ref_info = await gh.get_ref(
+                    owner, repo, f"heads/{base_branch}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"error: could not resolve base SHA for "
+                    f"heads/{base_branch} on {target_repo}: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            base_sha = ref_info.sha
+        print(f"base SHA:    {base_sha[:12]}")
+
+        # Best-effort blob-SHA lookup — if the test file already exists on
+        # the base branch we need its SHA to update instead of create.
+        try:
+            existing = await gh.get_contents(
+                owner, repo, result.test_file_path, ref=base_branch
+            )
+            existing_test_sha = existing.sha
+            print(
+                f"existing test file at {result.test_file_path} "
+                f"(blob {existing_test_sha[:12]}) — will update"
+            )
+        except Exception:  # noqa: BLE001 — 404 is the common path
+            existing_test_sha = None
+
+    # Build the 3-decision chain.
+    artifact = TestGenerationArtifact(
+        repo=target_repo,
+        base_branch=base_branch,
+        base_sha=base_sha,
+        target_file=args.target_file,
+        test_file_path=result.test_file_path,
+        test_content=result.test_content,
+        existing_test_sha=existing_test_sha,
+        fallback_issue=args.fallback_issue,
+        confidence=result.confidence,
+    )
+    decisions = build_test_generation_decisions(artifact)
+
+    print(f"decisions:   {len(decisions)} "
+          f"(confidence={result.confidence:.2f})")
+
+    # Execute the chain. Stop on the first decision that didn't land
+    # cleanly — a broken create_branch makes the downstream update_file
+    # and open_pr meaningless.
+    gh_client: GithubClient | None = None
+    if mode != WriteMode.SHADOW:
+        gh_client = GithubClient(auth=auth)
+
+    try:
+        async with SessionLocal() as session:
+            for i, decision in enumerate(decisions):
+                decision_result = await execute_decision(
+                    decision,
+                    mode=mode,
+                    client=gh_client,
+                    session=session,
+                    agent="test_generator",
+                )
+                _print_test_generator_decision(i, decision, decision_result)
+                if decision_result.outcome not in {
+                    Outcome.EXECUTED,
+                    Outcome.SHADOW_LOGGED,
+                    Outcome.DEDUPED,
+                }:
+                    # Low-confidence downgrade or write-mode downgrade — the
+                    # caller sees the downgrade comment but the rest of the
+                    # chain has nothing to build on.
+                    print(
+                        f"  stopping chain: {decision.action} did not "
+                        f"execute as-requested"
+                    )
+                    break
+            await session.commit()
+    finally:
+        if gh_client is not None:
+            await gh_client.aclose()
+
+    if mode == WriteMode.SHADOW:
+        print(
+            "(shadow mode — no branch/file/PR was created; "
+            "flip WRITE_MODE=full to execute for real)"
+        )
+    return 0
+
+
+def _print_test_generator_decision(
+    index: int, decision: Decision, result: DecisionResult
+) -> None:
+    """One block per decision in the generate-tests chain output."""
+    outcome = result.outcome.value
+    side = result.side_effect or {}
+    print()
+    print(f"  [{index}] {decision.action}  → {outcome}")
+    if decision.action == "create_branch":
+        ref = decision.payload.get("ref")
+        print(f"      ref: {ref}")
+    elif decision.action == "update_file":
+        path = decision.payload.get("path")
+        print(f"      path: {path}")
+    elif decision.action == "open_pr":
+        head = decision.payload.get("head")
+        base = decision.payload.get("base")
+        print(f"      head: {head} → base: {base}")
+    url = side.get("html_url")
+    if url:
+        print(f"      url: {url}")
+    if result.downgrade_reason:
+        print(f"      downgrade: {result.downgrade_reason}")
+    if result.error:
+        print(f"      error: {result.error}")
