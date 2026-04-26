@@ -68,7 +68,13 @@ async def reindex_repo(
     repo_full_name: str,
     after_sha: str | None = None,
 ) -> dict[str, Any]:
-    """Incrementally re-index a repository. Enqueued by ``handle_push_reindex``."""
+    """Incrementally re-index a repository. Enqueued by ``handle_push_reindex``.
+
+    Passes ``ctx['redis']`` (the ARQ pool ARQ injects into every job's
+    context) into the runner so the post-reindex auto-test-generation
+    trigger can enqueue follow-up ``generate_tests`` jobs without
+    opening its own Redis connection.
+    """
     logger.info(
         "job_start function=reindex_repo repo=%s sha=%s",
         repo_full_name,
@@ -76,8 +82,47 @@ async def reindex_repo(
     )
     from gita.jobs.runners import run_reindex_job
 
-    return await run_reindex_job(repo_full_name, after_sha=after_sha)
+    return await run_reindex_job(
+        repo_full_name, after_sha=after_sha, redis=ctx.get("redis")
+    )
+
+
+async def generate_tests(
+    ctx: dict[str, Any],
+    *,
+    repo_full_name: str,
+    target_file: str,
+    target_repo: str | None = None,
+    base_branch: str = "main",
+    base_sha: str | None = None,
+    fallback_issue: int | None = None,
+    test_file_path: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Generate + push tests for one target file. Enqueued by ``run_reindex_job``.
+
+    Job ID convention: ``generate-tests:{repo_lower}:{target_file}:{sha7}``
+    so retrying the same target on the same SHA hits ARQ-level dedupe.
+    """
+    logger.info(
+        "job_start function=generate_tests repo=%s file=%s sha=%s",
+        repo_full_name,
+        target_file,
+        (base_sha or "?")[:7],
+    )
+    from gita.jobs.runners import run_test_generation_job
+
+    return await run_test_generation_job(
+        repo_full_name,
+        target_file,
+        target_repo=target_repo,
+        base_branch=base_branch,
+        base_sha=base_sha,
+        fallback_issue=fallback_issue,
+        test_file_path=test_file_path,
+        model=model,
+    )
 
 
 # List of all job functions — used by the ARQ worker settings.
-ALL_JOBS = [review_pr, onboard_repo, reindex_repo]
+ALL_JOBS = [review_pr, onboard_repo, reindex_repo, generate_tests]

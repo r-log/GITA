@@ -18,22 +18,35 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gita.agents.decisions import WriteMode, execute_decision
+from gita.agents.decisions import (
+    Decision,
+    Outcome,
+    WriteMode,
+    execute_decision,
+)
 from gita.agents.pr_reviewer import (
     PRReviewError,
     build_pr_review_decision,
     parse_pr_files,
     run_pr_review,
 )
+from gita.agents.test_generator import (
+    TestGenerationArtifact,
+    build_test_generation_decisions,
+    has_existing_tests,
+    is_feasible,
+    run_test_generation,
+)
 from gita.config import settings
 from gita.db.session import SessionLocal
 from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
 from gita.indexer.embeddings import make_embedding_client
-from gita.indexer.ingest import index_repository
+from gita.indexer.ingest import IngestResult, index_repository
 from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError, resolve_repo
 
@@ -379,6 +392,8 @@ def _git_sync(root_path: Path, after_sha: str | None) -> tuple[bool, str]:
 async def run_reindex_job(
     repo_full_name: str,
     after_sha: str | None = None,
+    *,
+    redis: Any = None,
 ) -> dict[str, Any]:
     """Fetch latest code and incrementally re-index.
 
@@ -391,8 +406,10 @@ async def run_reindex_job(
     async with SessionLocal() as session:
         try:
             repo = await resolve_repo(session, repo_full_name)
+            repo_id = repo.id
             repo_name = repo.name
             root_path = Path(repo.root_path)
+            repo_auto_test_gen = bool(repo.auto_test_generation)
         except RepoNotFoundError:
             logger.warning(
                 "reindex_no_index repo=%s — skipping", repo_full_name
@@ -453,6 +470,27 @@ async def run_reindex_job(
         after_sha,
     )
 
+    # Post-reindex auto-test-generation trigger (Week 9). Best-effort:
+    # the reindex job's "completed" status does not depend on whether
+    # any test_gen jobs were enqueued.
+    test_gen_summary: dict[str, Any] = {}
+    try:
+        test_gen_summary = await _maybe_enqueue_test_gen_jobs(
+            repo_full_name=repo_full_name,
+            repo_id=repo_id,
+            repo_auto_test_gen=repo_auto_test_gen,
+            root_path=root_path,
+            ingest_result=result,
+            redis=redis,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "test_gen_trigger_failed repo=%s error=%s",
+            repo_full_name,
+            exc,
+        )
+        test_gen_summary = {"status": "trigger_error", "error": str(exc)}
+
     return {
         "status": "completed",
         "repo": repo_full_name,
@@ -462,4 +500,450 @@ async def run_reindex_job(
         "files_deleted": result.files_deleted,
         "files_embedded": result.files_embedded,
         "edges_total": result.edges_total,
+        "added_files": list(result.added_files),
+        "test_gen_trigger": test_gen_summary,
     }
+
+
+# ---------------------------------------------------------------------------
+# Post-reindex auto-trigger for test generation (Week 9)
+# ---------------------------------------------------------------------------
+async def _maybe_enqueue_test_gen_jobs(
+    *,
+    repo_full_name: str,
+    repo_id: Any,
+    repo_auto_test_gen: bool,
+    root_path: Path,
+    ingest_result: IngestResult,
+    redis: Any,
+) -> dict[str, Any]:
+    """Apply Stages A → B → cap and enqueue ``generate_tests`` jobs.
+
+    Returns a structured summary that includes counts at every gate so
+    the reindex log makes it obvious why nothing fired (which is the
+    common case under default config).
+
+    No-ops in any of the following cases — each one is intentional:
+
+    * ``redis`` is None (called from CLI, which never auto-triggers)
+    * ``AUTO_TEST_GEN_ENABLED`` env flag is false (global kill switch)
+    * ``Repo.auto_test_generation`` is false (per-repo opt-in off)
+    * ingest mode wasn't "incremental" (full reindex is too noisy)
+    * ``ingest_result.added_files`` is empty
+    """
+    summary: dict[str, Any] = {
+        "status": "skipped",
+        "reason": None,
+        "added_files": list(ingest_result.added_files),
+        "after_stage_a": [],
+        "after_stage_b": [],
+        "enqueued": [],
+    }
+
+    if redis is None:
+        summary["reason"] = "no_redis_pool"
+        return summary
+    if not settings.auto_test_gen_enabled:
+        summary["reason"] = "global_kill_switch_off"
+        return summary
+    if not repo_auto_test_gen:
+        summary["reason"] = "repo_opt_in_off"
+        return summary
+    if ingest_result.mode != "incremental":
+        summary["reason"] = f"mode={ingest_result.mode}"
+        return summary
+    if not ingest_result.added_files:
+        summary["reason"] = "no_added_files"
+        return summary
+
+    # --- Stage A: filesystem-based test existence ---
+    after_stage_a: list[str] = []
+    for path in ingest_result.added_files:
+        result_a = has_existing_tests(root_path, path)
+        if result_a.proceed:
+            after_stage_a.append(path)
+        else:
+            logger.info(
+                "test_gen_stage_a_skip repo=%s file=%s reason=%s",
+                repo_full_name,
+                path,
+                result_a.reason,
+            )
+    summary["after_stage_a"] = after_stage_a
+
+    # --- Stage B: feasibility (DB + structure) ---
+    after_stage_b: list[str] = []
+    base_sha = ingest_result.head_sha or "unknown"
+    async with SessionLocal() as session:
+        for path in after_stage_a:
+            result_b = await is_feasible(
+                session, repo_id, repo_full_name, path
+            )
+            if result_b.proceed:
+                after_stage_b.append(path)
+            else:
+                logger.info(
+                    "test_gen_stage_b_skip repo=%s file=%s reason=%s",
+                    repo_full_name,
+                    path,
+                    result_b.reason,
+                )
+    summary["after_stage_b"] = after_stage_b
+
+    if not after_stage_b:
+        summary["status"] = "no_candidates"
+        return summary
+
+    # --- Stage C: per-reindex cap + deterministic ordering ---
+    after_stage_b.sort()  # alphabetical — same retried push picks same file
+    cap = max(0, settings.auto_test_gen_max_per_reindex)
+    selected = after_stage_b[:cap]
+
+    enqueued: list[dict[str, str]] = []
+    repo_lower = repo_full_name.strip().lower()
+    sha7 = base_sha[:7]
+    for path in selected:
+        job_id = f"generate-tests:{repo_lower}:{path}:{sha7}"
+        try:
+            arq_job = await redis.enqueue_job(
+                "generate_tests",
+                _job_id=job_id,
+                repo_full_name=repo_full_name,
+                target_file=path,
+                target_repo=repo_full_name,
+                base_branch="main",
+                base_sha=base_sha,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "test_gen_enqueue_failed repo=%s file=%s error=%s",
+                repo_full_name,
+                path,
+                exc,
+            )
+            continue
+        if arq_job is None:
+            # ARQ-level dedupe: a job with this _job_id is already
+            # queued or running — perfectly fine, count as deduped.
+            logger.info(
+                "test_gen_enqueue_deduped job_id=%s", job_id
+            )
+            enqueued.append({"target_file": path, "job_id": job_id, "deduped": True})
+            continue
+        logger.info(
+            "test_gen_enqueued job_id=%s file=%s sha=%s",
+            job_id,
+            path,
+            sha7,
+        )
+        enqueued.append({"target_file": path, "job_id": job_id, "deduped": False})
+
+    summary["status"] = "enqueued" if enqueued else "no_candidates"
+    summary["enqueued"] = enqueued
+    summary["cap"] = cap
+    summary["dropped_over_cap"] = max(0, len(after_stage_b) - cap)
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Test-generation runner (Week 9)
+# ---------------------------------------------------------------------------
+_PROGRESS_OUTCOMES = {
+    Outcome.EXECUTED,
+    Outcome.SHADOW_LOGGED,
+    Outcome.DEDUPED,
+}
+
+
+async def run_test_generation_job(
+    repo_full_name: str,
+    target_file: str,
+    *,
+    target_repo: str | None = None,
+    base_branch: str = "main",
+    base_sha: str | None = None,
+    fallback_issue: int | None = None,
+    test_file_path: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Generate a verified pytest test file and (optionally) push it.
+
+    Behaviour mirrors the CLI ``cmd_generate_tests`` flow but returns a
+    structured summary instead of printing. Used by the CLI handler
+    (which formats the dict for humans) and by the post-reindex
+    auto-trigger ARQ job.
+
+    ``repo_full_name`` is the indexed repo identifier — short CLI name
+    or GitHub ``owner/repo``; resolves both ways via ``resolve_repo``.
+
+    ``target_repo`` (when not ``None``) is the GitHub ``owner/repo``
+    that branch + file write + PR all target. ``None`` means
+    local-only (recipe + verification, no GitHub side-effects).
+
+    Raises on misconfiguration (missing API keys); returns
+    ``{"status": "error", "reason": ...}`` for runtime failures so
+    callers don't need their own try/except.
+    """
+    if not settings.openrouter_api_key:
+        raise RuntimeError("OPENROUTER_API_KEY not configured")
+
+    need_github = target_repo is not None
+    if need_github and (
+        not settings.github_app_id
+        or not settings.github_app_private_key_path
+    ):
+        raise RuntimeError(
+            "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be set "
+            "for the push flow"
+        )
+
+    mode = WriteMode(settings.write_mode)
+    resolved_model = model or settings.ai_default_model
+
+    # --- Resolve indexed repo + repo_root ---
+    async with SessionLocal() as session:
+        try:
+            repo = await resolve_repo(session, repo_full_name)
+        except RepoNotFoundError:
+            logger.warning(
+                "test_gen_no_index repo=%s — skipping", repo_full_name
+            )
+            return {
+                "status": "error",
+                "reason": "repo_not_indexed",
+                "repo": repo_full_name,
+                "target_file": target_file,
+            }
+        repo_name = repo.name
+        repo_root = Path(repo.root_path)
+        if not repo_root.is_dir():
+            return {
+                "status": "error",
+                "reason": "root_path_missing",
+                "repo": repo_full_name,
+                "target_file": target_file,
+            }
+
+    # --- Recipe (LLM + 3-gate verify) ---
+    try:
+        async with OpenRouterClient(
+            api_key=settings.openrouter_api_key,
+            default_model=resolved_model,
+        ) as llm:
+            async with SessionLocal() as session:
+                try:
+                    recipe_result = await run_test_generation(
+                        session,
+                        repo_name,
+                        target_file,
+                        llm=llm,
+                        repo_root=repo_root,
+                        model=resolved_model,
+                        test_file_path=test_file_path,
+                    )
+                except FileNotFoundError as exc:
+                    return {
+                        "status": "error",
+                        "reason": str(exc),
+                        "repo": repo_full_name,
+                        "target_file": target_file,
+                    }
+    except Exception as exc:  # noqa: BLE001 — surface LLM/network errors cleanly
+        logger.error(
+            "test_gen_recipe_failed repo=%s file=%s error=%s",
+            repo_full_name,
+            target_file,
+            exc,
+        )
+        return {
+            "status": "error",
+            "reason": f"recipe_failed: {exc}",
+            "repo": repo_full_name,
+            "target_file": target_file,
+        }
+
+    base_summary: dict[str, Any] = {
+        "status": "completed",
+        "repo": repo_full_name,
+        "target_file": target_file,
+        "test_file_path": recipe_result.test_file_path,
+        "test_content": recipe_result.test_content,
+        "verified": recipe_result.verified,
+        "verification_errors": list(recipe_result.verification_errors),
+        "llm_model": recipe_result.llm_model,
+        "covered_symbols": list(recipe_result.covered_symbols),
+        "notes": recipe_result.notes,
+        "llm_confidence": recipe_result.llm_confidence,
+        "confidence": recipe_result.confidence,
+        "target_repo": target_repo,
+        "base_branch": None,
+        "base_sha": None,
+        "decisions": [],
+    }
+
+    if target_repo is None:
+        # Local-only run.
+        logger.info(
+            "test_gen_local_done repo=%s file=%s verified=%s "
+            "blended_conf=%.2f",
+            repo_full_name,
+            target_file,
+            recipe_result.verified,
+            recipe_result.confidence,
+        )
+        return base_summary
+
+    # --- Push flow ---
+    owner, repo_short = target_repo.split("/", 1)
+    auth = GithubAppAuth.from_files(
+        app_id=settings.github_app_id,
+        private_key_path=settings.github_app_private_key_path,
+    )
+
+    resolved_base_sha = base_sha
+    existing_test_sha: str | None = None
+    async with GithubClient(auth=auth) as gh:
+        if resolved_base_sha is None:
+            try:
+                ref_info = await gh.get_ref(
+                    owner, repo_short, f"heads/{base_branch}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "test_gen_base_sha_lookup_failed repo=%s "
+                    "base_branch=%s error=%s",
+                    target_repo,
+                    base_branch,
+                    exc,
+                )
+                base_summary.update(
+                    status="error",
+                    reason=(
+                        f"base_sha_lookup_failed: {exc}"
+                    ),
+                    base_branch=base_branch,
+                )
+                return base_summary
+            resolved_base_sha = ref_info.sha
+
+        try:
+            existing = await gh.get_contents(
+                owner,
+                repo_short,
+                recipe_result.test_file_path,
+                ref=base_branch,
+            )
+            existing_test_sha = existing.sha
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                logger.error(
+                    "test_gen_get_contents_failed repo=%s path=%s "
+                    "status=%s",
+                    target_repo,
+                    recipe_result.test_file_path,
+                    exc.response.status_code,
+                )
+                base_summary.update(
+                    status="error",
+                    reason=(
+                        f"get_contents_failed: HTTP "
+                        f"{exc.response.status_code}"
+                    ),
+                    base_branch=base_branch,
+                    base_sha=resolved_base_sha,
+                )
+                return base_summary
+            existing_test_sha = None
+
+    artifact = TestGenerationArtifact(
+        repo=target_repo,
+        base_branch=base_branch,
+        base_sha=resolved_base_sha,
+        target_file=target_file,
+        test_file_path=recipe_result.test_file_path,
+        test_content=recipe_result.test_content,
+        existing_test_sha=existing_test_sha,
+        fallback_issue=fallback_issue,
+        confidence=recipe_result.confidence,
+    )
+    decisions = build_test_generation_decisions(artifact)
+
+    decision_summaries = await _execute_decision_chain(
+        decisions, mode=mode, auth=auth
+    )
+
+    base_summary.update(
+        base_branch=base_branch,
+        base_sha=resolved_base_sha,
+        decisions=decision_summaries,
+    )
+
+    final_outcomes = [d["outcome"] for d in decision_summaries]
+    logger.info(
+        "test_gen_push_done repo=%s file=%s verified=%s "
+        "blended_conf=%.2f outcomes=%s",
+        target_repo,
+        target_file,
+        recipe_result.verified,
+        recipe_result.confidence,
+        ",".join(final_outcomes),
+    )
+    return base_summary
+
+
+async def _execute_decision_chain(
+    decisions: list[Decision],
+    *,
+    mode: WriteMode,
+    auth: GithubAppAuth,
+) -> list[dict[str, Any]]:
+    """Execute the test-gen Decisions in order, stopping on non-progress.
+
+    "Non-progress" = anything outside ``EXECUTED`` / ``SHADOW_LOGGED`` /
+    ``DEDUPED``. A downgrade or rejection earlier in the chain
+    invalidates everything downstream (no point trying to write a file
+    onto a branch that wasn't created), so we stop and return what
+    happened so far.
+    """
+    summaries: list[dict[str, Any]] = []
+    gh_client: GithubClient | None = None
+    if mode != WriteMode.SHADOW:
+        gh_client = GithubClient(auth=auth)
+
+    try:
+        async with SessionLocal() as session:
+            for decision in decisions:
+                decision_result = await execute_decision(
+                    decision,
+                    mode=mode,
+                    client=gh_client,
+                    session=session,
+                    agent="test_generator",
+                )
+                summaries.append(_decision_summary(decision, decision_result))
+                if decision_result.outcome not in _PROGRESS_OUTCOMES:
+                    break
+            await session.commit()
+    finally:
+        if gh_client is not None:
+            await gh_client.aclose()
+    return summaries
+
+
+def _decision_summary(decision: Decision, result: Any) -> dict[str, Any]:
+    """Pull just the fields the CLI/webhook care about out of a result."""
+    summary: dict[str, Any] = {
+        "action": decision.action,
+        "outcome": result.outcome.value,
+        "downgrade_reason": result.downgrade_reason,
+        "error": result.error,
+        "side_effect": dict(result.side_effect or {}),
+    }
+    if decision.action == "create_branch":
+        summary["ref"] = decision.payload.get("ref")
+    elif decision.action == "update_file":
+        summary["path"] = decision.payload.get("path")
+    elif decision.action == "open_pr":
+        summary["head"] = decision.payload.get("head")
+        summary["base"] = decision.payload.get("base")
+    return summary

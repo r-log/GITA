@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from gita.jobs import ALL_JOBS, onboard_repo, reindex_repo, review_pr
+from gita.jobs import (
+    ALL_JOBS,
+    generate_tests,
+    onboard_repo,
+    reindex_repo,
+    review_pr,
+)
 
 
 @pytest.fixture
@@ -25,9 +31,10 @@ class TestAllJobs:
         assert review_pr in ALL_JOBS
         assert onboard_repo in ALL_JOBS
         assert reindex_repo in ALL_JOBS
+        assert generate_tests in ALL_JOBS
 
     def test_no_unexpected_jobs(self):
-        assert len(ALL_JOBS) == 3
+        assert len(ALL_JOBS) == 4
 
     def test_job_functions_are_coroutines(self):
         """ARQ requires async functions."""
@@ -36,3 +43,4 @@ class TestAllJobs:
         assert asyncio.iscoroutinefunction(review_pr)
         assert asyncio.iscoroutinefunction(onboard_repo)
         assert asyncio.iscoroutinefunction(reindex_repo)
+        assert asyncio.iscoroutinefunction(generate_tests)

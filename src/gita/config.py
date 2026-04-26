@@ -58,6 +58,21 @@ class Settings(BaseSettings):
         default=None, alias="OPENAI_API_KEY"
     )
 
+    # Auto-test-generation post-reindex trigger (Week 9). Both must be
+    # true for any auto-trigger work to fire:
+    #   - this env-level kill switch (default OFF for safety)
+    #   - the per-repo ``Repo.auto_test_generation`` column (default OFF)
+    # The cap bounds how many test_generator jobs a single reindex
+    # enqueues; raise it deliberately once the loop has been observed
+    # behaving on a real repo. Stays at 1 by default so a first push to
+    # a fresh repo can never enqueue dozens of jobs at once.
+    auto_test_gen_enabled: bool = Field(
+        default=False, alias="AUTO_TEST_GEN_ENABLED"
+    )
+    auto_test_gen_max_per_reindex: int = Field(
+        default=1, alias="AUTO_TEST_GEN_MAX_PER_REINDEX"
+    )
+
     @field_validator("write_mode")
     @classmethod
     def _validate_write_mode(cls, v: str) -> str:

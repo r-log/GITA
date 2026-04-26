@@ -158,7 +158,7 @@ class TestRunTestGenerationHappyPath:
             repo_name,
             "src/myapp/utils.py",
             llm=fake,
-            work_dir=tmp_path,
+            repo_root=tmp_path,
         )
 
         assert isinstance(result, TestGenerationResult)
@@ -183,7 +183,7 @@ class TestRunTestGenerationHappyPath:
             repo_name,
             "src/myapp/utils.py",
             llm=fake,
-            work_dir=tmp_path,
+            repo_root=tmp_path,
         )
 
         assert len(fake.calls) == 1
@@ -203,7 +203,7 @@ class TestRunTestGenerationHappyPath:
             repo_name,
             "src/myapp/utils.py",
             llm=fake,
-            work_dir=tmp_path,
+            repo_root=tmp_path,
         )
 
         user = fake.calls[0]["user"]
@@ -222,7 +222,7 @@ class TestRunTestGenerationHappyPath:
             repo_name,
             "src/myapp/utils.py",
             llm=fake,
-            work_dir=tmp_path,
+            repo_root=tmp_path,
         )
 
         assert result.llm_confidence == 0.85
@@ -243,7 +243,7 @@ class TestRunTestGenerationFailurePaths:
                 repo_name,
                 "src/myapp/does_not_exist.py",
                 llm=fake,
-                work_dir=tmp_path,
+                repo_root=tmp_path,
             )
 
     async def test_broken_syntax_fails_verification(
@@ -261,7 +261,7 @@ class TestRunTestGenerationFailurePaths:
             repo_name,
             "src/myapp/utils.py",
             llm=fake,
-            work_dir=tmp_path,
+            repo_root=tmp_path,
         )
 
         assert result.verified is False
@@ -290,7 +290,7 @@ class TestRunTestGenerationFailurePaths:
             repo_name,
             "src/myapp/utils.py",
             llm=fake,
-            work_dir=tmp_path,
+            repo_root=tmp_path,
         )
 
         assert result.verified is False
@@ -304,7 +304,11 @@ class TestRunTestGenerationCustomPath:
     ):
         """AMASS-style tests live in ``backend/tests/``, not ``tests/``.
         The caller can override the default path to match a repo's
-        layout."""
+        layout. The override flows through to the result, but Week 9's
+        scratch-dir refactor means nothing lands in ``repo_root`` —
+        verification writes into a private tempdir that's deleted
+        before the recipe returns.
+        """
         session, repo_name = indexed_synth_py
         fake = FakeLLMClient(responses=[_fake_response()])
 
@@ -313,11 +317,53 @@ class TestRunTestGenerationCustomPath:
             repo_name,
             "src/myapp/utils.py",
             llm=fake,
-            work_dir=tmp_path,
+            repo_root=tmp_path,
             test_file_path="backend/tests/unit/test_utils.py",
         )
 
         assert result.test_file_path == "backend/tests/unit/test_utils.py"
-        assert (
+        # The repo_root must stay clean — Week 9 guarantee.
+        assert not (
             tmp_path / "backend" / "tests" / "unit" / "test_utils.py"
         ).exists()
+        assert list(tmp_path.iterdir()) == []
+
+
+class TestRunTestGenerationScratchIsolation:
+    async def test_repo_root_is_not_mutated_on_success(
+        self, indexed_synth_py, tmp_path: Path
+    ):
+        """Week 9: even when verification writes files for the
+        subprocess gates, none of those writes hit ``repo_root``."""
+        session, repo_name = indexed_synth_py
+        fake = FakeLLMClient(responses=[_fake_response()])
+
+        result = await run_test_generation(
+            session,
+            repo_name,
+            "src/myapp/utils.py",
+            llm=fake,
+            repo_root=tmp_path,
+        )
+
+        assert result.verified is True
+        assert list(tmp_path.iterdir()) == []
+
+    async def test_repo_root_is_not_mutated_on_verification_failure(
+        self, indexed_synth_py, tmp_path: Path
+    ):
+        session, repo_name = indexed_synth_py
+        fake = FakeLLMClient(
+            responses=[_fake_response(content=_BAD_IMPORT, confidence=0.95)]
+        )
+
+        result = await run_test_generation(
+            session,
+            repo_name,
+            "src/myapp/utils.py",
+            llm=fake,
+            repo_root=tmp_path,
+        )
+
+        assert result.verified is False
+        assert list(tmp_path.iterdir()) == []

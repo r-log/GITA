@@ -18,7 +18,9 @@ from __future__ import annotations
 import asyncio
 import ast
 import logging
+import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -183,8 +185,27 @@ def _render_user_prompt(ctx: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # Verification — the "stronger bar" the user asked for
 # ---------------------------------------------------------------------------
+def _subprocess_env(pythonpath: str | None) -> dict[str, str] | None:
+    """Build an env dict that prepends ``pythonpath`` to the parent's
+    ``PYTHONPATH``. Returns ``None`` to inherit the parent env unchanged
+    when no PYTHONPATH override is requested — matches the old behavior.
+    """
+    if not pythonpath:
+        return None
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{pythonpath}{os.pathsep}{existing}" if existing else pythonpath
+    )
+    return env
+
+
 async def _run_subprocess(
-    cmd: list[str], *, cwd: Path, timeout: float = _SUBPROCESS_TIMEOUT_SECONDS
+    cmd: list[str],
+    *,
+    cwd: Path,
+    timeout: float = _SUBPROCESS_TIMEOUT_SECONDS,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run ``cmd`` as a subprocess and return (returncode, stdout, stderr)."""
     process = await asyncio.create_subprocess_exec(
@@ -192,6 +213,7 @@ async def _run_subprocess(
         cwd=str(cwd),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -213,7 +235,11 @@ async def _run_subprocess(
 
 
 async def verify_test_file(
-    content: str, work_dir: Path, test_file_name: str
+    content: str,
+    work_dir: Path,
+    test_file_name: str,
+    *,
+    pythonpath: str | None = None,
 ) -> tuple[bool, list[str]]:
     """Three-gate verification. Returns ``(verified, errors)``.
 
@@ -226,10 +252,11 @@ async def verify_test_file(
       errors in the test file itself — the most common failure mode for
       LLM-generated tests.
 
-    ``work_dir`` is the directory the test file is dropped into for
-    subprocess checks. For real runs it's the target repo's root so
-    imports resolve. For tests it can be a tmp_path with a tiny
-    source file the test imports.
+    ``work_dir`` is the (scratch) directory the test file is dropped
+    into for subprocess checks. ``pythonpath``, when set, is prepended
+    to ``PYTHONPATH`` for the subprocesses so the generated test can
+    resolve imports from the target repo without the file ever landing
+    in the target's working tree.
     """
     errors: list[str] = []
 
@@ -244,10 +271,13 @@ async def verify_test_file(
     test_path.parent.mkdir(parents=True, exist_ok=True)
     test_path.write_text(content, encoding="utf-8")
 
+    env = _subprocess_env(pythonpath)
+
     # Gate 2 — py_compile
     rc, stdout, stderr = await _run_subprocess(
         [sys.executable, "-m", "py_compile", str(test_path)],
         cwd=work_dir,
+        env=env,
     )
     if rc != 0:
         msg = (stderr or stdout).strip() or f"py_compile exited {rc}"
@@ -274,6 +304,7 @@ async def verify_test_file(
             str(test_path),
         ],
         cwd=work_dir,
+        env=env,
     )
     if rc != 0:
         # Pytest sends collection errors to stdout, not stderr; prefer
@@ -308,11 +339,17 @@ async def run_test_generation(
     target_file: str,
     *,
     llm: LLMClient,
-    work_dir: Path,
+    repo_root: Path,
     model: str | None = None,
     test_file_path: str | None = None,
 ) -> TestGenerationResult:
     """Generate a verified pytest test file for ``target_file``.
+
+    ``repo_root`` is the on-disk path of the indexed repo. It is used
+    only as ``PYTHONPATH`` for the verification subprocesses — the
+    generated test file is written into a private scratch tempdir, so
+    the target repo's working tree is never mutated, even on
+    verification failure.
 
     Returns a ``TestGenerationResult`` populated with content regardless
     of whether verification passed — callers can inspect
@@ -346,11 +383,13 @@ async def run_test_generation(
         )
     payload: GeneratedTestResponse = response.parsed
 
-    verified, errors = await verify_test_file(
-        payload.test_file_content,
-        work_dir,
-        resolved_test_path,
-    )
+    with tempfile.TemporaryDirectory(prefix="gita-testgen-") as scratch:
+        verified, errors = await verify_test_file(
+            payload.test_file_content,
+            Path(scratch),
+            resolved_test_path,
+            pythonpath=str(repo_root),
+        )
 
     llm_conf = max(0.0, min(1.0, payload.confidence))
     blended = (

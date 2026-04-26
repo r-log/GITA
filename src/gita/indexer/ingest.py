@@ -12,7 +12,7 @@ Two modes:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -41,6 +41,12 @@ class IngestResult:
     mode: str = "full"  # "full" | "incremental" | "noop"
     files_deleted: int = 0
     files_embedded: int = 0
+    # Repo-relative paths that were *newly added* in an incremental
+    # update — distinct from "modified". The post-reindex auto-trigger
+    # uses this to scope test generation to genuinely new files only.
+    # Empty for full and noop modes (a full reindex is too noisy a
+    # signal to drive auto-trigger off of).
+    added_files: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +300,7 @@ async def _incremental_index(
     code_rows: list[CodeIndex] = []
     functions_total = 0
     classes_total = 0
+    added_files: list[str] = []
 
     for change in changes:
         if change.status == "deleted":
@@ -342,6 +349,8 @@ async def _incremental_index(
         code_rows.append(row)
         functions_total += fn_count
         classes_total += cls_count
+        if change.status == "added":
+            added_files.append(change.relative_path)
 
     await session.flush()
     session.add_all(code_rows)
@@ -377,6 +386,7 @@ async def _incremental_index(
         edges_resolved=edges_resolved,
         head_sha=head_sha,
         mode="incremental",
+        added_files=added_files,
         files_deleted=files_deleted,
         files_embedded=files_embedded,
     )

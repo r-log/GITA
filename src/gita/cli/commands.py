@@ -31,11 +31,6 @@ from gita.agents.pr_reviewer import (
     parse_pr_files,
     run_pr_review,
 )
-from gita.agents.test_generator import (
-    TestGenerationArtifact,
-    build_test_generation_decisions,
-    run_test_generation,
-)
 from gita.agents.types import OnboardingResult
 from gita.cli.formatters import (
     fmt_concept_result,
@@ -57,6 +52,7 @@ from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
 from gita.indexer.embeddings import make_embedding_client
 from gita.indexer.ingest import index_repository
+from gita.jobs.runners import run_test_generation_job
 from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError
 from gita.views.concept import concept_view
@@ -84,6 +80,7 @@ async def cmd_index(args: argparse.Namespace) -> int:
     name = args.name or root.name
     force_full = getattr(args, "full", False)
     github_full_name = getattr(args, "github", None)
+    auto_test_gen = getattr(args, "auto_test_gen", None)
 
     embedding_client = make_embedding_client()
     try:
@@ -97,12 +94,25 @@ async def cmd_index(args: argparse.Namespace) -> int:
                 github_full_name=github_full_name,
                 embedding_client=embedding_client,
             )
+            # Apply --auto-test-gen / --no-auto-test-gen, if specified.
+            # ``None`` means "leave the existing value alone" so a
+            # routine reindex doesn't reset a flag the user previously set.
+            if auto_test_gen is not None:
+                stmt = select(Repo).where(Repo.name == name)
+                repo_row = (
+                    await session.execute(stmt)
+                ).scalar_one_or_none()
+                if repo_row is not None:
+                    repo_row.auto_test_generation = bool(auto_test_gen)
             await session.commit()
             elapsed = time.time() - t0
     finally:
         if embedding_client is not None:
             await embedding_client.close()
     print(fmt_ingest(name, root, elapsed, result))
+    if auto_test_gen is not None:
+        state = "enabled" if auto_test_gen else "disabled"
+        print(f"auto_test_generation: {state}")
     return 0
 
 
@@ -716,31 +726,6 @@ def _parse_target_repo_required(value: str) -> str:
     return value
 
 
-async def _resolve_repo_root(
-    session,  # AsyncSession
-    repo_name: str,
-) -> Path:
-    """Look up the indexed repo's on-disk root path.
-
-    The recipe's verification gates (py_compile, pytest --collect-only)
-    need the test file dropped somewhere that can resolve the target
-    module's imports. The indexed repo root is the natural answer —
-    dropping the file there doesn't mutate anything that gets pushed
-    (the test is written to a tmp relative path under the root and then
-    discarded after verification).
-    """
-    stmt = select(Repo).where(Repo.name == repo_name)
-    repo = (await session.execute(stmt)).scalar_one_or_none()
-    if repo is None:
-        raise RepoNotFoundError(f"repo {repo_name!r} is not indexed")
-    root = Path(repo.root_path)
-    if not root.is_dir():
-        raise FileNotFoundError(
-            f"indexed repo {repo_name!r} root {root} no longer exists"
-        )
-    return root
-
-
 async def cmd_generate_tests(args: argparse.Namespace) -> int:
     if not settings.openrouter_api_key:
         print(
@@ -761,10 +746,7 @@ async def cmd_generate_tests(args: argparse.Namespace) -> int:
 
     mode = WriteMode(settings.write_mode)
 
-    # GitHub credentials are required whenever we're going to push — either
-    # to resolve base-SHA from the default branch, or to execute the chain.
-    need_github = target_repo is not None
-    if need_github and (
+    if target_repo is not None and (
         not settings.github_app_id
         or not settings.github_app_private_key_path
     ):
@@ -787,144 +769,43 @@ async def cmd_generate_tests(args: argparse.Namespace) -> int:
         )
         return 2
 
-    model = args.model or settings.ai_default_model
+    summary = await run_test_generation_job(
+        args.repo,
+        args.target_file,
+        target_repo=target_repo,
+        base_branch=args.base_branch,
+        base_sha=args.base_sha,
+        fallback_issue=args.fallback_issue,
+        test_file_path=args.test_file_path,
+        model=args.model,
+    )
 
-    # --- Run the recipe (LLM + verification) ---
-    try:
-        async with OpenRouterClient(
-            api_key=settings.openrouter_api_key, default_model=model
-        ) as llm:
-            async with SessionLocal() as session:
-                try:
-                    work_dir = await _resolve_repo_root(session, args.repo)
-                except (RepoNotFoundError, FileNotFoundError) as exc:
-                    print(f"error: {exc}", file=sys.stderr)
-                    return 1
-
-                try:
-                    result = await run_test_generation(
-                        session,
-                        args.repo,
-                        args.target_file,
-                        llm=llm,
-                        work_dir=work_dir,
-                        model=model,
-                        test_file_path=args.test_file_path,
-                    )
-                except FileNotFoundError as exc:
-                    print(f"error: {exc}", file=sys.stderr)
-                    return 1
-    except Exception as exc:  # noqa: BLE001 — surface LLM errors cleanly
-        print(f"error: test generation failed: {exc}", file=sys.stderr)
+    if summary["status"] == "error":
+        print(f"error: {summary.get('reason')}", file=sys.stderr)
         return 1
 
-    print(fmt_test_generation_result(result))
+    # --- Render recipe result for humans ---
+    print(_fmt_recipe_summary(summary))
 
     if target_repo is None:
-        # Local-only run — recipe result is the whole output.
-        return 0 if result.verified else 1
+        return 0 if summary["verified"] else 1
 
-    # --- Push flow: resolve base SHA + build + execute the 3-decision chain ---
-    owner, repo = target_repo.split("/", 1)
-    auth = GithubAppAuth.from_files(
-        app_id=settings.github_app_id,
-        private_key_path=settings.github_app_private_key_path,
-    )
-    base_branch = args.base_branch
-
+    # --- Render push-flow output ---
     print()
     print(f"--- Push flow (WRITE_MODE={mode.value}) ---")
     print(f"target repo: {target_repo}")
-    print(f"base branch: {base_branch}")
+    print(f"base branch: {summary['base_branch']}")
     if args.fallback_issue is not None:
         print(f"fallback issue (for downgrades): #{args.fallback_issue}")
-
-    # Resolve base SHA from args or from GitHub.
-    base_sha = args.base_sha
-    existing_test_sha: str | None = None
-    async with GithubClient(auth=auth) as gh:
-        if base_sha is None:
-            try:
-                ref_info = await gh.get_ref(
-                    owner, repo, f"heads/{base_branch}"
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(
-                    f"error: could not resolve base SHA for "
-                    f"heads/{base_branch} on {target_repo}: {exc}",
-                    file=sys.stderr,
-                )
-                return 1
-            base_sha = ref_info.sha
-        print(f"base SHA:    {base_sha[:12]}")
-
-        # Best-effort blob-SHA lookup — if the test file already exists on
-        # the base branch we need its SHA to update instead of create.
-        try:
-            existing = await gh.get_contents(
-                owner, repo, result.test_file_path, ref=base_branch
-            )
-            existing_test_sha = existing.sha
-            print(
-                f"existing test file at {result.test_file_path} "
-                f"(blob {existing_test_sha[:12]}) — will update"
-            )
-        except Exception:  # noqa: BLE001 — 404 is the common path
-            existing_test_sha = None
-
-    # Build the 3-decision chain.
-    artifact = TestGenerationArtifact(
-        repo=target_repo,
-        base_branch=base_branch,
-        base_sha=base_sha,
-        target_file=args.target_file,
-        test_file_path=result.test_file_path,
-        test_content=result.test_content,
-        existing_test_sha=existing_test_sha,
-        fallback_issue=args.fallback_issue,
-        confidence=result.confidence,
+    if summary["base_sha"]:
+        print(f"base SHA:    {summary['base_sha'][:12]}")
+    decisions = summary["decisions"]
+    print(
+        f"decisions:   {len(decisions)} "
+        f"(confidence={summary['confidence']:.2f})"
     )
-    decisions = build_test_generation_decisions(artifact)
-
-    print(f"decisions:   {len(decisions)} "
-          f"(confidence={result.confidence:.2f})")
-
-    # Execute the chain. Stop on the first decision that didn't land
-    # cleanly — a broken create_branch makes the downstream update_file
-    # and open_pr meaningless.
-    gh_client: GithubClient | None = None
-    if mode != WriteMode.SHADOW:
-        gh_client = GithubClient(auth=auth)
-
-    try:
-        async with SessionLocal() as session:
-            for i, decision in enumerate(decisions):
-                decision_result = await execute_decision(
-                    decision,
-                    mode=mode,
-                    client=gh_client,
-                    session=session,
-                    agent="test_generator",
-                )
-                _print_test_generator_decision(i, decision, decision_result)
-                if decision_result.outcome not in {
-                    Outcome.EXECUTED,
-                    Outcome.SHADOW_LOGGED,
-                    Outcome.DEDUPED,
-                }:
-                    # Low-confidence downgrade or write-mode downgrade — the
-                    # caller sees the downgrade comment but the rest of the
-                    # chain has nothing to build on.
-                    print(
-                        f"  stopping chain: {decision.action} did not "
-                        f"execute as-requested"
-                    )
-                    break
-            await session.commit()
-    finally:
-        if gh_client is not None:
-            await gh_client.aclose()
-
+    for i, dec in enumerate(decisions):
+        _print_decision_summary_dict(i, dec)
     if mode == WriteMode.SHADOW:
         print(
             "(shadow mode — no branch/file/PR was created; "
@@ -933,28 +814,48 @@ async def cmd_generate_tests(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_test_generator_decision(
-    index: int, decision: Decision, result: DecisionResult
-) -> None:
-    """One block per decision in the generate-tests chain output."""
-    outcome = result.outcome.value
-    side = result.side_effect or {}
+def _fmt_recipe_summary(summary: dict) -> str:
+    """Pretty-print the recipe portion of a runner summary dict.
+
+    Bridges between the dict the runner returns and the existing
+    ``fmt_test_generation_result`` formatter (which expects a
+    ``TestGenerationResult``).  Reconstruct one and reuse the formatter
+    so the on-screen output is identical to pre-refactor.
+    """
+    from gita.agents.test_generator import TestGenerationResult
+
+    fake_result = TestGenerationResult(
+        target_file=summary["target_file"],
+        test_file_path=summary["test_file_path"],
+        test_content=summary["test_content"] or "",
+        verified=summary["verified"],
+        verification_errors=summary["verification_errors"],
+        llm_model=summary["llm_model"],
+        covered_symbols=summary["covered_symbols"],
+        notes=summary["notes"],
+        llm_confidence=summary["llm_confidence"],
+        confidence=summary["confidence"],
+    )
+    return fmt_test_generation_result(fake_result)
+
+
+def _print_decision_summary_dict(index: int, dec: dict) -> None:
+    """One block per decision, using the runner's summary dict shape."""
     print()
-    print(f"  [{index}] {decision.action}  → {outcome}")
-    if decision.action == "create_branch":
-        ref = decision.payload.get("ref")
-        print(f"      ref: {ref}")
-    elif decision.action == "update_file":
-        path = decision.payload.get("path")
-        print(f"      path: {path}")
-    elif decision.action == "open_pr":
-        head = decision.payload.get("head")
-        base = decision.payload.get("base")
-        print(f"      head: {head} → base: {base}")
+    print(f"  [{index}] {dec['action']}  → {dec['outcome']}")
+    if dec["action"] == "create_branch":
+        print(f"      ref: {dec.get('ref')}")
+    elif dec["action"] == "update_file":
+        print(f"      path: {dec.get('path')}")
+    elif dec["action"] == "open_pr":
+        print(
+            f"      head: {dec.get('head')} → base: {dec.get('base')}"
+        )
+    side = dec.get("side_effect") or {}
     url = side.get("html_url")
     if url:
         print(f"      url: {url}")
-    if result.downgrade_reason:
-        print(f"      downgrade: {result.downgrade_reason}")
-    if result.error:
-        print(f"      error: {result.error}")
+    if dec.get("downgrade_reason"):
+        print(f"      downgrade: {dec['downgrade_reason']}")
+    if dec.get("error"):
+        print(f"      error: {dec['error']}")

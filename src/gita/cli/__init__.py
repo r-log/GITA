@@ -89,6 +89,23 @@ def _build_parser() -> argparse.ArgumentParser:
             "jobs to find this repo by its GitHub name."
         ),
     )
+    auto_test_gen_grp = index_p.add_mutually_exclusive_group()
+    auto_test_gen_grp.add_argument(
+        "--auto-test-gen",
+        dest="auto_test_gen",
+        action="store_true",
+        default=None,
+        help=(
+            "Opt this repo IN to the post-reindex auto-test-generation "
+            "trigger (Week 9). Off by default; set once and it persists."
+        ),
+    )
+    auto_test_gen_grp.add_argument(
+        "--no-auto-test-gen",
+        dest="auto_test_gen",
+        action="store_false",
+        help="Opt this repo OUT of the auto-test-generation trigger.",
+    )
 
     sub.add_parser("repos", help="List indexed repos")
 

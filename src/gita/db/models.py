@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -42,6 +43,12 @@ class Repo(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Per-repo opt-in for the post-reindex auto-test-generation trigger
+    # (Week 9). Defaults to False so no existing repo gets surprise PRs;
+    # flipped on via ``gita index --auto-test-gen``.
+    auto_test_generation: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
     )
 
     files: Mapped[list["CodeIndex"]] = relationship(
