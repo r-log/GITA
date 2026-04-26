@@ -410,6 +410,7 @@ async def run_reindex_job(
             repo_name = repo.name
             root_path = Path(repo.root_path)
             repo_auto_test_gen = bool(repo.auto_test_generation)
+            repo_default_branch = repo.default_branch or "main"
         except RepoNotFoundError:
             logger.warning(
                 "reindex_no_index repo=%s — skipping", repo_full_name
@@ -479,6 +480,7 @@ async def run_reindex_job(
             repo_full_name=repo_full_name,
             repo_id=repo_id,
             repo_auto_test_gen=repo_auto_test_gen,
+            repo_default_branch=repo_default_branch,
             root_path=root_path,
             ingest_result=result,
             redis=redis,
@@ -513,6 +515,7 @@ async def _maybe_enqueue_test_gen_jobs(
     repo_full_name: str,
     repo_id: Any,
     repo_auto_test_gen: bool,
+    repo_default_branch: str,
     root_path: Path,
     ingest_result: IngestResult,
     redis: Any,
@@ -611,7 +614,7 @@ async def _maybe_enqueue_test_gen_jobs(
                 repo_full_name=repo_full_name,
                 target_file=path,
                 target_repo=repo_full_name,
-                base_branch="main",
+                base_branch=repo_default_branch,
                 base_sha=base_sha,
             )
         except Exception as exc:  # noqa: BLE001
@@ -660,7 +663,7 @@ async def run_test_generation_job(
     target_file: str,
     *,
     target_repo: str | None = None,
-    base_branch: str = "main",
+    base_branch: str | None = None,
     base_sha: str | None = None,
     fallback_issue: int | None = None,
     test_file_path: str | None = None,
@@ -716,6 +719,7 @@ async def run_test_generation_job(
             }
         repo_name = repo.name
         repo_root = Path(repo.root_path)
+        repo_default_branch = repo.default_branch or "main"
         if not repo_root.is_dir():
             return {
                 "status": "error",
@@ -723,6 +727,11 @@ async def run_test_generation_job(
                 "repo": repo_full_name,
                 "target_file": target_file,
             }
+
+    # If the caller didn't specify a base_branch, use the indexed repo's
+    # stored default_branch (Week 10). This is what makes the auto-trigger
+    # behave correctly on repos that don't use "main".
+    resolved_base_branch = base_branch or repo_default_branch
 
     # --- Recipe (LLM + 3-gate verify) ---
     try:
@@ -806,14 +815,14 @@ async def run_test_generation_job(
         if resolved_base_sha is None:
             try:
                 ref_info = await gh.get_ref(
-                    owner, repo_short, f"heads/{base_branch}"
+                    owner, repo_short, f"heads/{resolved_base_branch}"
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "test_gen_base_sha_lookup_failed repo=%s "
                     "base_branch=%s error=%s",
                     target_repo,
-                    base_branch,
+                    resolved_base_branch,
                     exc,
                 )
                 base_summary.update(
@@ -821,7 +830,7 @@ async def run_test_generation_job(
                     reason=(
                         f"base_sha_lookup_failed: {exc}"
                     ),
-                    base_branch=base_branch,
+                    base_branch=resolved_base_branch,
                 )
                 return base_summary
             resolved_base_sha = ref_info.sha
@@ -831,7 +840,7 @@ async def run_test_generation_job(
                 owner,
                 repo_short,
                 recipe_result.test_file_path,
-                ref=base_branch,
+                ref=resolved_base_branch,
             )
             existing_test_sha = existing.sha
         except httpx.HTTPStatusError as exc:
@@ -849,7 +858,7 @@ async def run_test_generation_job(
                         f"get_contents_failed: HTTP "
                         f"{exc.response.status_code}"
                     ),
-                    base_branch=base_branch,
+                    base_branch=resolved_base_branch,
                     base_sha=resolved_base_sha,
                 )
                 return base_summary
@@ -857,7 +866,7 @@ async def run_test_generation_job(
 
     artifact = TestGenerationArtifact(
         repo=target_repo,
-        base_branch=base_branch,
+        base_branch=resolved_base_branch,
         base_sha=resolved_base_sha,
         target_file=target_file,
         test_file_path=recipe_result.test_file_path,
@@ -873,7 +882,7 @@ async def run_test_generation_job(
     )
 
     base_summary.update(
-        base_branch=base_branch,
+        base_branch=resolved_base_branch,
         base_sha=resolved_base_sha,
         decisions=decision_summaries,
     )

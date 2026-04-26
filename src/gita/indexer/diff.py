@@ -151,3 +151,77 @@ def read_head_sha(root: Path) -> str | None:
         return None
     sha = result.stdout.strip()
     return sha or None
+
+
+# Hard fallback when both discovery tiers come up empty. "main" is GitHub's
+# default for new repos since 2020 and the closest thing to a safe guess.
+_DEFAULT_BRANCH_FALLBACK = "main"
+
+
+def discover_default_branch(root: Path) -> str:
+    """Resolve the remote's default branch name, with two-tier fallback.
+
+    Strategy (first non-empty wins):
+
+    1. ``git symbolic-ref --short refs/remotes/origin/HEAD``.
+       Cheap, offline, but only set if someone ran
+       ``git remote set-head origin -a`` (or cloned fresh — clone sets it).
+    2. ``git remote show origin`` — parse ``HEAD branch: …``.
+       Reliable but issues a network round-trip on most setups.
+    3. Hard fallback to ``"main"``.
+
+    Returns the bare branch name (e.g. ``"main"``) — never the
+    ``"origin/main"`` form, since callers feed it straight into things
+    like ``f"refs/heads/{branch}"``.
+    """
+    # ---- Tier 1: symbolic-ref (cheap, offline) ----
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "symbolic-ref",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            value = result.stdout.strip()
+            if value:
+                # symbolic-ref returns e.g. "origin/main" — strip the prefix.
+                return value.split("/", 1)[1] if "/" in value else value
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # ---- Tier 2: parse `git remote show origin` (may hit network) ----
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "remote", "show", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                stripped = line.strip()
+                # Format is exactly "HEAD branch: <name>" — locale-stable
+                # since git's plumbing-ish porcelain output for this
+                # command is English-only.
+                if stripped.startswith("HEAD branch:"):
+                    candidate = stripped.split(":", 1)[1].strip()
+                    if candidate and candidate != "(unknown)":
+                        return candidate
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # ---- Tier 3: hard fallback ----
+    logger.info(
+        "default_branch_fallback root=%s using=%s",
+        root,
+        _DEFAULT_BRANCH_FALLBACK,
+    )
+    return _DEFAULT_BRANCH_FALLBACK

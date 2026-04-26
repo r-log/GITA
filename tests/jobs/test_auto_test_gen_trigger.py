@@ -138,6 +138,7 @@ class TestSkipPaths:
             repo_full_name="owner/repo",
             repo_id=repo.id,
             repo_auto_test_gen=True,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(added_files=["src/x.py"]),
             redis=None,
@@ -159,6 +160,7 @@ class TestSkipPaths:
             repo_full_name="owner/repo",
             repo_id=repo.id,
             repo_auto_test_gen=True,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(added_files=["src/x.py"]),
             redis=pool,
@@ -179,6 +181,7 @@ class TestSkipPaths:
             repo_full_name="owner/repo",
             repo_id=repo.id,
             repo_auto_test_gen=False,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(added_files=["src/x.py"]),
             redis=pool,
@@ -199,6 +202,7 @@ class TestSkipPaths:
             repo_full_name="owner/repo",
             repo_id=repo.id,
             repo_auto_test_gen=True,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(
                 mode="full", added_files=["src/x.py"]
@@ -221,6 +225,7 @@ class TestSkipPaths:
             repo_full_name="owner/repo",
             repo_id=repo.id,
             repo_auto_test_gen=True,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(added_files=[]),
             redis=pool,
@@ -256,6 +261,7 @@ class TestStageFiltering:
             repo_full_name="owner/repo",
             repo_id=repo.id,
             repo_auto_test_gen=True,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(
                 added_files=[
@@ -298,6 +304,7 @@ class TestStageFiltering:
             repo_full_name="owner/repo",
             repo_id=repo.id,
             repo_auto_test_gen=True,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(
                 added_files=["src/internals.py"]
@@ -340,6 +347,7 @@ class TestCapAndEnqueue:
             repo_full_name="owner/repo",
             repo_id=repo.id,
             repo_auto_test_gen=True,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(
                 added_files=[
@@ -378,6 +386,7 @@ class TestCapAndEnqueue:
             repo_full_name="Owner/REPO",
             repo_id=repo.id,
             repo_auto_test_gen=True,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(
                 added_files=["src/foo.py"], head_sha="abc1234deadbeef"
@@ -395,6 +404,36 @@ class TestCapAndEnqueue:
         assert kwargs["target_repo"] == "Owner/REPO"
         assert kwargs["base_sha"] == "abc1234deadbeef"
         assert kwargs["base_branch"] == "main"
+
+    async def test_repo_default_branch_flows_into_enqueue(
+        self,
+        db_session,
+        _patch_runner_session,
+        tmp_path: Path,
+        opt_in_env,
+    ):
+        """Week 10: enqueued job picks up the repo's default_branch
+        instead of a hardcoded 'main' (so master/develop repos work)."""
+        repo = await _make_repo(db_session)
+        _write(tmp_path / "src" / "foo.py")
+        await _make_file(
+            db_session,
+            repo,
+            "src/foo.py",
+            structure={"functions": [{"name": "go"}]},
+        )
+
+        pool = FakeRedisPool()
+        await _maybe_enqueue_test_gen_jobs(
+            repo_full_name="owner/repo",
+            repo_id=repo.id,
+            repo_auto_test_gen=True,
+            repo_default_branch="develop",
+            root_path=tmp_path,
+            ingest_result=_ingest_result(added_files=["src/foo.py"]),
+            redis=pool,
+        )
+        assert pool.calls[0]["kwargs"]["base_branch"] == "develop"
 
     async def test_arq_dedupe_marked_in_summary(
         self,
@@ -418,6 +457,7 @@ class TestCapAndEnqueue:
             repo_full_name="owner/repo",
             repo_id=repo.id,
             repo_auto_test_gen=True,
+            repo_default_branch="main",
             root_path=tmp_path,
             ingest_result=_ingest_result(added_files=["src/foo.py"]),
             redis=pool,

@@ -89,6 +89,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "jobs to find this repo by its GitHub name."
         ),
     )
+    index_p.add_argument(
+        "--default-branch",
+        default=None,
+        metavar="BRANCH",
+        help=(
+            "Override the auto-discovered default branch (e.g. 'main', "
+            "'master', 'develop'). Without this flag, gita reads it "
+            "from `git symbolic-ref refs/remotes/origin/HEAD`, falling "
+            "back to `git remote show origin` and finally to 'main'."
+        ),
+    )
     auto_test_gen_grp = index_p.add_mutually_exclusive_group()
     auto_test_gen_grp.add_argument(
         "--auto-test-gen",
@@ -249,9 +260,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     gen_p.add_argument(
         "--base-branch",
-        default="main",
+        default=None,
         metavar="BRANCH",
-        help="Base branch to branch off + open the PR against (default main)",
+        help=(
+            "Base branch to branch off + open the PR against. When "
+            "omitted, gita uses the indexed repo's stored "
+            "``default_branch`` (set at index time via "
+            "``--default-branch`` or auto-discovered)."
+        ),
     )
     gen_p.add_argument(
         "--base-sha",

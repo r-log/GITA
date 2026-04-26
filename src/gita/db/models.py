@@ -50,6 +50,14 @@ class Repo(Base):
     auto_test_generation: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # Remote default branch (e.g. "main", "master", "develop"). Used by
+    # the auto-test-generation trigger (Week 10) so PRs target the
+    # right base branch instead of a hardcoded "main".
+    # Discovered via ``discover_default_branch`` at index time;
+    # overridable via ``gita index --default-branch BRANCH``.
+    default_branch: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default="main", default="main"
+    )
 
     files: Mapped[list["CodeIndex"]] = relationship(
         back_populates="repo", cascade="all, delete-orphan"

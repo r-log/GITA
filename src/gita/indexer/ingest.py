@@ -20,7 +20,12 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.db.models import CodeIndex, ImportEdge, Repo
-from gita.indexer.diff import FileChange, detect_changes, read_head_sha
+from gita.indexer.diff import (
+    FileChange,
+    detect_changes,
+    discover_default_branch,
+    read_head_sha,
+)
 from gita.indexer.embeddings import EmbeddingClient, prepare_embedding_input
 from gita.indexer.imports import discover_package_roots, resolve_import
 from gita.indexer.parsers import parse_file
@@ -58,6 +63,7 @@ async def _get_or_create_repo(
     root_path: Path,
     *,
     github_full_name: str | None = None,
+    default_branch: str | None = None,
 ) -> Repo:
     stmt = select(Repo).where(Repo.name == name)
     existing = (await session.execute(stmt)).scalar_one_or_none()
@@ -65,11 +71,17 @@ async def _get_or_create_repo(
         existing.root_path = str(root_path)
         if github_full_name and not existing.github_full_name:
             existing.github_full_name = github_full_name
+        # Always overwrite the default branch if a discovered/explicit
+        # value is supplied — the remote can change (rename main/master)
+        # and we want indexing to track it without manual intervention.
+        if default_branch:
+            existing.default_branch = default_branch
         return existing
     repo = Repo(
         name=name,
         root_path=str(root_path),
         github_full_name=github_full_name,
+        default_branch=default_branch or "main",
     )
     session.add(repo)
     await session.flush()
@@ -403,6 +415,7 @@ async def index_repository(
     include_tests: bool = False,
     force_full: bool = False,
     github_full_name: str | None = None,
+    default_branch: str | None = None,
     embedding_client: EmbeddingClient | None = None,
 ) -> IngestResult:
     """Ingest a local repo into the three tables.
@@ -413,6 +426,13 @@ async def index_repository(
 
     ``github_full_name`` (e.g. ``"r-log/AMASS"``) is stored on the Repo
     row so webhook-triggered jobs can resolve the repo by its GitHub name.
+
+    ``default_branch`` (Week 10): when provided, written verbatim to the
+    ``Repo.default_branch`` column. When ``None``, the helper
+    ``discover_default_branch`` is invoked — symbolic-ref → ``git remote
+    show origin`` parse → fallback ``"main"``. Either way the column is
+    overwritten, so a remote rename (main↔master) propagates on the
+    next index run.
 
     ``embedding_client`` is optional: when provided, each indexed file's
     content is embedded and stored in ``code_index.embedding``. When
@@ -426,8 +446,15 @@ async def index_repository(
     if not root_path.is_dir():
         raise ValueError(f"root_path is not a directory: {root_path}")
 
+    resolved_default_branch = default_branch or discover_default_branch(
+        root_path
+    )
     repo = await _get_or_create_repo(
-        session, repo_name, root_path, github_full_name=github_full_name
+        session,
+        repo_name,
+        root_path,
+        github_full_name=github_full_name,
+        default_branch=resolved_default_branch,
     )
     head_sha = read_head_sha(root_path)
     package_roots = discover_package_roots(root_path)

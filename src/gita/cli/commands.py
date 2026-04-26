@@ -80,6 +80,7 @@ async def cmd_index(args: argparse.Namespace) -> int:
     name = args.name or root.name
     force_full = getattr(args, "full", False)
     github_full_name = getattr(args, "github", None)
+    default_branch = getattr(args, "default_branch", None)
     auto_test_gen = getattr(args, "auto_test_gen", None)
 
     embedding_client = make_embedding_client()
@@ -92,6 +93,7 @@ async def cmd_index(args: argparse.Namespace) -> int:
                 root,
                 force_full=force_full,
                 github_full_name=github_full_name,
+                default_branch=default_branch,
                 embedding_client=embedding_client,
             )
             # Apply --auto-test-gen / --no-auto-test-gen, if specified.

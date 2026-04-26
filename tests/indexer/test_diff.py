@@ -15,6 +15,7 @@ from gita.indexer.diff import (
     FileChange,
     detect_changes,
     parse_name_status,
+    discover_default_branch,
     read_head_sha,
 )
 
@@ -152,6 +153,49 @@ class TestReadHeadSha:
 
     def test_non_git_dir_returns_none(self, tmp_path: Path):
         assert read_head_sha(tmp_path) is None
+
+
+class TestDiscoverDefaultBranch:
+    def test_repo_without_remote_falls_back_to_main(
+        self, git_repo: Path
+    ):
+        """Local-only repos (no origin) → fallback ``"main"``.
+
+        Both tiers (symbolic-ref + ``git remote show origin``) come up
+        empty without an origin, so we land on the hard fallback.
+        """
+        assert discover_default_branch(git_repo) == "main"
+
+    def test_non_git_dir_falls_back_to_main(self, tmp_path: Path):
+        """Even outside a git checkout the helper must return *something*
+        — index_repository's call site should never blow up on it."""
+        assert discover_default_branch(tmp_path) == "main"
+
+    def test_symbolic_ref_path(self, git_repo: Path):
+        """Tier 1 wins when ``refs/remotes/origin/HEAD`` is set.
+
+        We fake an origin remote (URL doesn't need to be reachable) and
+        write the symbolic ref directly so we don't need a network round
+        trip in the test.
+        """
+        subprocess.run(
+            [
+                "git", "-C", str(git_repo), "remote", "add", "origin",
+                "https://example.invalid/x.git",
+            ],
+            capture_output=True, check=True,
+        )
+        # Use an unusual branch name so a regression to "main" stands
+        # out clearly in the assertion failure.
+        subprocess.run(
+            [
+                "git", "-C", str(git_repo),
+                "symbolic-ref", "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+            capture_output=True, check=True,
+        )
+        assert discover_default_branch(git_repo) == "trunk"
 
 
 class TestDetectChanges:
