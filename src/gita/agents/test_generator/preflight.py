@@ -397,10 +397,104 @@ async def _has_prior_test_gen_attempt(
 
 
 # ---------------------------------------------------------------------------
+# Preview (Week 10) — calibration tool for the auto-trigger
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class FilePreviewResult:
+    """One file's outcome through Stages A → B for the preview command."""
+
+    target_file: str
+    stage_a: PreflightResult
+    # ``None`` when Stage A skipped — Stage B is never asked because A
+    # already terminated. ``PreflightResult`` otherwise (proceed True or False).
+    stage_b: PreflightResult | None
+
+    @property
+    def is_candidate(self) -> bool:
+        return self.stage_a.proceed and bool(
+            self.stage_b and self.stage_b.proceed
+        )
+
+
+@dataclass(frozen=True)
+class PreviewSummary:
+    """Aggregate output of ``preview_repo``."""
+
+    repo_full_name: str
+    default_branch: str
+    auto_test_generation: bool
+    total_scanned: int
+    files: list[FilePreviewResult]
+
+    @property
+    def candidates(self) -> list[FilePreviewResult]:
+        return [f for f in self.files if f.is_candidate]
+
+    @property
+    def rejected_by_stage_a(self) -> list[FilePreviewResult]:
+        return [f for f in self.files if not f.stage_a.proceed]
+
+    @property
+    def rejected_by_stage_b(self) -> list[FilePreviewResult]:
+        return [
+            f
+            for f in self.files
+            if f.stage_a.proceed and f.stage_b and not f.stage_b.proceed
+        ]
+
+
+async def preview_repo(
+    session: AsyncSession,
+    repo_id: uuid.UUID,
+    repo_full_name: str,
+    repo_root: Path,
+    *,
+    default_branch: str,
+    auto_test_generation: bool,
+) -> PreviewSummary:
+    """Run Stages A → B over every indexed Python file for a repo.
+
+    Pure read-only — no LLM, no GitHub, no enqueue. Used by ``gita
+    auto-test-gen preview <repo>`` so the user can calibrate the gates
+    against a real codebase before flipping the opt-in flag.
+
+    Files are scanned in alphabetical order (matches the auto-trigger's
+    deterministic selection order, so the candidate at the top is the
+    one a real run would actually pick under ``cap=1``).
+    """
+    stmt = (
+        select(CodeIndex.file_path)
+        .where(CodeIndex.repo_id == repo_id)
+        .where(CodeIndex.language == "python")
+        .order_by(CodeIndex.file_path)
+    )
+    paths = list((await session.execute(stmt)).scalars().all())
+
+    files: list[FilePreviewResult] = []
+    for path in paths:
+        a = has_existing_tests(repo_root, path)
+        b: PreflightResult | None = None
+        if a.proceed:
+            b = await is_feasible(session, repo_id, repo_full_name, path)
+        files.append(FilePreviewResult(target_file=path, stage_a=a, stage_b=b))
+
+    return PreviewSummary(
+        repo_full_name=repo_full_name,
+        default_branch=default_branch,
+        auto_test_generation=auto_test_generation,
+        total_scanned=len(paths),
+        files=files,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public surface
 # ---------------------------------------------------------------------------
 __all__ = [
+    "FilePreviewResult",
     "PreflightResult",
+    "PreviewSummary",
     "has_existing_tests",
     "is_feasible",
+    "preview_repo",
 ]

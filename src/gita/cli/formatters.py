@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from gita.agents.test_generator import TestGenerationResult
+from gita.agents.test_generator import (
+    PreviewSummary,
+    TestGenerationResult,
+)
 from gita.agents.types import OnboardingResult, PRReviewResult
 from gita.db.models import Repo
 from gita.indexer.ingest import IngestResult
@@ -403,4 +406,93 @@ def fmt_test_generation_result(result: TestGenerationResult) -> str:
         f"confidence: {result.confidence:.2f} "
         f"(llm={result.llm_confidence:.2f}, verified={result.verified})"
     )
+    return "\n".join(lines)
+
+
+def fmt_preview_summary(
+    summary: PreviewSummary,
+    *,
+    cap: int,
+    show: str = "all",
+) -> str:
+    """Render a ``PreviewSummary`` for ``gita auto-test-gen preview``.
+
+    ``show`` controls verbosity:
+      - ``"all"``       — candidates + both rejection groups
+      - ``"candidates"`` — candidates + summary only
+      - ``"summary"``    — aggregate counts only
+
+    ``cap`` is shown in the summary so the user can see what
+    ``AUTO_TEST_GEN_MAX_PER_REINDEX`` would do if they opted in today.
+    """
+    lines: list[str] = [
+        f"auto-test-gen preview for {summary.repo_full_name}",
+        f"  default_branch:        {summary.default_branch}",
+        f"  auto_test_generation:  "
+        f"{'on' if summary.auto_test_generation else 'off'}",
+        f"  cap (per reindex):     {cap}",
+        f"  total scanned:         {summary.total_scanned}",
+        "",
+    ]
+
+    candidates = summary.candidates
+    selected = candidates[:cap] if cap > 0 else []
+
+    if show in ("all", "candidates"):
+        lines.append(f"CANDIDATES ({len(candidates)}):")
+        if candidates:
+            for f in candidates:
+                marker = (
+                    "  ★ "
+                    if f.target_file in {s.target_file for s in selected}
+                    else "    "
+                )
+                lines.append(f"{marker}{f.target_file}")
+        else:
+            lines.append("  (none)")
+        lines.append("")
+
+    if show == "all":
+        rejected_a = summary.rejected_by_stage_a
+        lines.append(f"REJECTED BY STAGE A ({len(rejected_a)}):")
+        if rejected_a:
+            width = max(len(f.target_file) for f in rejected_a)
+            for f in rejected_a:
+                lines.append(
+                    f"    {f.target_file:<{width}}  {f.stage_a.reason}"
+                )
+        else:
+            lines.append("  (none)")
+        lines.append("")
+
+        rejected_b = summary.rejected_by_stage_b
+        lines.append(f"REJECTED BY STAGE B ({len(rejected_b)}):")
+        if rejected_b:
+            width = max(len(f.target_file) for f in rejected_b)
+            for f in rejected_b:
+                reason = f.stage_b.reason if f.stage_b else "?"
+                lines.append(
+                    f"    {f.target_file:<{width}}  {reason}"
+                )
+        else:
+            lines.append("  (none)")
+        lines.append("")
+
+    lines.append("Summary:")
+    lines.append(f"  total scanned:           {summary.total_scanned}")
+    lines.append(
+        f"  Stage A rejected:        {len(summary.rejected_by_stage_a)}"
+    )
+    lines.append(
+        f"  Stage B rejected:        {len(summary.rejected_by_stage_b)}"
+    )
+    lines.append(f"  Candidates:              {len(candidates)}")
+    lines.append(
+        f"  Selected after cap={cap}: {len(selected)}"
+    )
+    if selected:
+        lines.append("")
+        lines.append("  Would enqueue (alphabetical):")
+        for s in selected:
+            lines.append(f"    - {s.target_file}")
     return "\n".join(lines)

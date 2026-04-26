@@ -34,6 +34,7 @@ if sys.platform == "win32":
 from gita import __version__  # noqa: E402
 from gita.cli.commands import (  # noqa: E402
     _DEFAULT_MAX_ISSUES,
+    cmd_auto_test_gen_preview,
     cmd_generate_tests,
     cmd_index,
     cmd_onboard,
@@ -345,6 +346,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How many results to return (default 10)",
     )
 
+    # ---- auto-test-gen subcommands (Week 10) ----
+    atg_p = sub.add_parser(
+        "auto-test-gen",
+        help="Inspect + control the post-reindex auto-test-generation trigger",
+    )
+    atg_sub = atg_p.add_subparsers(dest="auto_test_gen_subcommand", required=True)
+
+    atg_preview_p = atg_sub.add_parser(
+        "preview",
+        help=(
+            "Run Stages A + B over every indexed file in a repo and "
+            "print what would be a candidate today (no LLM, no GitHub)."
+        ),
+    )
+    atg_preview_p.add_argument(
+        "repo",
+        help=(
+            "Indexed repo identifier — short name (e.g. 'amass') or "
+            "GitHub full name (e.g. 'r-log/AMASS')."
+        ),
+    )
+    atg_preview_p.add_argument(
+        "--show",
+        choices=("all", "candidates", "summary"),
+        default="all",
+        help=(
+            "all = candidates + both rejection groups (default); "
+            "candidates = candidates + summary only; "
+            "summary = aggregate counts only."
+        ),
+    )
+
     return parser
 
 
@@ -360,6 +393,7 @@ _HANDLERS = {
     ("query", "load-bearing"): cmd_query_load_bearing,
     ("query", "history"): cmd_query_history,
     ("query", "concept"): cmd_query_concept,
+    ("auto-test-gen", "preview"): cmd_auto_test_gen_preview,
 }
 
 
@@ -369,6 +403,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "query":
         handler = _HANDLERS.get((args.command, args.query_type))
+    elif args.command == "auto-test-gen":
+        handler = _HANDLERS.get(
+            (args.command, args.auto_test_gen_subcommand)
+        )
     else:
         handler = _HANDLERS.get(args.command)
 

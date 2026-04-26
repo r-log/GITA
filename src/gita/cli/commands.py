@@ -31,6 +31,7 @@ from gita.agents.pr_reviewer import (
     parse_pr_files,
     run_pr_review,
 )
+from gita.agents.test_generator import preview_repo
 from gita.agents.types import OnboardingResult
 from gita.cli.formatters import (
     fmt_concept_result,
@@ -40,6 +41,7 @@ from gita.cli.formatters import (
     fmt_neighborhood_result,
     fmt_onboarding_result,
     fmt_pr_review_result,
+    fmt_preview_summary,
     fmt_repos,
     fmt_stats,
     fmt_symbol_result,
@@ -861,3 +863,55 @@ def _print_decision_summary_dict(index: int, dec: dict) -> None:
         print(f"      downgrade: {dec['downgrade_reason']}")
     if dec.get("error"):
         print(f"      error: {dec['error']}")
+
+
+# ---------------------------------------------------------------------------
+# auto-test-gen preview command (Week 10)
+# ---------------------------------------------------------------------------
+async def cmd_auto_test_gen_preview(args: argparse.Namespace) -> int:
+    """Preview what the auto-test-generation trigger would do for a repo.
+
+    Pure read-only: walks the indexed file list, runs Stages A + B
+    against each, reports candidates + rejection groups + would-be
+    enqueue selection. No LLM call, no GitHub call, no DB writes.
+    """
+    from gita.views._common import resolve_repo  # local import — narrow use
+
+    async with SessionLocal() as session:
+        try:
+            repo = await resolve_repo(session, args.repo)
+        except RepoNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        repo_root = Path(repo.root_path)
+        if not repo_root.is_dir():
+            print(
+                f"error: indexed repo {repo.name!r} root_path "
+                f"{repo_root} no longer exists",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Capture the GitHub full name as the canonical identifier so
+        # the rendered output matches what auto-trigger logs would say
+        # (that runner is webhook-driven and only sees the GH form).
+        repo_full_name = repo.github_full_name or repo.name
+
+        summary = await preview_repo(
+            session,
+            repo.id,
+            repo_full_name,
+            repo_root,
+            default_branch=repo.default_branch or "main",
+            auto_test_generation=bool(repo.auto_test_generation),
+        )
+
+    print(
+        fmt_preview_summary(
+            summary,
+            cap=settings.auto_test_gen_max_per_reindex,
+            show=args.show,
+        )
+    )
+    return 0

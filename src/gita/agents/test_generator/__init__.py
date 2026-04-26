@@ -18,9 +18,12 @@ from gita.agents.test_generator.bridge import (
     default_pr_title,
 )
 from gita.agents.test_generator.preflight import (
+    FilePreviewResult,
     PreflightResult,
+    PreviewSummary,
     has_existing_tests,
     is_feasible,
+    preview_repo,
 )
 from gita.agents.test_generator.recipe import (
     TestGenerationResult,
@@ -29,7 +32,9 @@ from gita.agents.test_generator.recipe import (
 )
 
 __all__ = [
+    "FilePreviewResult",
     "PreflightResult",
+    "PreviewSummary",
     "TestGenerationArtifact",
     "TestGenerationResult",
     "build_test_generation_decisions",
@@ -39,5 +44,6 @@ __all__ = [
     "derive_test_file_path",
     "has_existing_tests",
     "is_feasible",
+    "preview_repo",
     "run_test_generation",
 ]
