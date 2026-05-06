@@ -32,7 +32,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from sqlalchemy import select, text as _sql_text
+from sqlalchemy import select
+from sqlalchemy import text as _sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.db.models import CodeIndex
@@ -46,9 +47,39 @@ logger = logging.getLogger(__name__)
 # prompts and the recipe's success rate falls off a cliff above ~500 LOC.
 _MAX_LINES_FOR_TEST_GEN = 500
 
-# Test-file naming patterns recognized by both gates.
-_TEST_FILE_PREFIXES = ("test_",)
-_TEST_FILE_SUFFIXES = ("_test.py",)
+# Languages whose ``code_index`` rows have function/class structure that
+# the test-generator's structural feasibility checks understand. Used
+# as the default scan set for :func:`preview_repo`. The recipe-supported
+# subset (below) is what the auto-trigger actually enqueues.
+SUPPORTED_PREVIEW_LANGUAGES: frozenset[str] = frozenset(
+    {"python", "typescript", "javascript"}
+)
+
+# Languages the recipe can currently produce verified test files for.
+# :func:`is_feasible` rejects anything outside this set with
+# ``infeasible:unsupported_language:<lang>`` so the auto-trigger never
+# enqueues a job the recipe can't fulfil.
+RECIPE_SUPPORTED_LANGUAGES: frozenset[str] = frozenset({"python"})
+
+# Source-file extensions per language family.
+_PY_SOURCE_EXTS: tuple[str, ...] = (".py",)
+_JSTS_SOURCE_EXTS: tuple[str, ...] = (
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+)
+
+# Python test-file naming conventions — first hit on either side blocks.
+_PY_TEST_PREFIXES: tuple[str, ...] = ("test_",)
+_PY_TEST_SUFFIXES: tuple[str, ...] = ("_test.py",)
+
+# JS/TS test-file naming conventions — ``foo.test.ts``, ``foo.spec.tsx``
+# style. Detection lives in :func:`_is_jstS_test_filename` because the
+# pattern is a middle-segment match, not a prefix/suffix.
+_JSTS_TEST_SEGMENTS: tuple[str, ...] = ("test", "spec")
 
 
 @dataclass(frozen=True)
@@ -70,29 +101,42 @@ def has_existing_tests(
     """Stage A — return ``proceed=False`` when a test for ``target_file``
     already exists on disk.
 
+    Language-aware. Sibling/mirror name shapes and the grep patterns
+    differ between Python (dotted-module imports) and JS/TS (path-based
+    imports). Files with extensions outside both families short-circuit
+    to ``proceed=True`` — Stage B is responsible for rejecting them.
+
     Two layered checks; first hit wins:
 
     1. **Path scan.** Anywhere under ``repo_root`` that is in a
        known test directory (``tests/``, ``test/``, ``spec/``,
        ``__tests__/``) or sits next to the target, look for a file
-       named ``test_<stem>.py`` or ``<stem>_test.py``.
-    2. **Content grep.** If no path match, derive every plausible
-       importable module name for ``target_file`` (using the same
-       package-root discovery the indexer uses) and grep test files
-       for ``from <name>`` / ``import <name>``. Catches custom layouts
-       where the test file's name doesn't follow the convention.
+       whose basename matches the language's test-file convention
+       (``test_<stem>.py`` / ``<stem>_test.py`` for Python;
+       ``<stem>.test.<ext>`` / ``<stem>.spec.<ext>`` for JS/TS).
+    2. **Content grep.** If no path match, derive plausible import
+       references for ``target_file`` and grep test-like files for
+       them. Catches custom layouts where the test file's name
+       doesn't follow the convention.
 
     Pure filesystem read; no DB, no LLM, no subprocess.
     """
     repo_root = repo_root.resolve()
     target_path = PurePosixPath(target_file)
-    stem = target_path.stem
+
+    family = _classify_language(target_path.suffix)
+    if family is None:
+        # Unknown extension — leave the verdict to Stage B, which will
+        # reject on ``not_indexed`` or ``unsupported_language``.
+        return PreflightResult(proceed=True, reason="ok")
+
+    sibling_candidates = _sibling_test_candidates(target_path)
 
     # ---- Check 1: known-shape path scan ----
     target_parent_abs = (repo_root / target_path).parent.resolve()
 
-    # 1a. Sibling tests next to the target file (Python + Go-style).
-    for cand_name in (f"test_{stem}.py", f"{stem}_test.py"):
+    # 1a. Sibling tests next to the target file.
+    for cand_name in sibling_candidates:
         sibling = target_parent_abs / cand_name
         if sibling.is_file():
             return PreflightResult(
@@ -104,10 +148,9 @@ def has_existing_tests(
             )
 
     # 1b. Walk for the same names anywhere inside a test dir.
-    for hit in _iter_repo_files(repo_root, target_only_names=(
-        f"test_{stem}.py",
-        f"{stem}_test.py",
-    )):
+    for hit in _iter_repo_files(
+        repo_root, target_only_names=tuple(sibling_candidates)
+    ):
         rel_parts = hit.relative_to(repo_root).parts
         if any(part in TEST_DIRS for part in rel_parts):
             return PreflightResult(
@@ -117,11 +160,10 @@ def has_existing_tests(
                 ),
             )
 
-    # ---- Check 2: content grep against importable module names ----
-    importable_names = _derive_importable_names(target_file, repo_root)
-    if importable_names:
-        patterns = _build_import_patterns(importable_names)
-        for test_file in _iter_test_like_files(repo_root):
+    # ---- Check 2: content grep against import references ----
+    patterns = _build_import_patterns_for_target(target_file, repo_root, family)
+    if patterns:
+        for test_file in _iter_test_like_files(repo_root, family):
             try:
                 content = test_file.read_text(
                     encoding="utf-8", errors="replace"
@@ -142,6 +184,58 @@ def has_existing_tests(
     return PreflightResult(proceed=True, reason="ok")
 
 
+def _classify_language(suffix: str) -> str | None:
+    """Map a file suffix (``.ts``, ``.py``, …) to a language family.
+
+    Returns ``"python"``, ``"jstS"`` (JS/TS — same family for testing
+    purposes), or ``None`` for anything else.
+    """
+    if suffix in _PY_SOURCE_EXTS:
+        return "python"
+    if suffix in _JSTS_SOURCE_EXTS:
+        return "jstS"
+    return None
+
+
+def _sibling_test_candidates(target_path: PurePosixPath) -> list[str]:
+    """Basenames a sibling test file might have for ``target_path``.
+
+    Python:    ``test_<stem>.py``, ``<stem>_test.py``
+    JS/TS:     ``<stem>.test.<ext>`` and ``<stem>.spec.<ext>`` for the
+               source's own extension, plus ``.tsx`` → ``.ts`` and
+               ``.jsx`` → ``.js`` fallbacks (common react-testing-library
+               pattern of plain-TS tests for TSX components).
+    """
+    stem = target_path.stem
+    ext = target_path.suffix
+    if ext in _PY_SOURCE_EXTS:
+        return [f"test_{stem}.py", f"{stem}_test.py"]
+    if ext in _JSTS_SOURCE_EXTS:
+        test_exts: list[str] = [ext]
+        if ext == ".tsx":
+            test_exts.append(".ts")
+        elif ext == ".jsx":
+            test_exts.append(".js")
+        names: list[str] = []
+        for segment in _JSTS_TEST_SEGMENTS:
+            for test_ext in test_exts:
+                names.append(f"{stem}.{segment}{test_ext}")
+        return names
+    return []
+
+
+def _build_import_patterns_for_target(
+    target_file: str, repo_root: Path, family: str
+) -> list[tuple[re.Pattern[str], str]]:
+    """Dispatch to the right pattern-builder for ``target_file``."""
+    if family == "python":
+        names = _derive_importable_names(target_file, repo_root)
+        return _build_import_patterns(names) if names else []
+    if family == "jstS":
+        return _build_jstS_import_patterns(target_file)
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Stage B — feasibility detection (indexed state)
 # ---------------------------------------------------------------------------
@@ -150,21 +244,30 @@ async def is_feasible(
     repo_id: uuid.UUID,
     repo_full_name: str,
     target_file: str,
+    *,
+    recipe_languages: frozenset[str] = RECIPE_SUPPORTED_LANGUAGES,
 ) -> PreflightResult:
     """Stage B — return ``proceed=False`` when the file isn't a sensible
     test-generation target, or when the auto-trigger has already
     attempted it before.
 
+    ``recipe_languages`` is the set of indexer-language strings the
+    caller will accept (the recipe currently produces verified output
+    only for ``"python"``). Defaults to :data:`RECIPE_SUPPORTED_LANGUAGES`
+    so the auto-trigger keeps its Python-only behavior; :func:`preview_repo`
+    overrides this to surface TS/JS files in calibration output.
+
     Checks (all must pass):
 
     * file is in ``code_index`` for ``repo_id``
-    * file is Python (recipe is Python-only)
+    * file's language is in ``recipe_languages``
+    * file is not a TypeScript declaration (``*.d.ts``)
     * source ≤ ``_MAX_LINES_FOR_TEST_GEN`` lines
     * ``structure`` has at least one function or class
     * at least one symbol is public (not all underscore-prefixed)
-    * not a pure entrypoint (heuristic: only public name is ``main``
-      AND module ends in ``__main__.py`` / has a ``__name__ == "__main__"``
-      sentinel)
+    * (Python only) not a pure entrypoint — ``__main__.py`` or a file
+      whose only public function is ``main`` plus a
+      ``__name__ == "__main__"`` guard
     * no prior ``test_generator`` action recorded against this target
       in ``agent_actions``
     """
@@ -181,10 +284,17 @@ async def is_feasible(
             proceed=False, reason="infeasible:not_indexed"
         )
 
-    if row.language != "python":
+    if row.language not in recipe_languages:
         return PreflightResult(
             proceed=False,
-            reason=f"infeasible:non_python_language:{row.language}",
+            reason=f"infeasible:unsupported_language:{row.language}",
+        )
+
+    # TypeScript declaration files have no executable code — no point
+    # generating tests against type-only signatures.
+    if target_file.endswith(".d.ts"):
+        return PreflightResult(
+            proceed=False, reason="infeasible:typescript_declaration"
         )
 
     if row.line_count > _MAX_LINES_FOR_TEST_GEN:
@@ -213,24 +323,24 @@ async def is_feasible(
             proceed=False, reason="infeasible:no_public_symbols"
         )
 
-    # Entrypoint heuristic: ``__main__.py`` files, or files whose only
-    # public function is named ``main`` and whose body contains a
-    # ``__name__ == "__main__"`` guard. Generated tests for entrypoints
-    # rarely tell us anything useful.
-    file_basename = PurePosixPath(target_file).name
-    if file_basename == "__main__.py":
-        return PreflightResult(
-            proceed=False, reason="infeasible:dunder_main_entrypoint"
-        )
-    if (
-        len(public_funcs) == 1
-        and public_funcs[0].get("name") == "main"
-        and not public_classes
-        and '__name__ == "__main__"' in (row.content or "")
-    ):
-        return PreflightResult(
-            proceed=False, reason="infeasible:cli_entrypoint"
-        )
+    # Entrypoint heuristic — Python-specific. JS/TS has no analog of
+    # ``__name__ == "__main__"`` and ``index.{ts,js}`` files routinely
+    # carry real testable logic, so no equivalent rejection here.
+    if row.language == "python":
+        file_basename = PurePosixPath(target_file).name
+        if file_basename == "__main__.py":
+            return PreflightResult(
+                proceed=False, reason="infeasible:dunder_main_entrypoint"
+            )
+        if (
+            len(public_funcs) == 1
+            and public_funcs[0].get("name") == "main"
+            and not public_classes
+            and '__name__ == "__main__"' in (row.content or "")
+        ):
+            return PreflightResult(
+                proceed=False, reason="infeasible:cli_entrypoint"
+            )
 
     if await _has_prior_test_gen_attempt(
         session, repo_full_name, target_file
@@ -275,19 +385,93 @@ def _iter_repo_files(
         yield path
 
 
-def _iter_test_like_files(root: Path):
-    """Yield .py files that look like test files (in test dir OR named like one)."""
+def _iter_test_like_files(root: Path, family: str):
+    """Yield files that look like tests for the given language ``family``.
+
+    A file qualifies if it lives under a known test directory OR its
+    basename matches the language's test-naming convention. Source-file
+    extensions outside the family are skipped — a Python ``has_existing_tests``
+    call shouldn't grep TS source code, and vice-versa.
+    """
+    if family == "python":
+        source_exts = _PY_SOURCE_EXTS
+    elif family == "jstS":
+        source_exts = _JSTS_SOURCE_EXTS
+    else:
+        return
+
     for path in _iter_repo_files(root):
-        if path.suffix != ".py":
+        if path.suffix not in source_exts:
             continue
         rel_parts = path.relative_to(root).parts
         in_test_dir = any(part in TEST_DIRS for part in rel_parts)
-        named_like_test = (
-            any(path.name.startswith(p) for p in _TEST_FILE_PREFIXES)
-            or any(path.name.endswith(s) for s in _TEST_FILE_SUFFIXES)
-        )
+        if family == "python":
+            named_like_test = (
+                any(path.name.startswith(p) for p in _PY_TEST_PREFIXES)
+                or any(path.name.endswith(s) for s in _PY_TEST_SUFFIXES)
+            )
+        else:
+            named_like_test = _is_jstS_test_filename(path.name)
         if in_test_dir or named_like_test:
             yield path
+
+
+def _is_jstS_test_filename(name: str) -> bool:
+    """``True`` for ``foo.test.ts``, ``index.spec.tsx``, etc.
+
+    Splits on ``.`` and looks for ``test`` or ``spec`` as an interior
+    segment with a JS/TS extension at the end. Avoids matching files
+    like ``myapp.config.ts`` (no ``test``/``spec`` interior segment) or
+    ``test.ts`` (the segment must be interior — first part stays as the
+    stem).
+    """
+    parts = name.split(".")
+    if len(parts) < 3:
+        return False
+    final_ext = "." + parts[-1]
+    if final_ext not in _JSTS_SOURCE_EXTS:
+        return False
+    return any(seg in _JSTS_TEST_SEGMENTS for seg in parts[1:-1])
+
+
+def _build_jstS_import_patterns(
+    target_file: str,
+) -> list[tuple[re.Pattern[str], str]]:
+    """Patterns to detect a JS/TS test file importing the target.
+
+    Unlike Python's dotted-module imports, JS/TS imports are path-based
+    (``./foo``, ``../foo.ts``, ``@/myapp/foo``). The patterns match the
+    basename of the target inside any string literal that follows
+    ``from``, ``import`` (side-effect or dynamic), or ``require``.
+
+    Conservative over-match policy: a hit means we skip generation. A
+    false positive (test file importing some unrelated module that
+    shares a basename) just means the user runs ``gita generate-tests``
+    manually if they really want coverage — strictly safer than
+    over-generating into a repo that already has the tests we'd produce.
+    """
+    stem = PurePosixPath(target_file).stem
+    if not stem:
+        return []
+    esc_stem = re.escape(stem)
+    # Path inside the string literal: optional path-prefix, then the
+    # stem as a whole word, optionally followed by an extension. Using
+    # ``[^'"]*?`` (non-greedy) so we don't accidentally span quotes.
+    inner = rf"[^'\"]*?\b{esc_stem}(?:\.\w+)?"
+    return [
+        (
+            re.compile(rf"\bfrom\s+['\"]{inner}['\"]"),
+            f"from … {stem}",
+        ),
+        (
+            re.compile(rf"\bimport\s*\(?\s*['\"]{inner}['\"]"),
+            f"import … {stem}",
+        ),
+        (
+            re.compile(rf"\brequire\s*\(\s*['\"]{inner}['\"]"),
+            f"require(… {stem})",
+        ),
+    ]
 
 
 def _build_import_patterns(
@@ -452,20 +636,25 @@ async def preview_repo(
     default_branch: str,
     auto_test_generation: bool,
 ) -> PreviewSummary:
-    """Run Stages A → B over every indexed Python file for a repo.
+    """Run Stages A → B over every indexed file in ``SUPPORTED_PREVIEW_LANGUAGES``.
 
     Pure read-only — no LLM, no GitHub, no enqueue. Used by ``gita
     auto-test-gen preview <repo>`` so the user can calibrate the gates
     against a real codebase before flipping the opt-in flag.
 
-    Files are scanned in alphabetical order (matches the auto-trigger's
-    deterministic selection order, so the candidate at the top is the
-    one a real run would actually pick under ``cap=1``).
+    The scan covers Python + TypeScript + JavaScript so users can see
+    detection coverage for languages outside the recipe's current
+    output set; those files surface in the report with
+    ``infeasible:unsupported_language:<lang>`` until the recipe gains
+    that language. Files are scanned in alphabetical order (matches
+    the auto-trigger's deterministic selection order, so the candidate
+    at the top is the one a real run would actually pick under
+    ``cap=1``).
     """
     stmt = (
         select(CodeIndex.file_path)
         .where(CodeIndex.repo_id == repo_id)
-        .where(CodeIndex.language == "python")
+        .where(CodeIndex.language.in_(SUPPORTED_PREVIEW_LANGUAGES))
         .order_by(CodeIndex.file_path)
     )
     paths = list((await session.execute(stmt)).scalars().all())
@@ -491,6 +680,8 @@ async def preview_repo(
 # Public surface
 # ---------------------------------------------------------------------------
 __all__ = [
+    "RECIPE_SUPPORTED_LANGUAGES",
+    "SUPPORTED_PREVIEW_LANGUAGES",
     "FilePreviewResult",
     "PreflightResult",
     "PreviewSummary",
