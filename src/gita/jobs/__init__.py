@@ -121,6 +121,7 @@ async def generate_tests(
         fallback_issue=fallback_issue,
         test_file_path=test_file_path,
         model=model,
+        redis=ctx.get("redis"),
     )
 
 

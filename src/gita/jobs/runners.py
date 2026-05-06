@@ -658,6 +658,101 @@ _PROGRESS_OUTCOMES = {
 }
 
 
+async def _maybe_enqueue_auto_review(
+    *,
+    decision_summaries: list[dict[str, Any]],
+    target_repo: str | None,
+    redis: Any,
+) -> dict[str, Any]:
+    """Enqueue ``review_pr`` when test_generator just opened a real PR.
+
+    Closes the autonomous loop (Week 10): push → reindex → test-gen → PR →
+    *review*. Bypasses the webhook path on purpose — the GitHub App's own
+    ``pull_request.opened`` delivery is dropped by the bot-sender filter
+    in ``gita.web.webhooks`` (Wall 2 of loop prevention). Triggering a
+    review via an internal trusted enqueue keeps Wall 2 intact.
+
+    Returns a structured summary so the caller can fold it into the job
+    result for log-grepping. Skips silently in the following cases:
+
+    * ``redis is None`` (CLI direct call — never auto-fires)
+    * ``target_repo is None`` (local-only run — no GitHub PR exists)
+    * No ``open_pr`` decision in the chain
+    * The ``open_pr`` decision didn't ``EXECUTED`` (shadow / downgrade /
+      error → no real PR was created)
+    * ``side_effect.number`` missing (defensive — shouldn't happen for an
+      executed open_pr)
+    """
+    summary: dict[str, Any] = {"status": "skipped", "reason": None}
+
+    if redis is None:
+        summary["reason"] = "no_redis_pool"
+        return summary
+    if not target_repo:
+        summary["reason"] = "no_target_repo"
+        return summary
+
+    open_pr_summary = next(
+        (d for d in decision_summaries if d.get("action") == "open_pr"),
+        None,
+    )
+    if open_pr_summary is None:
+        summary["reason"] = "no_open_pr_decision"
+        return summary
+    if open_pr_summary.get("outcome") != Outcome.EXECUTED.value:
+        summary["reason"] = f"outcome={open_pr_summary.get('outcome')}"
+        return summary
+
+    side_effect = open_pr_summary.get("side_effect") or {}
+    pr_number = side_effect.get("number")
+    if not pr_number:
+        summary["reason"] = "no_pr_number"
+        return summary
+
+    # ``open_pr``'s side_effect doesn't include the head SHA, but the
+    # review's SHA-based skip is only there to suppress repeat reviews —
+    # a freshly-created auto-PR has never been reviewed, so passing
+    # ``head_sha=None`` is safe and lets ``run_pr_review_job`` resolve
+    # the SHA itself when it fetches the PR from GitHub.
+    repo_lower = target_repo.strip().lower()
+    job_id = f"review-pr:{repo_lower}:{pr_number}"
+    try:
+        arq_job = await redis.enqueue_job(
+            "review_pr",
+            _job_id=job_id,
+            repo_full_name=target_repo,
+            pr_number=pr_number,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "auto_review_enqueue_failed repo=%s pr=%s error=%s",
+            target_repo,
+            pr_number,
+            exc,
+        )
+        summary["status"] = "enqueue_error"
+        summary["reason"] = str(exc)
+        summary["job_id"] = job_id
+        summary["pr_number"] = pr_number
+        return summary
+
+    deduped = arq_job is None
+    if deduped:
+        logger.info("auto_review_enqueue_deduped job_id=%s", job_id)
+    else:
+        logger.info(
+            "auto_review_enqueued job_id=%s repo=%s pr=%s",
+            job_id,
+            target_repo,
+            pr_number,
+        )
+    summary["status"] = "enqueued"
+    summary["job_id"] = job_id
+    summary["pr_number"] = pr_number
+    summary["deduped"] = deduped
+    return summary
+
+
 async def run_test_generation_job(
     repo_full_name: str,
     target_file: str,
@@ -668,6 +763,7 @@ async def run_test_generation_job(
     fallback_issue: int | None = None,
     test_file_path: str | None = None,
     model: str | None = None,
+    redis: Any = None,
 ) -> dict[str, Any]:
     """Generate a verified pytest test file and (optionally) push it.
 
@@ -881,10 +977,27 @@ async def run_test_generation_job(
         decisions, mode=mode, auth=auth
     )
 
+    auto_review_summary: dict[str, Any] = {}
+    try:
+        auto_review_summary = await _maybe_enqueue_auto_review(
+            decision_summaries=decision_summaries,
+            target_repo=target_repo,
+            redis=redis,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "auto_review_trigger_failed repo=%s file=%s error=%s",
+            target_repo,
+            target_file,
+            exc,
+        )
+        auto_review_summary = {"status": "trigger_error", "error": str(exc)}
+
     base_summary.update(
         base_branch=resolved_base_branch,
         base_sha=resolved_base_sha,
         decisions=decision_summaries,
+        auto_review_trigger=auto_review_summary,
     )
 
     final_outcomes = [d["outcome"] for d in decision_summaries]
