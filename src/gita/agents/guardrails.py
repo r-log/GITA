@@ -25,9 +25,10 @@ Two entry points:
 2. **Line range** — ``finding.line`` must be ≤ ``code_index.line_count``.
    Catches hallucinated line numbers.
 3. **AST parse gate** — if the finding description claims a syntax/parse
-   error (matched by regex), and the file parses cleanly, the finding
-   is dropped. Catches the P6-class hallucination where the LLM flags
-   valid multi-line Python as broken.
+   error in the source (matched by regex; a finding that is about SQL,
+   JSON or another embedded language is not such a claim), and the file
+   parses cleanly, the finding is dropped. Catches the P6-class
+   hallucination where the LLM flags valid multi-line Python as broken.
 4. **Banned-phrase filter** — if the finding description matches a
    boilerplate regex (the same patterns the checklist uses at test time),
    the finding is dropped at runtime so it never reaches the bridge.
@@ -106,10 +107,28 @@ def _check_banned_phrase(finding: Finding) -> str | None:
     return None
 
 
+# Languages a "syntax error" can belong to other than the file's own. The
+# parse gate can only disprove a claim about the source itself, so a
+# finding that also talks about one of these ("a quote in the search term
+# raises a SQL syntax error") is not treated as a parse claim.
+_OTHER_LANGUAGE = re.compile(
+    r"\b(?:sql|query|queries|json|yaml|toml|xml|html|css|regex|regular\s+expression"
+    r"|shell|bash|command[- ]line|template|jinja|markdown|graphql|csv)\b",
+    re.IGNORECASE,
+)
+
+
 def _claims_syntax_error(finding: Finding) -> bool:
-    """True if the finding's description claims a syntax or parse error."""
+    """True if the finding claims the source itself has a syntax or parse error.
+
+    Mentions of a syntax error in another language the finding discusses
+    (SQL built from input, a JSON payload) don't count: the claim may be
+    true, and parsing the file can't show otherwise.
+    """
     text = finding.description
-    return any(pattern.search(text) for pattern in _SYNTAX_ERROR_PATTERNS)
+    if not any(pattern.search(text) for pattern in _SYNTAX_ERROR_PATTERNS):
+        return False
+    return _OTHER_LANGUAGE.search(text) is None
 
 
 def _file_parses_cleanly(content: str, language: str) -> bool:

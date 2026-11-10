@@ -109,6 +109,27 @@ class TestClaimsSyntaxError:
         f = _finding(description="mutable default argument roles=[]")
         assert _claims_syntax_error(f) is False
 
+    def test_matches_claim_about_the_module_itself(self):
+        f = _finding(description="The getattr call is never closed. This is a syntax error.")
+        assert _claims_syntax_error(f) is True
+
+    def test_sql_syntax_error_from_input_is_not_a_parse_claim(self):
+        # Recorded from a PR-review eval run: a correct, critical SQL
+        # injection finding was dropped because it mentions the SQL syntax
+        # error a stray quote causes.
+        f = _finding(
+            description=(
+                "search_products builds the SQL with an f-string, interpolating the "
+                "user-supplied `term` directly into `LIKE '%{term}%'`. This is SQL "
+                "injection. Any term containing a single quote also raises a syntax error."
+            )
+        )
+        assert _claims_syntax_error(f) is False
+
+    def test_json_syntax_error_is_not_a_parse_claim(self):
+        f = _finding(description="A trailing comma in the JSON payload causes a syntax error")
+        assert _claims_syntax_error(f) is False
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers: _check_banned_phrase
@@ -464,6 +485,24 @@ class TestVerifyPrFindings:
         verified, dropped = verify_pr_findings([f], [ctx])
         assert verified == []
         assert dropped[0][1].startswith("syntax_claim_on_valid_file")
+
+    def test_injection_finding_mentioning_sql_syntax_error_is_kept(self):
+        """Regression from the PR-review eval: the head parses, but the
+        "syntax error" is the SQL one a quote in the input causes."""
+        head = "def search(conn, term):\n    return conn.execute(f\"... LIKE '%{term}%'\")\n"
+        ctx = _ctx("shop/db.py", ranges=[(1, 2)], head=head, windows=[(1, 2)])
+        f = _finding(
+            file="shop/db.py",
+            line=2,
+            severity="critical",
+            kind="security",
+            description=(
+                "The SQL is built with an f-string from `term`: SQL injection. "
+                "Any term containing a single quote also raises a syntax error."
+            ),
+        )
+        verified, dropped = verify_pr_findings([f], [ctx])
+        assert verified == [f] and dropped == []
 
     def test_syntax_claim_kept_when_head_unknown(self):
         ctx = _ctx("src/x.py", ranges=[(1, 1)], head=None)
