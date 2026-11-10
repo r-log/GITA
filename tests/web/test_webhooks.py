@@ -15,7 +15,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from gita.web.webhooks import WebhookEvent, _parse_event, verify_signature
+from gita.web.webhooks import _parse_event, verify_signature
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -72,7 +72,7 @@ def _make_payload(
     """
     payload: dict = {
         "sender": {"login": sender_login, "type": sender_type},
-        "repository": {"full_name": repo_full_name},
+        "repository": {"full_name": repo_full_name, "default_branch": "main"},
     }
     if action is not None:
         payload["action"] = action
@@ -82,7 +82,11 @@ def _make_payload(
             "head": {"sha": "test-sha-abc123"},
         }
     if issue_number is not None:
-        payload["issue"] = {"number": issue_number}
+        payload["issue"] = {
+            "number": issue_number,
+            "user": {"login": "reporter"},
+            "author_association": "NONE",
+        }
     if extra:
         payload.update(extra)
     return payload
@@ -122,15 +126,11 @@ def client(monkeypatch):
     monkeypatch.setattr(
         "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
     )
-    from gita.web import cooldown
-    cooldown.reset()
-
     from gita.web import create_app
 
     app = create_app(use_lifespan=False)
     app.state.arq_pool = _FakeArqPool()
     yield TestClient(app)
-    cooldown.reset()
 
 
 @pytest.fixture
@@ -301,19 +301,43 @@ class TestEventTypeParsing:
         assert data["status"] == "dispatched"
         assert data["function"] == "review_pr"
 
-    def test_issues_opened_dispatched(self, client):
+    def test_issues_opened_is_not_a_trigger(self, client):
+        """Opening an issue costs nothing; onboarding needs the label."""
         payload = _make_payload(action="opened", pr_number=None, issue_number=7)
+        resp = _post_webhook(client, payload, event_type="issues")
+        assert resp.json()["status"] == "ignored"
+
+    def test_onboarding_label_applied_by_maintainer_dispatched(self, client):
+        payload = _make_payload(
+            action="labeled",
+            pr_number=None,
+            issue_number=7,
+            extra={"label": {"name": "gita:onboard"}},
+        )
         resp = _post_webhook(client, payload, event_type="issues")
         data = resp.json()
         assert data["status"] == "dispatched"
         assert data["function"] == "onboard_repo"
 
-    def test_push_event_dispatched(self, client):
-        payload = _make_payload(action=None, pr_number=None, extra={"after": "abc123"})
+    def test_push_to_default_branch_dispatched(self, client):
+        payload = _make_payload(
+            action=None,
+            pr_number=None,
+            extra={"ref": "refs/heads/main", "after": "a" * 40},
+        )
         resp = _post_webhook(client, payload, event_type="push")
         data = resp.json()
         assert data["status"] == "dispatched"
         assert data["function"] == "reindex_repo"
+
+    def test_push_to_feature_branch_ignored(self, client):
+        payload = _make_payload(
+            action=None,
+            pr_number=None,
+            extra={"ref": "refs/heads/feature", "after": "a" * 40},
+        )
+        resp = _post_webhook(client, payload, event_type="push")
+        assert resp.json()["status"] == "ignored"
 
     def test_unhandled_event_ignored(self, client):
         """Events not in EVENT_HANDLERS return 200 with 'no handler'."""
@@ -330,6 +354,46 @@ class TestEventTypeParsing:
         )
         assert resp.status_code == 400
         assert "missing" in resp.json()["error"].lower()
+
+
+class TestMalformedInput:
+    """Signed but malformed deliveries are client errors, not 500s."""
+
+    def _post_raw(self, client, body: bytes, signature: str | None = None):
+        return client.post(
+            WEBHOOK_URL,
+            content=body,
+            headers={
+                "X-Hub-Signature-256": signature or _sign(body),
+                "X-GitHub-Event": "pull_request",
+                "Content-Type": "application/json",
+            },
+        )
+
+    def test_signed_non_json_body_returns_400(self, client):
+        resp = self._post_raw(client, b"not json at all")
+        assert resp.status_code == 400
+
+    def test_signed_json_array_returns_400(self, client):
+        resp = self._post_raw(client, b"[1, 2, 3]")
+        assert resp.status_code == 400
+
+    def test_non_ascii_signature_returns_401(self, client):
+        body = b"{}"
+        resp = client.post(
+            WEBHOOK_URL,
+            content=body,
+            headers={
+                "X-Hub-Signature-256": b"sha256=\xc3\xa9\xc3\xa9",
+                "X-GitHub-Event": "pull_request",
+            },
+        )
+        assert resp.status_code == 401
+
+    def test_responses_are_valid_json_with_hostile_values(self, client):
+        payload = _make_payload(action='x"y', pr_number=None)
+        resp = _post_webhook(client, payload, event_type='weird"event')
+        assert resp.json()["action"] == 'x"y'
 
 
 # ---------------------------------------------------------------------------
@@ -370,8 +434,7 @@ class TestArqPoolIntegration:
         monkeypatch.setattr(
             "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
         )
-        from gita.web import create_app, cooldown
-        cooldown.reset()
+        from gita.web import create_app
 
         app = create_app(use_lifespan=False)
         app.state.arq_pool = None  # simulate pool failure
@@ -381,23 +444,13 @@ class TestArqPoolIntegration:
         resp = _post_webhook(no_pool_client, payload)
         assert resp.status_code == 503
         assert "unavailable" in resp.json()["error"]
-        cooldown.reset()
 
     def test_duplicate_job_id_ignored(self, monkeypatch):
-        """Wall 3: second webhook for same PR returns 'job already queued'.
-
-        We set cooldown window to 0 so the cooldown gate doesn't fire
-        first — this isolates the ARQ job ID deduplication behavior.
-        """
+        """A redelivery for the same PR commit returns 'job already queued'."""
         monkeypatch.setattr(
             "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
         )
-        monkeypatch.setattr(
-            "gita.web.webhooks.check_cooldown",
-            lambda repo, **kw: False,  # bypass cooldown
-        )
-        from gita.web import create_app, cooldown
-        cooldown.reset()
+        from gita.web import create_app
 
         app = create_app(use_lifespan=False)
         app.state.arq_pool = _FakeArqPool()
@@ -413,7 +466,6 @@ class TestArqPoolIntegration:
         data2 = resp2.json()
         assert data2["status"] == "ignored"
         assert data2["reason"] == "job already queued"
-        cooldown.reset()
 
     def test_different_prs_both_dispatch(self, client):
         """Different PR numbers get different job IDs — both dispatch."""

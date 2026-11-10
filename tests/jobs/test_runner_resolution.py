@@ -84,7 +84,7 @@ class TestPrReviewResolution:
         mock_auth = AsyncMock()
         with patch("gita.jobs.runners.GithubAppAuth.from_files", return_value=mock_auth):
             mock_gh = AsyncMock()
-            mock_gh.get_pr = AsyncMock(return_value=AsyncMock(head_sha="abc"))
+            mock_gh.get_pr = AsyncMock(return_value=AsyncMock(head_sha="abc", state="open"))
             mock_gh.get_pr_files = AsyncMock(return_value=[])
             mock_gh.__aenter__ = AsyncMock(return_value=mock_gh)
             mock_gh.__aexit__ = AsyncMock(return_value=None)

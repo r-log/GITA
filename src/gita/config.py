@@ -37,6 +37,18 @@ class Settings(BaseSettings):
         default=None, alias="GITHUB_WEBHOOK_SECRET"
     )
 
+    # Label that requests an onboarding review on an issue. Only counts
+    # when applied by someone with triage access, or self-applied by an
+    # owner/member/collaborator (see gita.web.dispatch).
+    onboarding_label: str = Field(default="gita:onboard", alias="ONBOARDING_LABEL")
+
+    # PR reviews wait this long before running, so a burst of pushes
+    # collapses into one review of the newest commit (older jobs see
+    # they've been superseded and skip without calling the LLM).
+    review_debounce_seconds: float = Field(
+        default=20.0, alias="REVIEW_DEBOUNCE_SECONDS"
+    )
+
     # Redis URL for the ARQ job queue. Required when running the worker.
     # Uses 127.0.0.1 instead of localhost — on Windows, localhost can
     # resolve to IPv6 (::1) while Docker only binds IPv4.

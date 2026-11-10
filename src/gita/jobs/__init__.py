@@ -9,9 +9,11 @@ objects whose ``function_name`` matches the function names exported here.
 Every job gets a deterministic ID so ARQ rejects duplicate enqueues.
 The pattern is ``{function}:{repo}:{discriminator}``:
 
-- ``review-pr:r-log/amass:42``  — one review per PR number
-- ``onboard:r-log/amass:7``     — one onboard per issue number
-- ``reindex:r-log/amass:abc123`` — one re-index per push SHA
+- ``review-pr:r-log/amass:42:<head sha>`` — one review per PR commit
+- ``onboard:r-log/amass:7``                — one onboard per issue
+- ``reindex:r-log/amass:<sha>``            — one re-index per default-branch push
+
+See ``gita.web.dispatch`` for why each ID has the shape it has.
 
 The actual agent logic lives in ``gita.jobs.runners``. These functions
 are thin ARQ wrappers that delegate to the runners.
@@ -93,7 +95,7 @@ async def generate_tests(
     repo_full_name: str,
     target_file: str,
     target_repo: str | None = None,
-    base_branch: str = "main",
+    base_branch: str | None = None,
     base_sha: str | None = None,
     fallback_issue: int | None = None,
     test_file_path: str | None = None,

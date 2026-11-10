@@ -47,6 +47,7 @@ from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
 from gita.indexer.embeddings import make_embedding_client
 from gita.indexer.ingest import IngestResult, index_repository
+from gita.jobs.ids import review_job_id
 from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError, resolve_repo
 
@@ -147,6 +148,39 @@ async def run_pr_review_job(
         pr_info = await gh.get_pr(owner, repo, pr_number)
         pr_files_json = await gh.get_pr_files(owner, repo, pr_number)
 
+    # A newer push supersedes this job: the job for that commit is queued
+    # behind us (see the review debounce in gita.web.dispatch), so skip
+    # before spending any LLM tokens on a commit nobody will look at.
+    if head_sha and pr_info.head_sha and pr_info.head_sha != head_sha:
+        logger.info(
+            "pr_review_superseded repo=%s pr=%d job_sha=%s head_sha=%s",
+            repo_full_name,
+            pr_number,
+            head_sha[:12],
+            pr_info.head_sha[:12],
+        )
+        return {
+            "status": "skipped",
+            "reason": "superseded",
+            "repo": repo_full_name,
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "current_head_sha": pr_info.head_sha,
+        }
+    if pr_info.state != "open":
+        logger.info(
+            "pr_review_skipped_closed repo=%s pr=%d state=%s",
+            repo_full_name,
+            pr_number,
+            pr_info.state,
+        )
+        return {
+            "status": "skipped",
+            "reason": f"pr_{pr_info.state}",
+            "repo": repo_full_name,
+            "pr_number": pr_number,
+        }
+
     # Use the live head SHA from the PR (more accurate than the webhook's).
     actual_sha = pr_info.head_sha or head_sha
 
@@ -177,25 +211,24 @@ async def run_pr_review_job(
 
     async with OpenRouterClient(
         api_key=settings.openrouter_api_key, default_model=model
-    ) as llm:
-        async with SessionLocal() as session:
-            try:
-                result = await run_pr_review(
-                    session, repo_name, pr_info, diff_hunks, llm=llm
-                )
-            except PRReviewError as exc:
-                logger.error(
-                    "pr_review_failed repo=%s pr=%d error=%s",
-                    repo_full_name,
-                    pr_number,
-                    exc,
-                )
-                return {
-                    "status": "error",
-                    "reason": str(exc),
-                    "repo": repo_full_name,
-                    "pr_number": pr_number,
-                }
+    ) as llm, SessionLocal() as session:
+        try:
+            result = await run_pr_review(
+                session, repo_name, pr_info, diff_hunks, llm=llm
+            )
+        except PRReviewError as exc:
+            logger.error(
+                "pr_review_failed repo=%s pr=%d error=%s",
+                repo_full_name,
+                pr_number,
+                exc,
+            )
+            return {
+                "status": "error",
+                "reason": str(exc),
+                "repo": repo_full_name,
+                "pr_number": pr_number,
+            }
 
     # --- Build decision and execute ---
     decision = build_pr_review_decision(
@@ -279,23 +312,22 @@ async def run_onboarding_job(
 
     async with OpenRouterClient(
         api_key=settings.openrouter_api_key, default_model=model
-    ) as llm:
-        async with SessionLocal() as session:
-            try:
-                result = await run_onboarding(session, repo_name, llm=llm)
-            except OnboardingError as exc:
-                logger.error(
-                    "onboarding_failed repo=%s issue=%d error=%s",
-                    repo_full_name,
-                    issue_number,
-                    exc,
-                )
-                return {
-                    "status": "error",
-                    "reason": str(exc),
-                    "repo": repo_full_name,
-                    "issue_number": issue_number,
-                }
+    ) as llm, SessionLocal() as session:
+        try:
+            result = await run_onboarding(session, repo_name, llm=llm)
+        except OnboardingError as exc:
+            logger.error(
+                "onboarding_failed repo=%s issue=%d error=%s",
+                repo_full_name,
+                issue_number,
+                exc,
+            )
+            return {
+                "status": "error",
+                "reason": str(exc),
+                "repo": repo_full_name,
+                "issue_number": issue_number,
+            }
 
     decision = build_onboarding_comment_decision(
         result,
@@ -354,34 +386,51 @@ async def run_onboarding_job(
 _GIT_TIMEOUT = 120  # seconds
 
 
+def _git(root_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(root_path), *args],
+        capture_output=True,
+        text=True,
+        timeout=_GIT_TIMEOUT,
+        check=True,
+    )
+
+
 def _git_sync(root_path: Path, after_sha: str | None) -> tuple[bool, str]:
-    """Fetch from origin and reset the working tree to a target SHA.
+    """Fetch from origin and check out ``after_sha`` (detached).
 
     Returns ``(success, error_message)`` — error_message is empty on success.
+
+    The checkout at ``root_path`` belongs to GITA's worker, but it is the
+    directory someone ran ``gita index`` on, so this is careful with it:
+
+    * It refuses to touch a working tree with uncommitted changes —
+      nothing here may discard someone's work.
+    * It checks out the commit detached instead of ``reset --hard``, so
+      no local branch pointer is moved.
+
     Safe to call with ``max_jobs=1`` (no concurrent access to the worktree).
     """
     try:
-        subprocess.run(
-            ["git", "-C", str(root_path), "fetch", "origin"],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            check=True,
+        status = _git(root_path, "status", "--porcelain", "--untracked-files=no")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        return False, f"git status failed: {exc}"
+    if status.stdout.strip():
+        return False, (
+            "working tree has uncommitted changes; refusing to sync. "
+            "Index from a dedicated clone that only GITA uses."
         )
+
+    try:
+        _git(root_path, "fetch", "--quiet", "origin")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         return False, f"git fetch failed: {exc}"
 
     target = after_sha or "origin/HEAD"
     try:
-        subprocess.run(
-            ["git", "-C", str(root_path), "reset", "--hard", target],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            check=True,
-        )
+        _git(root_path, "checkout", "--quiet", "--detach", target)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        return False, f"git reset failed: {exc}"
+        return False, f"git checkout failed: {exc}"
 
     return True, ""
 
@@ -709,19 +758,21 @@ async def _maybe_enqueue_auto_review(
         summary["reason"] = "no_pr_number"
         return summary
 
-    # ``open_pr``'s side_effect doesn't include the head SHA, but the
-    # review's SHA-based skip is only there to suppress repeat reviews —
-    # a freshly-created auto-PR has never been reviewed, so passing
-    # ``head_sha=None`` is safe and lets ``run_pr_review_job`` resolve
-    # the SHA itself when it fetches the PR from GitHub.
-    repo_lower = target_repo.strip().lower()
-    job_id = f"review-pr:{repo_lower}:{pr_number}"
+    # The PR's head is the commit ``update_file`` created. Using it gives
+    # the same job identity a webhook for that commit would get.
+    update_summary = next(
+        (d for d in decision_summaries if d.get("action") == "update_file"),
+        None,
+    )
+    head_sha = ((update_summary or {}).get("side_effect") or {}).get("commit_sha")
+    job_id = review_job_id(target_repo, pr_number, head_sha)
     try:
         arq_job = await redis.enqueue_job(
             "review_pr",
             _job_id=job_id,
             repo_full_name=target_repo,
             pr_number=pr_number,
+            head_sha=head_sha,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
@@ -840,26 +891,25 @@ async def run_test_generation_job(
         async with OpenRouterClient(
             api_key=settings.openrouter_api_key,
             default_model=resolved_model,
-        ) as llm:
-            async with SessionLocal() as session:
-                try:
-                    recipe_result = await run_test_generation(
-                        session,
-                        repo_name,
-                        target_file,
-                        llm=llm,
-                        repo_root=repo_root,
-                        model=resolved_model,
-                        test_file_path=test_file_path,
-                        require_isolation=require_isolation,
-                    )
-                except (FileNotFoundError, ValueError) as exc:
-                    return {
-                        "status": "error",
-                        "reason": str(exc),
-                        "repo": repo_full_name,
-                        "target_file": target_file,
-                    }
+        ) as llm, SessionLocal() as session:
+            try:
+                recipe_result = await run_test_generation(
+                    session,
+                    repo_name,
+                    target_file,
+                    llm=llm,
+                    repo_root=repo_root,
+                    model=resolved_model,
+                    test_file_path=test_file_path,
+                    require_isolation=require_isolation,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                return {
+                    "status": "error",
+                    "reason": str(exc),
+                    "repo": repo_full_name,
+                    "target_file": target_file,
+                }
     except Exception as exc:  # noqa: BLE001 — surface LLM/network errors cleanly
         logger.error(
             "test_gen_recipe_failed repo=%s file=%s error=%s",

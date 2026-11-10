@@ -65,13 +65,16 @@ def _create_branch_summary(*, outcome: Outcome = Outcome.EXECUTED) -> dict:
     }
 
 
+HEAD_SHA = "c" * 40
+
+
 def _update_file_summary(*, outcome: Outcome = Outcome.EXECUTED) -> dict:
     return {
         "action": "update_file",
         "outcome": outcome.value,
         "downgrade_reason": None,
         "error": None,
-        "side_effect": {},
+        "side_effect": {"commit_sha": HEAD_SHA},
         "path": "tests/test_foo.py",
     }
 
@@ -129,17 +132,18 @@ class TestEnqueueHappyPath:
 
         assert summary["status"] == "enqueued"
         assert summary["pr_number"] == 42
-        assert summary["job_id"] == "review-pr:owner/repo:42"
+        assert summary["job_id"] == f"review-pr:owner/repo:42:{HEAD_SHA}"
         assert summary["deduped"] is False
 
         assert len(pool.calls) == 1
         call = pool.calls[0]
         assert call["function"] == "review_pr"
-        assert call["job_id"] == "review-pr:owner/repo:42"
+        assert call["job_id"] == f"review-pr:owner/repo:42:{HEAD_SHA}"
         assert call["kwargs"]["repo_full_name"] == "Owner/Repo"
         assert call["kwargs"]["pr_number"] == 42
-        # head_sha is intentionally not threaded — see helper docstring.
-        assert "head_sha" not in call["kwargs"]
+        # The PR head is the commit update_file created, so the job gets
+        # the same identity a webhook for that commit would.
+        assert call["kwargs"]["head_sha"] == HEAD_SHA
 
     async def test_repo_lowercase_normalisation_in_job_id(self):
         """Job ID uses lowercased repo so case-only differences collapse."""
@@ -149,7 +153,7 @@ class TestEnqueueHappyPath:
             target_repo="OWNER/REPO",
             redis=pool,
         )
-        assert summary["job_id"] == "review-pr:owner/repo:42"
+        assert summary["job_id"] == f"review-pr:owner/repo:42:{HEAD_SHA}"
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +262,7 @@ class TestDedupeAndErrors:
         )
         assert summary["status"] == "enqueued"
         assert summary["deduped"] is True
-        assert summary["job_id"] == "review-pr:owner/repo:42"
+        assert summary["job_id"] == f"review-pr:owner/repo:42:{HEAD_SHA}"
 
     async def test_enqueue_exception_recorded_not_raised(self):
         """A redis outage shouldn't crash the test-gen runner."""
@@ -269,7 +273,7 @@ class TestDedupeAndErrors:
         )
         assert summary["status"] == "enqueue_error"
         assert "redis is down" in summary["reason"]
-        assert summary["job_id"] == "review-pr:owner/repo:42"
+        assert summary["job_id"] == f"review-pr:owner/repo:42:{HEAD_SHA}"
         assert summary["pr_number"] == 42
 
 
@@ -280,10 +284,10 @@ class TestDedupeAndErrors:
 @pytest.mark.parametrize(
     "repo,number,expected",
     [
-        ("owner/repo", 1, "review-pr:owner/repo:1"),
-        ("owner/repo", 999, "review-pr:owner/repo:999"),
-        ("R-Log/Amass", 42, "review-pr:r-log/amass:42"),
-        ("  owner/repo  ", 7, "review-pr:owner/repo:7"),
+        ("owner/repo", 1, f"review-pr:owner/repo:1:{HEAD_SHA}"),
+        ("owner/repo", 999, f"review-pr:owner/repo:999:{HEAD_SHA}"),
+        ("R-Log/Amass", 42, f"review-pr:r-log/amass:42:{HEAD_SHA}"),
+        ("  owner/repo  ", 7, f"review-pr:owner/repo:7:{HEAD_SHA}"),
     ],
 )
 async def test_job_id_shape(repo, number, expected):
