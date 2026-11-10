@@ -57,7 +57,9 @@ alembic/versions/__pycache__/
 
 # Eval runs: harness checks and bulky/derived output stay local
 evals/pr_review/runs/_checks/
-evals/**/traces/
+# Baseline traces are committed: they are the recorded model output that
+# --replay-from re-runs. Replayed variants can be regenerated from them.
+evals/**/v*/traces/
 evals/**/report.html
 evals/**/state.json
 evals/**/trajectory/

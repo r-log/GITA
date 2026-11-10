@@ -27,3 +27,27 @@ anchor = "        db.decrement_stock(conn, product_id, quantity)"
 span = 0
 kinds = ["bug"]
 severity = "high"
+
+# --- Audit of the baseline run (2026-11-10) --------------------------------
+# Findings the grader first counted as false alarms, checked against the PR
+# head. known_issue: a real defect the seeded fix would not fix (counts as a
+# correct finding). acceptable: the seeded bug seen from another angle
+# (neutral).
+
+[[known_issue]]
+id = "cross_user_order"
+file = "shop/api.py"
+anchor = "def add_to_cart("
+span = 9
+description_regex = '(?i)(belongs? to the caller|another user|IDOR|owner)'
+evidence = """add_to_cart discards the user require_active returns and never checks
+that order_id belongs to the caller (my_orders scopes by user.id), so any
+active user can add items to another user's order."""
+
+[[known_issue]]
+id = "unvalidated_quantity"
+file = "shop/api.py"
+anchor = "        db.decrement_stock(conn, product_id, quantity)"
+description_regex = '(?i)(negative|not validated)'
+evidence = """quantity isn't validated: decrement_stock(conn, 1, -3) returns True and
+raises stock from 5 to 8 (checked). Checking decrement_stock's result doesn't fix it."""

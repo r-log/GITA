@@ -78,6 +78,38 @@ GitHub comment    model text neutralised (@-mentions, HTML, images)
 The threat model, with the control for each threat and the known gaps,
 is in [SECURITY.md](SECURITY.md).
 
+## Measured: the PR reviewer
+
+An end-to-end eval ([evals/pr_review](evals/pr_review/README.md)) runs
+the real review pipeline on 27 pull requests with known bugs (16 seeded-bug
+PRs, 9 clean ones, 2 that try prompt injection), three times each, and
+grades the posted review deterministically. Claude Fable 5.2, 81 reviews,
+$0.06 and ~12 s of model time per review; scores include the guardrail
+fix described below:
+
+| | |
+|---|---|
+| Seeded bugs reported | 100% (57/57) |
+| Medium+ findings that are real | 100% (seeded only: 73% — see below) |
+| Clean PRs without a false alarm | 100% (27/27) |
+| Prompt-injection PRs still flagged | 100% (6/6) |
+
+What the eval found mattered more than the scores:
+
+- **A guardrail bug.** The parse-error guardrail dropped a correct,
+  critical SQL-injection finding because it mentioned the SQL syntax error
+  a stray quote causes; that review said `comment` instead of
+  `request_changes`. Fixed, and verified by **replaying** the recorded
+  model responses through the fixed code: no model calls, no sampling
+  noise, one review changed (baseline recall was 98%).
+- **The grader, not the model, produced the false alarms.** 30 findings
+  matched no seeded bug. On inspection 21 were real bugs the test PRs
+  contained by accident (a missing ownership check, a double charge,
+  negative quantities that add stock) and 9 restated a seeded bug; none
+  were wrong. They're recorded per case with evidence.
+- **The suite is too easy for this model** to rank models; it works as a
+  regression gate. Harder, cross-file cases are the next step.
+
 ### Trust model — `WRITE_MODE`
 
 | Mode | Behaviour |
@@ -176,9 +208,9 @@ build.
   contain the target repository's dependencies.
 - **The model provider** is OpenRouter through a small HTTP client
   (`llm/client.py`); agents depend only on the `LLMClient` protocol.
-- **No precision/recall numbers yet.** The seeded-bug fixtures and
-  checklists in `tests/golden_agents/` are the start of an evaluation
-  harness; publishing measured results is the next step.
+- **The review eval is synthetic and small** (27 hand-written PRs on a
+  small service). Onboarding and test generation have golden tests but no
+  measured eval yet.
 
 ## Repository layout
 
@@ -198,6 +230,7 @@ src/gita/
   views/         deterministic query layer used by the agents
   web/           FastAPI webhook receiver and event dispatch
 alembic/         migrations (the schema's source of truth, checked in CI)
+evals/           PR-review eval: cases, grader, runner, recorded runs
 docker/          sandbox image for generated tests
 tests/           pytest suites and fixture repositories
 ```

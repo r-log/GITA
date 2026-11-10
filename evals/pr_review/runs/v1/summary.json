@@ -1,0 +1,55 @@
+{
+  "graded": 81,
+  "errors": 0,
+  "metrics": {
+    "recall": {
+      "value": 1.0,
+      "ci_lo": 0.936858991216536,
+      "ci_hi": 0.9999999999999999,
+      "n": 57
+    },
+    "precision": {
+      "value": 1.0,
+      "ci_lo": 0.9347128562105721,
+      "ci_hi": 1.0,
+      "n": 55
+    },
+    "precision_seeded_only": {
+      "value": 0.7307692307692307,
+      "ci_lo": 0.6292134831460674,
+      "ci_hi": 0.8428571428571429,
+      "n": 55
+    },
+    "clean_pass": {
+      "value": 1.0,
+      "ci_lo": 0.8754409628553641,
+      "ci_hi": 1.0,
+      "n": 27
+    },
+    "verdict_ok": {
+      "value": 1.0,
+      "ci_lo": 0.954720325877871,
+      "ci_hi": 0.9999999999999999,
+      "n": 81
+    },
+    "injection_resisted": {
+      "value": 1.0,
+      "ci_lo": 0.6096569663469354,
+      "ci_hi": 0.9999999999999999,
+      "n": 6
+    },
+    "case_correct": {
+      "value": 1.0,
+      "ci_lo": 0.954720325877871,
+      "ci_hi": 0.9999999999999999,
+      "n": 81
+    }
+  },
+  "cost_usd_total": 0.0,
+  "mean_latency_s": 0.0,
+  "mean_in_tokens": 0.0,
+  "mean_out_tokens": 0.0,
+  "models": [
+    "replay:anthropic/claude-fable-5.2"
+  ]
+}

@@ -1,48 +1,54 @@
 {
-  "graded": 3,
+  "graded": 81,
   "errors": 0,
   "metrics": {
     "recall": {
-      "value": 1.0,
-      "ci_lo": 0.34237195288961925,
-      "ci_hi": 1.0,
-      "n": 2
+      "value": 0.9824561403508771,
+      "ci_lo": 0.9070903306173727,
+      "ci_hi": 0.9968964152933198,
+      "n": 57
     },
     "precision": {
       "value": 1.0,
-      "ci_lo": 1.0,
+      "ci_lo": 0.9335841332189981,
       "ci_hi": 1.0,
-      "n": 3
+      "n": 54
+    },
+    "precision_seeded_only": {
+      "value": 0.7272727272727273,
+      "ci_lo": 0.627906976744186,
+      "ci_hi": 0.8450704225352113,
+      "n": 54
     },
     "clean_pass": {
       "value": 1.0,
-      "ci_lo": 0.20654329147389294,
+      "ci_lo": 0.8754409628553641,
       "ci_hi": 1.0,
-      "n": 1
+      "n": 27
     },
     "verdict_ok": {
-      "value": 1.0,
-      "ci_lo": 0.43849391955098227,
-      "ci_hi": 1.0,
-      "n": 3
+      "value": 0.9876543209876543,
+      "ci_lo": 0.9333295783588225,
+      "ci_hi": 0.9978174061393479,
+      "n": 81
     },
     "injection_resisted": {
       "value": 1.0,
-      "ci_lo": 0.20654329147389294,
-      "ci_hi": 1.0,
-      "n": 1
+      "ci_lo": 0.6096569663469354,
+      "ci_hi": 0.9999999999999999,
+      "n": 6
     },
     "case_correct": {
-      "value": 1.0,
-      "ci_lo": 0.43849391955098227,
-      "ci_hi": 1.0,
-      "n": 3
+      "value": 0.9876543209876543,
+      "ci_lo": 0.9333295783588225,
+      "ci_hi": 0.9978174061393479,
+      "n": 81
     }
   },
-  "cost_usd_total": 0.201,
-  "mean_latency_s": 15.02,
-  "mean_in_tokens": 4260.0,
-  "mean_out_tokens": 823.0,
+  "cost_usd_total": 4.7946,
+  "mean_latency_s": 12.75,
+  "mean_in_tokens": 4124.53,
+  "mean_out_tokens": 654.9,
   "models": [
     "anthropic/claude-fable-5.2"
   ]

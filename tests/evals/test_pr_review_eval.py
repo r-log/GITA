@@ -18,7 +18,14 @@ from pathlib import Path
 
 import pytest
 
-from evals.pr_review.cases import Case, ExpectedBug, load_cases
+from evals.pr_review.cases import (
+    Case,
+    CaseError,
+    ExpectedBug,
+    ExtraFinding,
+    load_case,
+    load_cases,
+)
 from evals.pr_review.grading import ReportedFinding, aggregate, grade_case, wilson
 from evals.pr_review.run import main, model_matches
 
@@ -118,17 +125,63 @@ class TestGrader:
         assert grade.metrics["verdict_ok"] == float(ok)
 
     def test_declared_acceptable_extras_are_not_false_alarms(self):
-        import re as _re
-
-        from evals.pr_review.cases import AcceptableExtra
-
         case = _case(expected=[_bug()])
-        case.acceptable = [AcceptableExtra("inj", _re.compile("(?i)injection"), ("bug",))]
+        case.acceptable = [ExtraFinding("inj", re.compile("(?i)injection"), ("bug",))]
         extra = ReportedFinding("a.py", 40, "medium", "bug", "Prompt injection in the description")
         grade = grade_case(case, [_f(10), extra], "request_changes")
         assert grade.metrics["false_alarms"] == 0.0 and grade.accepted == [extra]
         other = ReportedFinding("a.py", 40, "medium", "bug", "Unrelated problem")
         assert grade_case(case, [_f(10), other], "request_changes").metrics["false_alarms"] == 1.0
+
+    def test_anchored_extras_only_match_near_their_lines(self):
+        case = _case(expected=[_bug()])
+        case.acceptable = [ExtraFinding("x", re.compile("retry"), file="a.py", lines=(30, 31))]
+        near = ReportedFinding("a.py", 33, "medium", "bug", "retry is unbounded")
+        far = ReportedFinding("a.py", 34, "medium", "bug", "retry is unbounded")
+        assert grade_case(case, [_f(10), near], "request_changes").accepted == [near]
+        assert grade_case(case, [_f(10), far], "request_changes").false_alarms == [far]
+
+    def test_known_issues_count_as_correct_findings(self):
+        case = _case(expected=[_bug()])
+        case.known_issues = [ExtraFinding("idor", re.compile("(?i)owner"), evidence="...")]
+        real = ReportedFinding(
+            "a.py", 3, "high", "security", "order_id is not checked against owner"
+        )
+        grade = grade_case(case, [_f(10), real], "request_changes")
+        assert grade.known == [real] and grade.metrics["false_alarms"] == 0.0
+        agg = aggregate([grade.record()])
+        assert agg["precision"].value == 1.0
+        assert agg["precision_seeded_only"].value == 0.5  # the pre-audit view
+
+    def test_known_issue_on_a_clean_pr_is_not_a_false_alarm(self):
+        case = _case("clean")
+        case.known_issues = [ExtraFinding("flag", re.compile("feature_flags"), evidence="...")]
+        real = ReportedFinding("a.py", 3, "medium", "missing", "feature_flags isn't on Settings")
+        assert grade_case(case, [real], "comment").metrics["correct"] == 1.0
+
+    def test_known_issue_needs_evidence(self, tmp_path):
+        toml = tmp_path / "k.toml"
+        toml.write_text(
+            'kind = "bug"\ntitle = "t"\n'
+            '[[edits]]\nfile = "shop/new.py"\ncreate = "x = 1\\ny = 2\\n"\n'
+            '[[expect]]\nid = "b"\nfile = "shop/new.py"\nanchor = "x = 1"\n'
+            'kinds = ["bug"]\nseverity = "low"\n'
+            '[[known_issue]]\nid = "k"\ndescription_regex = "y"\n'
+        )
+        with pytest.raises(CaseError, match="evidence"):
+            load_case(toml)
+
+    def test_far_too_low_severity_does_not_count_as_reporting_the_bug(self):
+        """A low note on the line of a critical bug hasn't reported it."""
+        case = _case(expected=[_bug(severity="critical")])
+        low = grade_case(case, [_f(10, "low")], "comment")
+        assert low.metrics["found"] == 0.0 and low.nits
+        assert grade_case(case, [_f(10, "high")], "request_changes").metrics["found"] == 1.0
+
+    def test_audited_cases_have_evidence_and_resolve(self):
+        cases = load_cases()
+        known = [k for c in cases for k in c.known_issues]
+        assert known and all(k.evidence and k.lines for k in known)
 
     def test_severity_calibration(self):
         grade = grade_case(
@@ -187,3 +240,30 @@ async def test_null_reviewer_finds_nothing(tmp_path):
     assert m["recall"]["value"] == 0.0
     assert m["clean_pass"]["value"] == 1.0  # saying nothing passes clean PRs...
     assert m["case_correct"]["value"] < 0.5  # ...but not the eval
+
+
+async def test_replay_reproduces_a_run_without_model_calls(tmp_path):
+    before = await _run("oracle", tmp_path)
+    src = tmp_path / "_checks" / "oracle"
+    argv = ["--replay-from", "_checks/oracle", "--variant", "v1", "--runs-dir", str(tmp_path)]
+    assert await main([*argv, "--approve-harness"]) == 0
+    after = json.loads((tmp_path / "v1" / "summary.json").read_text())["metrics"]
+    for name, est in before.items():
+        assert after[name] == est, name
+    rows = [json.loads(line) for line in (tmp_path / "v1" / "results.jsonl").open()]
+    assert len(rows) == len(src.joinpath("results.jsonl").read_text().splitlines())
+    assert all(r["model"].startswith("replay:") and r["cost_usd"] == 0.0 for r in rows)
+
+
+async def test_replay_refuses_when_the_findings_prompt_changed():
+    from evals.pr_review.run import ReplayLLM, ReplayMismatch
+
+    trace = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "diff <untrusted_ab12>x</untrusted_ab12>"},
+        {"role": "assistant", "content": '{"findings": []}'},
+    ]
+    same_but_nonce = "diff <untrusted_ff00>x</untrusted_ff00>"
+    assert (await ReplayLLM(trace, model="m").call(system="sys", user=same_but_nonce)).content
+    with pytest.raises(ReplayMismatch):
+        await ReplayLLM(trace, model="m").call(system="sys", user="a different diff")

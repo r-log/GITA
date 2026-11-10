@@ -14,11 +14,18 @@ Edit operations (exactly one per edit):
 * ``append`` — text appended to the end of the file.
 * ``create`` — a new file with this content.
 
-``[[acceptable]]`` entries describe extra findings a good reviewer may
-legitimately add (for instance, reporting a prompt-injection attempt as a
-security issue). A finding that matches one is neither rewarded nor
-penalised: ``description_regex`` must match its description, and
-``kinds`` / ``file``, when given, must match too.
+Two kinds of entry describe findings beyond the seeded bugs. Both match
+on ``description_regex``, plus ``kinds`` / ``file`` / ``anchor`` (+ ``span``)
+when given:
+
+* ``[[acceptable]]`` — a finding a good reviewer may legitimately add
+  that restates a seeded bug from another angle (fixing the seeded bug
+  would fix it too), or reports the prompt-injection attempt itself.
+  Neither rewarded nor penalised.
+* ``[[known_issue]]`` — a real defect in the PR that wasn't seeded,
+  found by auditing a run (fixing the seeded bug would *not* fix it).
+  Counts as a correct finding for precision; not required for recall.
+  Needs ``evidence``: why it is real, checked against the PR head.
 """
 
 from __future__ import annotations
@@ -52,11 +59,15 @@ class ExpectedBug:
 
 
 @dataclass(frozen=True)
-class AcceptableExtra:
+class ExtraFinding:
+    """An ``[[acceptable]]`` or ``[[known_issue]]`` entry."""
+
     id: str
     description_regex: re.Pattern[str]
     kinds: tuple[str, ...] = ()
     file: str | None = None
+    lines: tuple[int, int] | None = None  # PR-head range, inclusive, when anchored
+    evidence: str = ""
 
 
 @dataclass
@@ -70,7 +81,8 @@ class Case:
     before: dict[str, str]  # path -> content at base (changed files only)
     after: dict[str, str]  # path -> content at PR head (changed files only)
     expected: list[ExpectedBug] = field(default_factory=list)
-    acceptable: list[AcceptableExtra] = field(default_factory=list)
+    acceptable: list[ExtraFinding] = field(default_factory=list)
+    known_issues: list[ExtraFinding] = field(default_factory=list)
 
     @property
     def is_positive(self) -> bool:
@@ -128,26 +140,53 @@ def _apply_edit(content: str | None, edit: dict, where: str) -> str:
     return content.replace(edit["find"], edit["replace"])
 
 
+def _anchor_lines(raw: dict, after: dict[str, str], where: str) -> tuple[int, int]:
+    """PR-head line range of ``anchor`` (+ ``span`` lines) in ``file``."""
+    content = after.get(raw["file"])
+    if content is None:
+        raise CaseError(f"{where}: cites {raw['file']!r}, which the PR doesn't change")
+    count = content.count(raw["anchor"])
+    if count != 1:
+        raise CaseError(f"{where}: anchor occurs {count} times in {raw['file']} (need 1)")
+    start = content[: content.index(raw["anchor"])].count("\n") + 1
+    return start, start + int(raw.get("span", 0))
+
+
 def _resolve_expectation(raw: dict, after: dict[str, str], where: str) -> ExpectedBug:
     for key in ("id", "file", "anchor", "kinds", "severity"):
         if key not in raw:
             raise CaseError(f"{where}: expect is missing {key!r}")
-    content = after.get(raw["file"])
-    if content is None:
-        raise CaseError(f"{where}: expect cites {raw['file']!r}, which the PR doesn't change")
-    count = content.count(raw["anchor"])
-    if count != 1:
-        raise CaseError(f"{where}: anchor occurs {count} times in {raw['file']} (need 1)")
     if raw["severity"] not in SEVERITIES:
         raise CaseError(f"{where}: unknown severity {raw['severity']!r}")
-    start = content[: content.index(raw["anchor"])].count("\n") + 1
+    start, end = _anchor_lines(raw, after, where)
     return ExpectedBug(
         id=raw["id"],
         file=raw["file"],
         start_line=start,
-        end_line=start + int(raw.get("span", 0)),
+        end_line=end,
         kinds=tuple(raw["kinds"]),
         severity=raw["severity"],
+    )
+
+
+def _resolve_extra(
+    raw: dict, after: dict[str, str], where: str, *, needs_evidence: bool
+) -> ExtraFinding:
+    try:
+        pattern = re.compile(raw["description_regex"])
+    except (KeyError, re.error) as exc:
+        raise CaseError(f"{where}: bad description_regex: {exc}") from exc
+    if "anchor" in raw and "file" not in raw:
+        raise CaseError(f"{where}: anchor without file")
+    if needs_evidence and not raw.get("evidence", "").strip():
+        raise CaseError(f"{where}: a known issue needs evidence")
+    return ExtraFinding(
+        id=raw.get("id", where),
+        description_regex=pattern,
+        kinds=tuple(raw.get("kinds", ())),
+        file=raw.get("file"),
+        lines=_anchor_lines(raw, after, where) if "anchor" in raw else None,
+        evidence=raw.get("evidence", "").strip(),
     )
 
 
@@ -185,20 +224,14 @@ def load_case(path: Path, base_repo: Path = BASE_REPO) -> Case:
         _resolve_expectation(raw, after, f"{case_id} expect {i}")
         for i, raw in enumerate(data.get("expect", []))
     ]
-    acceptable = []
-    for i, raw in enumerate(data.get("acceptable", [])):
-        try:
-            pattern = re.compile(raw["description_regex"])
-        except (KeyError, re.error) as exc:
-            raise CaseError(f"{case_id} acceptable {i}: bad description_regex: {exc}") from exc
-        acceptable.append(
-            AcceptableExtra(
-                id=raw.get("id", f"acceptable_{i}"),
-                description_regex=pattern,
-                kinds=tuple(raw.get("kinds", ())),
-                file=raw.get("file"),
-            )
-        )
+    acceptable = [
+        _resolve_extra(raw, after, f"{case_id} acceptable {i}", needs_evidence=False)
+        for i, raw in enumerate(data.get("acceptable", []))
+    ]
+    known_issues = [
+        _resolve_extra(raw, after, f"{case_id} known_issue {i}", needs_evidence=True)
+        for i, raw in enumerate(data.get("known_issue", []))
+    ]
 
     if (kind == "clean") == bool(expected):
         raise CaseError(f"{case_id}: clean cases have no expected bugs; others need at least one")
@@ -214,6 +247,7 @@ def load_case(path: Path, base_repo: Path = BASE_REPO) -> Case:
         after=after,
         expected=expected,
         acceptable=acceptable,
+        known_issues=known_issues,
     )
 
 

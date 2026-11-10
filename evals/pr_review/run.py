@@ -3,6 +3,7 @@
     python -m evals.pr_review.run --model anthropic/claude-sonnet-4.5 --reps 3
     python -m evals.pr_review.run --fake oracle   # harness check: should score ~100%
     python -m evals.pr_review.run --fake null     # harness check: should find nothing
+    python -m evals.pr_review.run --replay-from baseline --variant v1
 
 Every case goes through the real entry point, ``run_pr_review``: the base
 repo is indexed into a dedicated Postgres database, the PR's files and
@@ -20,6 +21,12 @@ Output goes to ``evals/pr_review/runs/<variant>/``:
   provider error, truncation, refusal, schema failure, wrong model),
   with a failure class. They never occupy a results row, so resume
   retries them, and they are never scored as model failures.
+
+``--replay-from <variant>`` re-runs the pipeline on the model responses
+recorded in that variant's traces, with no model calls: a change to the
+code around the model (guardrails, verdict rules, rendering) is measured
+on exactly the same model output, for free. ``--regrade`` re-scores stored
+findings after a grader change.
 
 The harness (runner, grader, cases, base repo) is fingerprinted; a run
 refuses to start if it changed since it was last approved with
@@ -66,6 +73,7 @@ from gita.llm.client import (
     LLMTransientError,
     LLMTruncatedError,
     OpenRouterClient,
+    _parse_structured,
 )
 
 RUNS_DIR = EVAL_DIR / "runs"
@@ -136,6 +144,59 @@ class RecordingLLM:
                 f"requested {self.requested_model!r}, served {response.model!r}"
             )
         return response
+
+
+# ---------------------------------------------------------------------------
+# Replay: recorded responses instead of a model
+# ---------------------------------------------------------------------------
+class ReplayMismatch(RuntimeError):
+    """The pipeline asked something the recording can't answer."""
+
+
+_NONCE = re.compile(r"untrusted_[0-9a-f]+")
+
+
+def _same_prompt(a: str, b: str) -> bool:
+    """Equal apart from the per-request fence nonce."""
+    return _NONCE.sub("untrusted_N", a) == _NONCE.sub("untrusted_N", b)
+
+
+@dataclass
+class ReplayLLM:
+    """Answers each call with a recorded run's response, in order.
+
+    The first call (the findings, which is what gets graded) must be asked
+    exactly what was recorded; if the prompt changed, the recorded answer
+    says nothing about the current code, so the replay refuses. Later calls
+    (the summary) are answered regardless: their prompt carries the
+    verdict, which a pipeline change may legitimately alter, and their text
+    isn't graded.
+    """
+
+    turns: list[dict]
+    model: str
+    _next: int = 0
+
+    async def call(
+        self,
+        *,
+        system: str,
+        user: str,
+        response_schema: type[BaseModel] | None = None,
+        **_: Any,
+    ) -> LLMResponse:
+        i = 3 * self._next
+        self._next += 1
+        if i + 2 >= len(self.turns) or self.turns[i]["role"] != "system":
+            raise ReplayMismatch(f"no recorded response for call {self._next}")
+        if i == 0 and not (
+            _same_prompt(system, self.turns[0]["content"])
+            and _same_prompt(user, self.turns[1]["content"])
+        ):
+            raise ReplayMismatch("the findings prompt differs from the recording")
+        content = self.turns[i + 2]["content"]
+        parsed = _parse_structured(content, response_schema) if response_schema else None
+        return LLMResponse(content=content, parsed=parsed, model=self.model, usage={"cost": 0.0})
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +324,8 @@ def _failure_class(exc: BaseException) -> str:
         return "timeout"
     if isinstance(exc, ServedModelMismatch):
         return "served_model_mismatch"
+    if isinstance(exc, ReplayMismatch):
+        return "replay_mismatch"
     if isinstance(exc, LLMTruncatedError):
         return "truncated"
     if isinstance(exc, LLMRefusalError):
@@ -292,7 +355,7 @@ async def run_case(
     files = case.pr_files_json()
     hunks = parse_pr_files(files)
     pr = _pr_info(case, files)
-    llm: RecordingLLM = make_llm(case)
+    llm: RecordingLLM = make_llm(case, rep)
     start = time.monotonic()
     try:
         async with sessions() as session:
@@ -465,6 +528,11 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runs-dir", type=Path, default=RUNS_DIR)
     parser.add_argument("--approve-harness", action="store_true")
     parser.add_argument(
+        "--replay-from",
+        metavar="VARIANT",
+        help="re-run the pipeline on that variant's recorded responses (no model calls)",
+    )
+    parser.add_argument(
         "--regrade", action="store_true", help="re-score stored results only (no model calls)"
     )
     args = parser.parse_args(argv)
@@ -494,16 +562,32 @@ async def main(argv: list[str] | None = None) -> int:
     variant = f"_checks/{args.fake}" if args.fake else args.variant
     if not args.fake and not re.fullmatch(r"baseline|v\d+", variant):
         parser.error("--variant must be 'baseline' or 'v<N>'")
+    if args.replay_from and (args.fake or args.replay_from == variant):
+        parser.error("--replay-from needs a different, real --variant to write to")
     variant_dir = args.runs_dir / variant
     (variant_dir / "traces").mkdir(parents=True, exist_ok=True)
     done = {(r["prompt_id"], r["rep"]) for r in _read_jsonl(variant_dir / "results.jsonl")}
 
     model = args.model or settings.ai_default_model
     client: OpenRouterClient | None = None
+    recorded: dict[tuple[str, int], str] = {}
     if args.fake:
 
-        def make_llm(case: Case) -> RecordingLLM:
+        def make_llm(case: Case, rep: int) -> RecordingLLM:
             return RecordingLLM(fake_llm(case, args.fake), requested_model=None)
+    elif args.replay_from:
+        source = args.runs_dir / args.replay_from
+        recorded = {
+            (r["prompt_id"], r["rep"]): r["model"] for r in _read_jsonl(source / "results.jsonl")
+        }
+        if not recorded:
+            parser.error(f"nothing recorded in {source}")
+        model = f"replay:{args.replay_from}"
+
+        def make_llm(case: Case, rep: int) -> RecordingLLM:
+            trace = json.loads((source / "traces" / f"{case.id}_rep{rep}.json").read_text())
+            replay = ReplayLLM(trace, model=f"replay:{recorded[(case.id, rep)]}")
+            return RecordingLLM(replay, requested_model=None)
     else:
         key = settings.openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
         # With a key held by the network proxy, any placeholder works here.
@@ -511,11 +595,17 @@ async def main(argv: list[str] | None = None) -> int:
             api_key=key or "placeholder-key-injected-by-proxy", default_model=model
         )
 
-        def make_llm(case: Case) -> RecordingLLM:
+        def make_llm(case: Case, rep: int) -> RecordingLLM:
             return RecordingLLM(client, requested_model=model)
 
     sessions = await prepare_database()
-    todo = [(c, rep) for rep in range(args.reps) for c in cases if (c.id, rep) not in done]
+    if args.replay_from:  # replay exactly what was recorded; --reps doesn't apply
+        reps = sorted({rep for _, rep in recorded})
+        todo = [
+            (c, r) for r in reps for c in cases if (c.id, r) in recorded and (c.id, r) not in done
+        ]
+    else:
+        todo = [(c, r) for r in range(args.reps) for c in cases if (c.id, r) not in done]
     print(
         f"{variant}: {len(todo)} to run ({len(done)} already done), model={'fake:' + args.fake if args.fake else model}"
     )

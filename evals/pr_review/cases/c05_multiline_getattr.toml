@@ -15,3 +15,19 @@ def feature_enabled(settings: Settings, name: str, default: bool = False) -> boo
     )
     return bool(flags.get(name, default))
 '''
+
+# --- Audit of the baseline run (2026-11-10) --------------------------------
+# Findings the grader first counted as false alarms, checked against the PR
+# head. known_issue: a real defect the seeded fix would not fix (counts as a
+# correct finding). acceptable: the seeded bug seen from another angle
+# (neutral).
+
+[[known_issue]]
+id = "feature_flags_not_on_settings"
+file = "shop/config.py"
+anchor = 'settings, "feature_flags", {}'
+description_regex = 'feature_flags'
+evidence = """Settings (a frozen dataclass) has no feature_flags field and
+load_settings never sets one, so getattr always returns {} and feature_enabled
+always returns the default (checked). The case was meant to be clean; it still
+tests that the multi-line call isn't reported as a syntax error."""

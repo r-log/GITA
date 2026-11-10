@@ -22,3 +22,15 @@ anchor = "    path = os.path.join(export_dir, report_name)"
 span = 0
 kinds = ["security"]
 severity = "high"
+
+# --- Audit of the baseline run (2026-11-10) --------------------------------
+# Findings the grader first counted as false alarms, checked against the PR
+# head. known_issue: a real defect the seeded fix would not fix (counts as a
+# correct finding). acceptable: the seeded bug seen from another angle
+# (neutral).
+
+[[acceptable]]
+id = "makedirs_outside_export_dir"
+file = "shop/api.py"
+anchor = "    os.makedirs(os.path.dirname(path), exist_ok=True)"
+description_regex = '(?i)(makedirs|director)'
