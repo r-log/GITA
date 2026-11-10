@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -71,6 +73,22 @@ class Settings(BaseSettings):
     )
     auto_test_gen_max_per_reindex: int = Field(
         default=1, alias="AUTO_TEST_GEN_MAX_PER_REINDEX"
+    )
+
+    # Where generated tests are executed (gita/agents/test_generator/sandbox.py).
+    #   docker — one locked-down container per run; the security boundary.
+    #   local  — scrubbed subprocess; only for repositories you already trust.
+    # Webhook-triggered generation refuses to run under "local".
+    test_gen_sandbox: Literal["docker", "local"] = Field(
+        default="docker", alias="TEST_GEN_SANDBOX"
+    )
+    # Image must contain python + pytest + the target repo's runtime deps
+    # (no network inside the sandbox). See docker/sandbox.Dockerfile.
+    test_gen_sandbox_image: str = Field(
+        default="gita-sandbox:latest", alias="TEST_GEN_SANDBOX_IMAGE"
+    )
+    test_gen_timeout_seconds: float = Field(
+        default=90.0, alias="TEST_GEN_TIMEOUT_SECONDS"
     )
 
     @field_validator("write_mode")

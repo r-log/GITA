@@ -229,7 +229,7 @@ def _build_import_patterns_for_target(
 ) -> list[tuple[re.Pattern[str], str]]:
     """Dispatch to the right pattern-builder for ``target_file``."""
     if family == "python":
-        names = _derive_importable_names(target_file, repo_root)
+        names = derive_importable_names(target_file, repo_root)
         return _build_import_patterns(names) if names else []
     if family == "jstS":
         return _build_jstS_import_patterns(target_file)
@@ -516,7 +516,7 @@ def _build_import_patterns(
     return patterns
 
 
-def _derive_importable_names(
+def derive_importable_names(
     target_file: str, repo_root: Path
 ) -> list[str]:
     """Return every importable dotted-module name for ``target_file``.

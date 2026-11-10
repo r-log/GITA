@@ -122,6 +122,8 @@ async def generate_tests(
         test_file_path=test_file_path,
         model=model,
         redis=ctx.get("redis"),
+        # Webhook-triggered: the code under test is unreviewed.
+        require_isolation=True,
     )
 
 

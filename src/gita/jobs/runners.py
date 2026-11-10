@@ -764,6 +764,7 @@ async def run_test_generation_job(
     test_file_path: str | None = None,
     model: str | None = None,
     redis: Any = None,
+    require_isolation: bool = False,
 ) -> dict[str, Any]:
     """Generate a verified pytest test file and (optionally) push it.
 
@@ -778,6 +779,11 @@ async def run_test_generation_job(
     ``target_repo`` (when not ``None``) is the GitHub ``owner/repo``
     that branch + file write + PR all target. ``None`` means
     local-only (recipe + verification, no GitHub side-effects).
+
+    ``require_isolation`` refuses to execute generated tests outside an
+    isolated sandbox. The ARQ job sets it: webhook-triggered runs act on
+    code nobody has reviewed. The CLI leaves it off so an operator can
+    use ``TEST_GEN_SANDBOX=local`` against a repository they trust.
 
     Raises on misconfiguration (missing API keys); returns
     ``{"status": "error", "reason": ...}`` for runtime failures so
@@ -829,7 +835,7 @@ async def run_test_generation_job(
     # behave correctly on repos that don't use "main".
     resolved_base_branch = base_branch or repo_default_branch
 
-    # --- Recipe (LLM + 3-gate verify) ---
+    # --- Recipe (LLM + static checks + sandboxed test run) ---
     try:
         async with OpenRouterClient(
             api_key=settings.openrouter_api_key,
@@ -845,8 +851,9 @@ async def run_test_generation_job(
                         repo_root=repo_root,
                         model=resolved_model,
                         test_file_path=test_file_path,
+                        require_isolation=require_isolation,
                     )
-                except FileNotFoundError as exc:
+                except (FileNotFoundError, ValueError) as exc:
                     return {
                         "status": "error",
                         "reason": str(exc),
@@ -875,6 +882,8 @@ async def run_test_generation_job(
         "test_content": recipe_result.test_content,
         "verified": recipe_result.verified,
         "verification_errors": list(recipe_result.verification_errors),
+        "tests_passed": recipe_result.tests_passed,
+        "sandbox": recipe_result.sandbox,
         "llm_model": recipe_result.llm_model,
         "covered_symbols": list(recipe_result.covered_symbols),
         "notes": recipe_result.notes,

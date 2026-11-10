@@ -1,64 +1,82 @@
-"""Tests for the test-generator recipe (Week 8 Day 4).
+"""Tests for the test-generator recipe.
 
-Split into three layers:
+Layers:
 
-1. **Path helpers** — pure, no I/O.
-2. **Verification gates** — subprocess-driven, use ``tmp_path``. Each
-   gate is covered in isolation (valid input, broken input).
-3. **run_test_generation end-to-end** — wired against the indexed
+1. **Path helpers and confidence policy** — pure.
+2. **Static checks** — in-process AST checks; nothing executed.
+3. **verify_test_file** — runs generated tests in a ``LocalSandbox``
+   against a throwaway copy of the synthetic_py fixture repo.
+4. **run_test_generation end-to-end** — wired against the indexed
    synthetic_py fixture with a ``FakeLLMClient``.
+
+Docker-backed isolation is covered in ``test_test_generator_sandbox.py``.
 """
 from __future__ import annotations
 
+import hashlib
+import shutil
 from pathlib import Path
 
 import pytest
 
 from gita.agents.test_generator.recipe import (
     TestGenerationResult,
+    blend_confidence,
     derive_test_file_path,
     run_test_generation,
+    static_checks,
     verify_test_file,
 )
+from gita.agents.test_generator.sandbox import InvalidTestPathError, LocalSandbox
 from gita.agents.test_generator.schemas import GeneratedTestResponse
 from gita.llm.client import FakeLLMClient
 
+_FIXTURE_REPO = Path(__file__).parent.parent / "fixtures" / "synthetic_py"
+_TARGET = "src/myapp/utils.py"
 
-# ---------------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------------
-class TestDeriveTestFilePath:
-    def test_stem_becomes_test_prefix(self):
-        assert derive_test_file_path("src/myapp/utils.py") == (
-            "tests/test_utils.py"
-        )
 
-    def test_already_in_tests_dir(self):
-        """Not our concern — the default is always tests/test_<stem>."""
-        assert derive_test_file_path("tests/test_foo.py") == (
-            "tests/test_test_foo.py"
-        )
+@pytest.fixture
+def synth_repo(tmp_path: Path) -> Path:
+    """A private copy of the synthetic_py repo (tests may inspect it)."""
+    repo = tmp_path / "repo"
+    shutil.copytree(_FIXTURE_REPO, repo)
+    return repo
 
-    def test_file_without_extension(self):
-        assert derive_test_file_path("scripts/build") == (
-            "tests/test_build.py"
-        )
+
+def _snapshot(root: Path) -> dict[str, str]:
+    return {
+        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
 
 
 # ---------------------------------------------------------------------------
-# Verification gates
+# Generated-test fixtures
 # ---------------------------------------------------------------------------
-_VALID_TEST_FILE = """\
+_PASSING = """\
 import pytest
 
-
-def test_addition():
-    assert 1 + 1 == 2
+from myapp.utils import format_name, validate_email
 
 
-@pytest.mark.parametrize("x,y", [(1, 2), (2, 3)])
-def test_less_than(x, y):
-    assert x < y
+def test_format_name_strips_and_titles():
+    assert format_name("  ada lovelace ") == "Ada Lovelace"
+
+
+@pytest.mark.parametrize("email,ok", [("a@b.io", True), ("nope", False)])
+def test_validate_email(email, ok):
+    assert validate_email(email) is ok
+"""
+
+# Imports and collects fine, but the assertion is false. The old
+# "collect-only" verification marked this verified.
+_FAILING = """\
+from myapp.utils import format_name
+
+
+def test_wrong_expectation():
+    assert format_name("ada") == "ADA"
 """
 
 _BROKEN_SYNTAX = """\
@@ -66,304 +84,273 @@ def test_bad(:   # <-- syntax error
     assert True
 """
 
-_BAD_IMPORT = """\
-import this_module_definitely_does_not_exist_anywhere_xyz
+_NO_TARGET_IMPORT = """\
+def test_trivial():
+    assert 1 + 1 == 2
+"""
+
+_NO_ASSERTS = """\
+from myapp.utils import format_name
 
 
-def test_ok():
-    assert True
+def test_calls_only():
+    format_name("x")
 """
 
 _NO_TESTS = """\
-# This file has no test_ functions.
-x = 1
+from myapp.utils import format_name
+
+x = format_name("y")
+assert x
 """
 
 
-class TestVerifyAstGate:
-    async def test_valid_passes(self, tmp_path: Path):
-        verified, errors = await verify_test_file(
-            _VALID_TEST_FILE, tmp_path, "test_sample.py"
-        )
-        assert verified is True
-        assert errors == []
-
-    async def test_broken_syntax_fails_at_ast(self, tmp_path: Path):
-        verified, errors = await verify_test_file(
-            _BROKEN_SYNTAX, tmp_path, "test_sample.py"
-        )
-        assert verified is False
-        assert len(errors) == 1
-        assert "ast.parse failed" in errors[0]
-        # File should NOT have been written — ast gate is in-process
-        # and returns before the filesystem drop.
-        assert not (tmp_path / "test_sample.py").exists()
+def _fake_response(
+    *,
+    content: str = _PASSING,
+    confidence: float = 0.92,
+) -> GeneratedTestResponse:
+    return GeneratedTestResponse(
+        test_file_content=content,
+        covered_symbols=["format_name", "validate_email"],
+        notes="",
+        confidence=confidence,
+    )
 
 
-class TestVerifyPytestGate:
-    async def test_import_error_fails_collection(self, tmp_path: Path):
-        verified, errors = await verify_test_file(
-            _BAD_IMPORT, tmp_path, "test_sample.py"
-        )
-        assert verified is False
-        assert any(
-            "pytest --collect-only failed" in e for e in errors
-        )
+# ---------------------------------------------------------------------------
+# Path helpers + confidence policy
+# ---------------------------------------------------------------------------
+class TestDeriveTestFilePath:
+    def test_stem_becomes_test_prefix(self):
+        assert derive_test_file_path("src/myapp/utils.py") == "tests/test_utils.py"
 
-    async def test_no_tests_fails_collection(self, tmp_path: Path):
-        """pytest exits 5 on ``no tests collected`` — we treat that
-        as a failure because the generator's job is to produce tests."""
-        verified, errors = await verify_test_file(
-            _NO_TESTS, tmp_path, "test_sample.py"
-        )
-        assert verified is False
+    def test_file_without_extension(self):
+        assert derive_test_file_path("scripts/run") == "tests/test_run.py"
 
-    async def test_test_file_written_for_subprocess_gates(
-        self, tmp_path: Path
-    ):
-        """The subprocess gates need the file on disk; verify that."""
-        await verify_test_file(
-            _VALID_TEST_FILE, tmp_path, "subdir/test_sample.py"
+
+class TestBlendConfidence:
+    def test_model_cannot_open_the_gate_alone(self):
+        """A confident model with failing tests stays under the 0.9 bar."""
+        assert blend_confidence(0.99, verified=False) == 0.4
+
+    def test_model_can_veto_passing_tests(self):
+        assert blend_confidence(0.5, verified=True) == 0.5
+
+    def test_verified_is_capped_below_certainty(self):
+        assert blend_confidence(1.0, verified=True) == 0.95
+
+    def test_out_of_range_self_report_is_clamped(self):
+        assert blend_confidence(7.0, verified=True) == 0.95
+        assert blend_confidence(-1.0, verified=True) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Static checks
+# ---------------------------------------------------------------------------
+class TestStaticChecks:
+    names = ["myapp.utils"]
+
+    def test_passing_file_has_no_errors(self):
+        assert static_checks(_PASSING, self.names) == []
+
+    def test_syntax_error(self):
+        errors = static_checks(_BROKEN_SYNTAX, self.names)
+        assert len(errors) == 1 and "ast.parse failed" in errors[0]
+
+    def test_must_import_target_module(self):
+        errors = static_checks(_NO_TARGET_IMPORT, self.names)
+        assert any("does not import the target module" in e for e in errors)
+
+    def test_parent_package_import_counts(self):
+        content = "from myapp import utils\n\ndef test_x():\n    assert utils\n"
+        assert static_checks(content, self.names) == []
+
+    def test_must_assert_something(self):
+        errors = static_checks(_NO_ASSERTS, self.names)
+        assert errors == ["test file makes no assertions"]
+
+    def test_pytest_raises_counts_as_assertion(self):
+        content = (
+            "import pytest\nfrom myapp.utils import format_name\n\n"
+            "def test_x():\n    with pytest.raises(AttributeError):\n"
+            "        format_name(None)\n"
         )
-        assert (tmp_path / "subdir" / "test_sample.py").exists()
+        assert static_checks(content, self.names) == []
+
+    def test_must_define_tests(self):
+        errors = static_checks(_NO_TESTS, self.names)
+        assert any("no test functions" in e for e in errors)
+
+    def test_unknown_import_name_fails_closed(self):
+        errors = static_checks(_PASSING, [])
+        assert any("could not determine" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# verify_test_file — real pytest runs in a LocalSandbox
+# ---------------------------------------------------------------------------
+async def _verify(content: str, repo: Path, **kwargs):
+    return await verify_test_file(
+        content,
+        repo_root=repo,
+        test_file_path=kwargs.pop("test_file_path", "tests/test_utils.py"),
+        target_file=_TARGET,
+        sandbox=kwargs.pop("sandbox", LocalSandbox()),
+        **kwargs,
+    )
+
+
+class TestVerifyTestFile:
+    async def test_passing_tests_are_verified(self, synth_repo: Path):
+        report = await _verify(_PASSING, synth_repo)
+        assert report.verified is True, report.errors
+        assert report.tests_passed == 3
+        assert report.tests_failed == 0
+        assert report.sandbox == "local"
+
+    async def test_failing_assertion_is_not_verified(self, synth_repo: Path):
+        """The regression: collect-only verification passed this file."""
+        report = await _verify(_FAILING, synth_repo)
+        assert report.verified is False
+        assert report.tests_failed == 1
+        assert "1 test(s) failed" in report.errors[0]
+
+    async def test_static_failure_runs_nothing(self, synth_repo: Path):
+        report = await _verify(_NO_TARGET_IMPORT, synth_repo)
+        assert report.verified is False
+        assert report.tests_passed == 0
+
+    async def test_import_error_is_not_verified(self, synth_repo: Path):
+        content = (
+            "import this_module_does_not_exist_xyz\n"
+            "from myapp.utils import format_name\n\n"
+            "def test_x():\n    assert format_name('a') == 'A'\n"
+        )
+        report = await _verify(content, synth_repo)
+        assert report.verified is False
+        assert "could not collect" in report.errors[0]
+
+    async def test_require_isolation_refuses_local_sandbox(self, synth_repo: Path):
+        report = await _verify(_PASSING, synth_repo, require_isolation=True)
+        assert report.verified is False
+        assert "not isolated" in report.errors[0]
+        assert report.tests_passed == 0
+
+    async def test_repo_is_never_mutated(self, synth_repo: Path):
+        before = _snapshot(synth_repo)
+        await _verify(_PASSING, synth_repo)
+        await _verify(_FAILING, synth_repo)
+        assert _snapshot(synth_repo) == before
+
+    async def test_path_traversal_rejected(self, synth_repo: Path):
+        with pytest.raises(InvalidTestPathError):
+            await _verify(_PASSING, synth_repo, test_file_path="../../x_test.py")
 
 
 # ---------------------------------------------------------------------------
 # run_test_generation — end-to-end with fake LLM + real DB
 # ---------------------------------------------------------------------------
-def _fake_response(
-    *,
-    content: str = _VALID_TEST_FILE,
-    symbols: list[str] | None = None,
-    notes: str = "",
-    confidence: float = 0.85,
-) -> GeneratedTestResponse:
-    return GeneratedTestResponse(
-        test_file_content=content,
-        covered_symbols=symbols or ["format_name", "validate_email"],
-        notes=notes,
-        confidence=confidence,
+async def _run(session, repo_name, repo: Path, fake, **kwargs):
+    return await run_test_generation(
+        session,
+        repo_name,
+        kwargs.pop("target_file", _TARGET),
+        llm=fake,
+        repo_root=repo,
+        sandbox=kwargs.pop("sandbox", LocalSandbox()),
+        **kwargs,
     )
 
 
-class TestRunTestGenerationHappyPath:
-    async def test_produces_verified_result(
-        self, indexed_synth_py, tmp_path: Path
-    ):
+class TestRunTestGeneration:
+    async def test_produces_verified_result(self, indexed_synth_py, synth_repo):
         session, repo_name = indexed_synth_py
         fake = FakeLLMClient(responses=[_fake_response()])
 
-        result = await run_test_generation(
-            session,
-            repo_name,
-            "src/myapp/utils.py",
-            llm=fake,
-            repo_root=tmp_path,
-        )
+        result = await _run(session, repo_name, synth_repo, fake)
 
         assert isinstance(result, TestGenerationResult)
-        assert result.verified is True
-        assert result.verification_errors == []
-        assert result.target_file == "src/myapp/utils.py"
+        assert result.verified is True, result.verification_errors
+        assert result.tests_passed == 3
         assert result.test_file_path == "tests/test_utils.py"
-        assert result.test_content == _VALID_TEST_FILE
-        assert result.covered_symbols == [
-            "format_name",
-            "validate_email",
-        ]
-
-    async def test_makes_exactly_one_llm_call(
-        self, indexed_synth_py, tmp_path: Path
-    ):
-        session, repo_name = indexed_synth_py
-        fake = FakeLLMClient(responses=[_fake_response()])
-
-        await run_test_generation(
-            session,
-            repo_name,
-            "src/myapp/utils.py",
-            llm=fake,
-            repo_root=tmp_path,
-        )
-
+        assert result.confidence == pytest.approx(0.92)
         assert len(fake.calls) == 1
         assert fake.calls[0]["schema"] == "GeneratedTestResponse"
 
-    async def test_prompt_includes_target_source(
-        self, indexed_synth_py, tmp_path: Path
+    async def test_prompt_carries_source_and_import_path(
+        self, indexed_synth_py, synth_repo
     ):
-        """Minimal signal that context was built from the index, not
-        hallucinated — the source of the target file must appear in
-        the user prompt."""
         session, repo_name = indexed_synth_py
         fake = FakeLLMClient(responses=[_fake_response()])
 
-        await run_test_generation(
-            session,
-            repo_name,
-            "src/myapp/utils.py",
-            llm=fake,
-            repo_root=tmp_path,
-        )
+        await _run(session, repo_name, synth_repo, fake)
 
         user = fake.calls[0]["user"]
         assert "def format_name" in user
-        assert "def validate_email" in user
+        assert "`myapp.utils`" in user
+        # Repository content is fenced off as data.
+        assert "<source>" in user and "</source>" in user
 
-    async def test_verified_bonus_lifts_confidence(
-        self, indexed_synth_py, tmp_path: Path
+    async def test_confident_model_with_failing_tests_stays_below_gate(
+        self, indexed_synth_py, synth_repo
     ):
-        """LLM says 0.85; verified → +0.05 bonus."""
+        """The model said 0.99; the tests fail; the 0.9 write gate stays shut."""
         session, repo_name = indexed_synth_py
-        fake = FakeLLMClient(responses=[_fake_response(confidence=0.85)])
-
-        result = await run_test_generation(
-            session,
-            repo_name,
-            "src/myapp/utils.py",
-            llm=fake,
-            repo_root=tmp_path,
+        fake = FakeLLMClient(
+            responses=[_fake_response(content=_FAILING, confidence=0.99)]
         )
 
-        assert result.llm_confidence == 0.85
-        assert result.verified is True
-        assert 0.89 < result.confidence <= 0.91
+        result = await _run(session, repo_name, synth_repo, fake)
 
+        assert result.verified is False
+        assert result.llm_confidence == 0.99
+        assert result.confidence == 0.4
+        assert result.test_content == _FAILING  # still returned for display
 
-class TestRunTestGenerationFailurePaths:
-    async def test_unknown_file_raises(
-        self, indexed_synth_py, tmp_path: Path
-    ):
+    async def test_unknown_file_raises(self, indexed_synth_py, synth_repo):
         session, repo_name = indexed_synth_py
         fake = FakeLLMClient(responses=[_fake_response()])
-
         with pytest.raises(FileNotFoundError, match="not found in index"):
-            await run_test_generation(
+            await _run(
                 session,
                 repo_name,
-                "src/myapp/does_not_exist.py",
-                llm=fake,
-                repo_root=tmp_path,
+                synth_repo,
+                fake,
+                target_file="src/myapp/does_not_exist.py",
             )
 
-    async def test_broken_syntax_fails_verification(
-        self, indexed_synth_py, tmp_path: Path
+    async def test_custom_test_path_flows_through_without_touching_repo(
+        self, indexed_synth_py, synth_repo
     ):
-        session, repo_name = indexed_synth_py
-        fake = FakeLLMClient(
-            responses=[
-                _fake_response(content=_BROKEN_SYNTAX, confidence=0.9)
-            ]
-        )
-
-        result = await run_test_generation(
-            session,
-            repo_name,
-            "src/myapp/utils.py",
-            llm=fake,
-            repo_root=tmp_path,
-        )
-
-        assert result.verified is False
-        assert any(
-            "ast.parse failed" in e for e in result.verification_errors
-        )
-        # Content is still returned so the caller can display it.
-        assert result.test_content == _BROKEN_SYNTAX
-
-    async def test_unverified_confidence_pinned_to_ceiling(
-        self, indexed_synth_py, tmp_path: Path
-    ):
-        """LLM reports 0.95, but verification fails → blended ≤ 0.4.
-        That ceiling guarantees the bridge's Decisions auto-downgrade
-        well below the 0.9 code-action threshold without any
-        recipe-specific logic."""
-        session, repo_name = indexed_synth_py
-        fake = FakeLLMClient(
-            responses=[
-                _fake_response(content=_BAD_IMPORT, confidence=0.95)
-            ]
-        )
-
-        result = await run_test_generation(
-            session,
-            repo_name,
-            "src/myapp/utils.py",
-            llm=fake,
-            repo_root=tmp_path,
-        )
-
-        assert result.verified is False
-        assert result.llm_confidence == 0.95
-        assert result.confidence <= 0.4
-
-
-class TestRunTestGenerationCustomPath:
-    async def test_override_test_file_path(
-        self, indexed_synth_py, tmp_path: Path
-    ):
-        """AMASS-style tests live in ``backend/tests/``, not ``tests/``.
-        The caller can override the default path to match a repo's
-        layout. The override flows through to the result, but Week 9's
-        scratch-dir refactor means nothing lands in ``repo_root`` —
-        verification writes into a private tempdir that's deleted
-        before the recipe returns.
-        """
         session, repo_name = indexed_synth_py
         fake = FakeLLMClient(responses=[_fake_response()])
+        before = _snapshot(synth_repo)
 
-        result = await run_test_generation(
+        result = await _run(
             session,
             repo_name,
-            "src/myapp/utils.py",
-            llm=fake,
-            repo_root=tmp_path,
+            synth_repo,
+            fake,
             test_file_path="backend/tests/unit/test_utils.py",
         )
 
+        assert result.verified is True, result.verification_errors
         assert result.test_file_path == "backend/tests/unit/test_utils.py"
-        # The repo_root must stay clean — Week 9 guarantee.
-        assert not (
-            tmp_path / "backend" / "tests" / "unit" / "test_utils.py"
-        ).exists()
-        assert list(tmp_path.iterdir()) == []
+        assert _snapshot(synth_repo) == before
 
-
-class TestRunTestGenerationScratchIsolation:
-    async def test_repo_root_is_not_mutated_on_success(
-        self, indexed_synth_py, tmp_path: Path
+    async def test_non_test_path_rejected_before_llm_call(
+        self, indexed_synth_py, synth_repo
     ):
-        """Week 9: even when verification writes files for the
-        subprocess gates, none of those writes hit ``repo_root``."""
+        """A path that would overwrite source code never reaches the LLM."""
         session, repo_name = indexed_synth_py
         fake = FakeLLMClient(responses=[_fake_response()])
-
-        result = await run_test_generation(
-            session,
-            repo_name,
-            "src/myapp/utils.py",
-            llm=fake,
-            repo_root=tmp_path,
-        )
-
-        assert result.verified is True
-        assert list(tmp_path.iterdir()) == []
-
-    async def test_repo_root_is_not_mutated_on_verification_failure(
-        self, indexed_synth_py, tmp_path: Path
-    ):
-        session, repo_name = indexed_synth_py
-        fake = FakeLLMClient(
-            responses=[_fake_response(content=_BAD_IMPORT, confidence=0.95)]
-        )
-
-        result = await run_test_generation(
-            session,
-            repo_name,
-            "src/myapp/utils.py",
-            llm=fake,
-            repo_root=tmp_path,
-        )
-
-        assert result.verified is False
-        assert list(tmp_path.iterdir()) == []
+        with pytest.raises(InvalidTestPathError):
+            await _run(
+                session,
+                repo_name,
+                synth_repo,
+                fake,
+                test_file_path="src/myapp/utils.py",
+            )
+        assert fake.calls == []
