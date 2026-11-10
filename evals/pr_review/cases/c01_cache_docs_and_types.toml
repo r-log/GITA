@@ -1,0 +1,27 @@
+kind = "clean"
+tags = ["docs"]
+title = "Document TTLCache"
+body = "Docstrings and a clear() method for tests."
+notes = "Docs plus a trivial, correct method."
+
+[[edits]]
+file = "shop/cache.py"
+find = '''class TTLCache:
+    def __init__(self, ttl_s: float) -> None:'''
+replace = '''class TTLCache:
+    """Maps keys to values that expire ``ttl_s`` seconds after being set.
+
+    Uses the monotonic clock, so expiry is unaffected by wall-clock changes.
+    Not thread-safe.
+    """
+
+    def __init__(self, ttl_s: float) -> None:'''
+
+[[edits]]
+file = "shop/cache.py"
+append = '''
+
+    def clear(self) -> None:
+        """Drop every entry."""
+        self._entries.clear()
+'''

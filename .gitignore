@@ -54,3 +54,10 @@ tests/bakeoff/results/
 # Alembic — keep versions/ tracked but ignore pycache
 alembic/__pycache__/
 alembic/versions/__pycache__/
+
+# Eval runs: harness checks and bulky/derived output stay local
+evals/pr_review/runs/_checks/
+evals/**/traces/
+evals/**/report.html
+evals/**/state.json
+evals/**/trajectory/

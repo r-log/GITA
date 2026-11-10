@@ -1,0 +1,24 @@
+kind = "bug"
+tags = ["security"]
+title = "Allow per-team sub-folders for exported reports"
+body = "Report names can now include a team folder, e.g. finance/q3.csv."
+notes = "Dropping basename() lets ../ in report_name write anywhere the process can."
+
+[[edits]]
+file = "shop/api.py"
+find = '''    safe_name = os.path.basename(report_name)
+    if not safe_name or safe_name.startswith("."):
+        raise ValueError("invalid report name")
+    path = os.path.join(export_dir, safe_name)'''
+replace = '''    if not report_name:
+        raise ValueError("invalid report name")
+    path = os.path.join(export_dir, report_name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)'''
+
+[[expect]]
+id = "traversal"
+file = "shop/api.py"
+anchor = "    path = os.path.join(export_dir, report_name)"
+span = 0
+kinds = ["security"]
+severity = "high"

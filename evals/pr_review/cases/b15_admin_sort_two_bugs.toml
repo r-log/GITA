@@ -1,0 +1,33 @@
+kind = "bug"
+tags = ["security"]
+title = "Add sortable admin product listing"
+body = "Back-office listing with a sort column chosen in the UI."
+notes = "Two bugs: no require_admin, and the sort column is interpolated into SQL."
+
+[[edits]]
+file = "shop/api.py"
+append = '''
+
+
+def admin_products(conn: sqlite3.Connection, user: User | None, sort: str) -> list[dict]:
+    rows = conn.execute(
+        f"SELECT id, name, price_cents, stock FROM products ORDER BY {sort}"
+    ).fetchall()
+    return [dict(row) for row in rows]
+'''
+
+[[expect]]
+id = "no_authz"
+file = "shop/api.py"
+anchor = "def admin_products(conn: sqlite3.Connection, user: User | None, sort: str) -> list[dict]:"
+span = 0
+kinds = ["security", "missing", "bug"]
+severity = "high"
+
+[[expect]]
+id = "sqli_order_by"
+file = "shop/api.py"
+anchor = '''        f"SELECT id, name, price_cents, stock FROM products ORDER BY {sort}"'''
+span = 0
+kinds = ["security", "bug"]
+severity = "high"

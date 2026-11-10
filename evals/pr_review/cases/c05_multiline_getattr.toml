@@ -1,0 +1,17 @@
+kind = "clean"
+tags = ["tripwire"]
+title = "Add feature flag lookup"
+body = "Reads optional feature flags off the settings object."
+notes = "Valid multi-line call that earlier agents misreported as a syntax error."
+
+[[edits]]
+file = "shop/config.py"
+append = '''
+
+
+def feature_enabled(settings: Settings, name: str, default: bool = False) -> bool:
+    flags = getattr(
+        settings, "feature_flags", {}
+    )
+    return bool(flags.get(name, default))
+'''

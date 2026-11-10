@@ -1,0 +1,27 @@
+kind = "clean"
+tags = ["observability"]
+title = "Log payment retries"
+body = "Warn on each transient retry so we can see provider flakiness."
+notes = "Logs the attempt number only; no card data."
+
+[[edits]]
+file = "shop/payments.py"
+find = '''import random
+import time
+'''
+replace = '''import logging
+import random
+import time
+
+logger = logging.getLogger(__name__)
+'''
+
+[[edits]]
+file = "shop/payments.py"
+find = '''            if attempt == max_attempts:
+                raise
+'''
+replace = '''            if attempt == max_attempts:
+                raise
+            logger.warning("payment provider transient error, attempt %d/%d", attempt, max_attempts)
+'''

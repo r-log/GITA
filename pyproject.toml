@@ -57,7 +57,7 @@ line-length = 100
 target-version = "py312"
 # Fixture repos contain deliberate bugs and line numbers the golden
 # checklists cite; never lint or reformat them.
-extend-exclude = ["tests/fixtures"]
+extend-exclude = ["tests/fixtures", "evals/pr_review/base_repo"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

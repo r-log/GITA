@@ -1,0 +1,20 @@
+kind = "bug"
+tags = ["security"]
+title = "Simplify session token comparison"
+body = "No need for hmac here, a plain comparison is clearer."
+notes = "Replaces a constant-time comparison of a secret with ==."
+
+[[edits]]
+file = "shop/auth.py"
+find = '''def session_matches(presented: str, expected: str) -> bool:
+    return hmac.compare_digest(presented, expected)'''
+replace = '''def session_matches(presented: str, expected: str) -> bool:
+    return presented == expected'''
+
+[[expect]]
+id = "timing"
+file = "shop/auth.py"
+anchor = "return presented == expected"
+span = 0
+kinds = ["security"]
+severity = "medium"

@@ -1,0 +1,23 @@
+kind = "bug"
+tags = ["security"]
+title = "Add product search"
+body = "Adds a name search for the storefront search box."
+notes = "User input interpolated into SQL with an f-string."
+
+[[edits]]
+file = "shop/db.py"
+append = '''
+
+
+def search_products(conn: sqlite3.Connection, term: str) -> list[sqlite3.Row]:
+    query = f"SELECT id, name, price_cents, stock FROM products WHERE name LIKE '%{term}%' ORDER BY id"
+    return conn.execute(query).fetchall()
+'''
+
+[[expect]]
+id = "sqli"
+file = "shop/db.py"
+anchor = '''query = f"SELECT id, name, price_cents, stock FROM products WHERE name LIKE'''
+span = 1
+kinds = ["security", "bug"]
+severity = "high"

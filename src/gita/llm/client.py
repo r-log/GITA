@@ -147,8 +147,9 @@ class LLMResponse:
 
     content: str  # raw content returned by the model
     parsed: BaseModel | None  # populated iff response_schema was provided
-    model: str
+    model: str  # the model that served the call, as reported by the provider
     usage: dict[str, Any] = field(default_factory=dict)
+    finish_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +282,8 @@ class OpenRouterClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            # OpenRouter usage accounting: adds the call's cost to `usage`.
+            "usage": {"include": True},
         }
         if response_schema is not None:
             payload["response_format"] = {
@@ -302,11 +305,16 @@ class OpenRouterClient:
             raise LLMError(f"malformed OpenRouter response: {exc} (raw={data!r:.200})") from exc
 
         usage = data.get("usage", {}) or {}
+        # The model that actually served the call: OpenRouter can route an
+        # alias to a dated snapshot or fall back to another provider.
+        served_model = data.get("model") or model_name
         logger.info(
-            "llm_call model=%s input_tokens=%s output_tokens=%s finish=%s schema=%s",
+            "llm_call model=%s served=%s input_tokens=%s output_tokens=%s cost=%s finish=%s schema=%s",
             model_name,
+            served_model,
             usage.get("prompt_tokens"),
             usage.get("completion_tokens"),
+            usage.get("cost"),
             finish_reason,
             response_schema.__name__ if response_schema else None,
         )
@@ -325,8 +333,9 @@ class OpenRouterClient:
         return LLMResponse(
             content=content,
             parsed=parsed,
-            model=model_name,
+            model=served_model,
             usage=usage,
+            finish_reason=finish_reason,
         )
 
 

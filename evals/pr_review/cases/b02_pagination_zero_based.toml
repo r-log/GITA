@@ -1,0 +1,24 @@
+kind = "bug"
+tags = ["logic"]
+title = "Accept page=0 from the mobile client"
+body = "The new mobile app sends zero-based page numbers; relax the check so they work."
+notes = "Pages stay 1-based everywhere else (api.list_products), so page 1 now skips the first page."
+
+[[edits]]
+file = "shop/pagination.py"
+find = '''def offset_for(page: int, per_page: int) -> int:
+    if page < 1:
+        raise ValueError("page must be >= 1")
+    return (page - 1) * per_page'''
+replace = '''def offset_for(page: int, per_page: int) -> int:
+    if page < 0:
+        raise ValueError("page must be >= 0")
+    return page * per_page'''
+
+[[expect]]
+id = "off_by_one"
+file = "shop/pagination.py"
+anchor = "return page * per_page"
+span = 0
+kinds = ["bug", "design"]
+severity = "medium"

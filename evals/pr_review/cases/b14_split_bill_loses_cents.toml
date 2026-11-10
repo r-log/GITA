@@ -1,0 +1,26 @@
+kind = "bug"
+tags = ["logic"]
+title = "Add split_evenly for shared orders"
+body = "Splits an order total between several payers."
+notes = "Integer division drops the remainder: the shares don't add up to the total."
+
+[[edits]]
+file = "shop/orders.py"
+append = '''
+
+
+def split_evenly(total_cents: int, parts: int) -> list[int]:
+    """Split a bill between ``parts`` payers."""
+    if parts <= 0:
+        raise ValueError("parts must be positive")
+    share = total_cents // parts
+    return [share] * parts
+'''
+
+[[expect]]
+id = "lost_remainder"
+file = "shop/orders.py"
+anchor = "    share = total_cents // parts"
+span = 1
+kinds = ["bug"]
+severity = "medium"

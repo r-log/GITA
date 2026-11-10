@@ -104,7 +104,8 @@ class TestOpenRouterBasic:
         result = await client.call(system="be helpful", user="hi")
         assert result.content == "hello from the model"
         assert result.parsed is None
-        assert result.model == "test/model"
+        # The serving model from the response, not the requested alias.
+        assert result.model == "fake-model"
 
     async def test_request_body_contains_messages(self):
         capture = Capture()
@@ -401,3 +402,22 @@ class TestStrictJsonSchema:
         sent = json.loads(capture.requests[0].content)["response_format"]["json_schema"]
         assert sent["strict"] is True
         assert sent["schema"] == strict_json_schema(SimpleResponse)
+
+
+class TestServedModelAndCost:
+    async def test_reports_the_serving_model_and_requests_cost(self):
+        capture = Capture()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _make_chat_response(
+                "ok", usage={"prompt_tokens": 5, "completion_tokens": 2, "cost": 0.0001}
+            )
+            body["model"] = "provider/model-2026-01-01"
+            return httpx.Response(200, json=body)
+
+        client = _build_client(handler, capture)
+        result = await client.call(system="x", user="y")
+        assert result.model == "provider/model-2026-01-01"  # not the requested alias
+        assert result.usage["cost"] == 0.0001
+        assert result.finish_reason == "stop"
+        assert json.loads(capture.requests[0].content)["usage"] == {"include": True}

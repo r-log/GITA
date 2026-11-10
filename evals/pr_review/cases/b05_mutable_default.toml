@@ -1,0 +1,23 @@
+kind = "bug"
+tags = ["logic"]
+title = "Add quick_order helper for one-click purchases"
+body = "Builds an order from a single item plus optional extras."
+notes = "Mutable default list is shared between calls, so orders accumulate items."
+
+[[edits]]
+file = "shop/orders.py"
+append = '''
+
+
+def quick_order(item: LineItem, extras: list[LineItem] = []) -> Order:
+    extras.append(item)
+    return Order(items=extras)
+'''
+
+[[expect]]
+id = "mutable_default"
+file = "shop/orders.py"
+anchor = "def quick_order(item: LineItem, extras: list[LineItem] = []) -> Order:"
+span = 1
+kinds = ["bug", "quality"]
+severity = "medium"

@@ -1,0 +1,10 @@
+kind = "clean"
+tags = ["config"]
+title = "Raise default payment timeout to 15s"
+body = "p99 provider latency is ~9s; 10s left too little headroom."
+notes = "Configuration change."
+
+[[edits]]
+file = "shop/config.py"
+find = '''        payment_timeout_s=float(os.environ.get("PAYMENT_TIMEOUT_S", "10")),'''
+replace = '''        payment_timeout_s=float(os.environ.get("PAYMENT_TIMEOUT_S", "15")),'''

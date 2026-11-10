@@ -1,0 +1,18 @@
+kind = "bug"
+tags = ["logic"]
+title = "Tidy up total_cents"
+body = "Small readability cleanup in the pricing code, no behaviour change intended."
+notes = "Dropped parentheses: subtotal * 1 - percent/100, so the discount is effectively ignored."
+
+[[edits]]
+file = "shop/orders.py"
+find = '''    discounted = subtotal * (Decimal("1") - order.discount_percent / Decimal("100"))'''
+replace = '''    discounted = subtotal * Decimal("1") - order.discount_percent / Decimal("100")'''
+
+[[expect]]
+id = "precedence"
+file = "shop/orders.py"
+anchor = '''    discounted = subtotal * Decimal("1") - order.discount_percent / Decimal("100")'''
+span = 0
+kinds = ["bug"]
+severity = "high"

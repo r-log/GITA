@@ -1,0 +1,14 @@
+kind = "clean"
+tags = ["fix"]
+title = "Reject non-positive per_page in page_count"
+body = "page_count(…, 0) raised ZeroDivisionError; make it a clear ValueError."
+notes = "A correct fix."
+
+[[edits]]
+file = "shop/pagination.py"
+find = '''def page_count(total_items: int, per_page: int) -> int:
+    return max(1, math.ceil(total_items / per_page))'''
+replace = '''def page_count(total_items: int, per_page: int) -> int:
+    if per_page <= 0:
+        raise ValueError("per_page must be positive")
+    return max(1, math.ceil(total_items / per_page))'''

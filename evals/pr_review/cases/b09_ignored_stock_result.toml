@@ -1,0 +1,29 @@
+kind = "bug"
+tags = ["logic"]
+title = "Add add_to_cart handler"
+body = "Reserves stock and adds the line to the user's order."
+notes = "decrement_stock returns False when stock is short; the result is ignored, so out-of-stock items are sold."
+
+[[edits]]
+file = "shop/api.py"
+append = '''
+
+
+def add_to_cart(conn: sqlite3.Connection, user: User | None, order_id: int, product_id: int, quantity: int) -> dict:
+    require_active(user)
+    with db.transaction(conn):
+        db.decrement_stock(conn, product_id, quantity)
+        conn.execute(
+            "INSERT INTO order_items (order_id, product_id, quantity) VALUES (?, ?, ?)",
+            (order_id, product_id, quantity),
+        )
+    return {"order_id": order_id, "product_id": product_id, "quantity": quantity}
+'''
+
+[[expect]]
+id = "ignored_result"
+file = "shop/api.py"
+anchor = "        db.decrement_stock(conn, product_id, quantity)"
+span = 0
+kinds = ["bug"]
+severity = "high"
