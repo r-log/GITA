@@ -162,6 +162,7 @@ worker.
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_WEBHOOK_SECRET` | GitHub App credentials. |
 | `GITHUB_APP_SLUG` | Ignore only GITA's own bot; other bots' PRs are reviewed. |
 | `OPENROUTER_API_KEY`, `AI_DEFAULT_MODEL` | LLM provider and model. |
+| `AI_MODEL_SMALL`, `AI_MODEL_STANDARD`, `AI_MODEL_LARGE` | Optional model tiers: the reviewer routes each PR to one by what it changes (`agents/routing.py`). |
 | `OPENAI_API_KEY` | Optional: file embeddings for semantic search. |
 | `WRITE_MODE` | `shadow` / `comment` / `full`. |
 | `ONBOARDING_LABEL` | Label that requests onboarding (default `gita:onboard`). |

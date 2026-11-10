@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # when an agent actually makes an LLM call. Tests use a FakeLLMClient.
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
     ai_default_model: str = Field(default="moonshotai/kimi-k2.5", alias="AI_DEFAULT_MODEL")
+    # Model tiers for routing (agents/routing.py). Unset tiers use
+    # AI_DEFAULT_MODEL, so routing changes nothing until they are set.
+    ai_model_small: str | None = Field(default=None, alias="AI_MODEL_SMALL")
+    ai_model_standard: str | None = Field(default=None, alias="AI_MODEL_STANDARD")
+    ai_model_large: str | None = Field(default=None, alias="AI_MODEL_LARGE")
 
     # OpenAI API key — used for file-level embeddings (text-embedding-3-small).
     # Optional: when absent, indexing skips embedding computation and

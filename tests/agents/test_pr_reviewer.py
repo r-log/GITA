@@ -644,3 +644,32 @@ class TestContextByRole:
         assert context_windows(250, change, whole_max=whole, radius=radius) == [(97, 103)]
         whole, radius = _CONTEXT_BY_ROLE["source"]
         assert context_windows(250, change, whole_max=whole, radius=radius) == [(1, 250)]
+
+
+class TestRouting:
+    async def test_findings_go_to_the_routed_model_and_the_summary_to_small(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        from gita.agents.pr_reviewer.bridge import build_pr_review_decision
+        from gita.agents.routing import ModelTiers
+
+        session, repo_name = indexed_synth_py
+        llm = FakeLLMClient(responses=[_findings_response(findings=[]), _summary_response()])
+        tiers = ModelTiers(small="m-small", standard="m-standard", large="m-large")
+
+        result = await run_pr_review(
+            session, repo_name, _pr_info(), _diff_hunks(), llm=llm, models=tiers
+        )
+
+        assert [c["model"] for c in llm.calls] == [result.model, "m-small"]
+        assert result.tier in ("standard", "large") and result.route_reasons
+        body = build_pr_review_decision(result, "acme/app", 42, head_sha="abc").payload["body"]
+        assert f"{result.model} ({result.tier})" in body
+
+    async def test_without_tiers_every_call_uses_the_client_default(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        session, repo_name = indexed_synth_py
+        llm = FakeLLMClient(responses=[_findings_response(findings=[]), _summary_response()])
+        result = await run_pr_review(session, repo_name, _pr_info(), _diff_hunks(), llm=llm)
+        assert [c["model"] for c in llm.calls] == [None, None] and result.model is None

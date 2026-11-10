@@ -36,6 +36,7 @@ from gita.agents.guardrails import structural_confidence, verify_pr_findings
 from gita.agents.onboarding.schemas import FindingsResponse, LLMFinding
 from gita.agents.pr_reviewer.diff_parser import DiffHunk
 from gita.agents.pr_reviewer.schemas import ReviewSummaryResponse
+from gita.agents.routing import ModelTiers, route_review
 from gita.agents.types import Finding, PRReviewResult
 from gita.github.client import PRInfo
 from gita.llm.client import LLMClient
@@ -375,6 +376,7 @@ async def run_pr_review(
     llm: LLMClient,
     max_files: int = _MAX_FILES_PER_REVIEW,
     head_contents: dict[str, str] | None = None,
+    models: ModelTiers | None = None,
 ) -> PRReviewResult:
     """Run the two-stage PR review recipe.
 
@@ -384,6 +386,10 @@ async def run_pr_review(
     and the guardrails can check syntax claims against the real file.
     The recipe handles context, LLM calls, guardrails, the verdict, and
     confidence blending.
+
+    With ``models``, the findings call goes to the tier ``route_review``
+    picks and the summary to the small tier; without, both calls use the
+    client's default model.
     """
     await resolve_repo(session, repo_name)  # fail fast on an unindexed repo
     nonce = _new_nonce()
@@ -410,6 +416,18 @@ async def run_pr_review(
     unreviewed = over_cap + prompt.unreviewed_paths
     total_files = len(diff_hunks) + len(over_cap)
 
+    route = None
+    if models is not None:
+        reviewed_files = [f for f in diff_context.files if f.file_path in prompt.reviewed_paths]
+        route = route_review(reviewed_files, models)
+        logger.info(
+            "pr_review_route pr=%d tier=%s model=%s reasons=%s",
+            pr_info.number,
+            route.tier,
+            route.model,
+            "; ".join(route.reasons),
+        )
+
     findings: list[Finding] = []
     original_count = 0
     if prompt.reviewed_paths:
@@ -418,6 +436,7 @@ async def run_pr_review(
             user=prompt.text,
             response_schema=FindingsResponse,
             max_tokens=_REVIEW_MAX_TOKENS,
+            **({"model": route.model} if route else {}),
         )
         if not isinstance(findings_response.parsed, FindingsResponse):
             raise PRReviewError("findings call returned no parsed response")
@@ -455,6 +474,7 @@ async def run_pr_review(
         ),
         response_schema=ReviewSummaryResponse,
         max_tokens=_SUMMARY_MAX_TOKENS,
+        **({"model": models.small} if models else {}),
     )
     if not isinstance(summary_response.parsed, ReviewSummaryResponse):
         raise PRReviewError("summary call returned no parsed response")
@@ -479,4 +499,7 @@ async def run_pr_review(
         confidence=final_confidence,
         dropped_findings=dropped,
         unreviewed_files=unreviewed,
+        model=route.model if route else None,
+        tier=route.tier if route else None,
+        route_reasons=list(route.reasons) if route else [],
     )

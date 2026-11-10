@@ -37,6 +37,7 @@ from gita.agents.pr_reviewer import (
     run_pr_review,
 )
 from gita.agents.pr_reviewer.bridge import pr_review_idempotency_key
+from gita.agents.routing import ModelTiers
 from gita.agents.test_generator import (
     TestGenerationArtifact,
     build_test_generation_decisions,
@@ -258,6 +259,7 @@ async def run_pr_review_job(
                 diff_hunks,
                 llm=llm,
                 head_contents=head_contents,
+                models=ModelTiers.from_settings(settings),
             )
         except PRReviewError as exc:
             logger.error(
