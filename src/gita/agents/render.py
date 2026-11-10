@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-_ZWSP = "​"
+_ZWSP = "\u200b"
 _MENTION_RE = re.compile(r"@(?=[A-Za-z0-9])")
 _TAG_START_RE = re.compile(r"<(?=[A-Za-z/!?])")
 _IMAGE_RE = re.compile(r"!\[")
