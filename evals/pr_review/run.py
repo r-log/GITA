@@ -225,18 +225,18 @@ def fake_llm(case: Case, mode: str) -> FakeLLMClient:
 # ---------------------------------------------------------------------------
 # Environment: a dedicated, freshly indexed database
 # ---------------------------------------------------------------------------
-def _eval_db_url() -> str:
+def _eval_db_url(suffix: str = "eval") -> str:
     base, _, name = settings.database_url.rpartition("/")
-    return f"{base}/{name}_eval"
+    return f"{base}/{name}_{suffix}"
 
 
-async def prepare_database() -> async_sessionmaker[AsyncSession]:
-    """Create/migrate the eval DB and index a fresh copy of the base repo."""
+async def migrated_database(suffix: str) -> async_sessionmaker[AsyncSession]:
+    """A dedicated database next to the configured one, created and migrated."""
     from alembic.config import Config
 
     from alembic import command
 
-    url = _eval_db_url()
+    url = _eval_db_url(suffix)
     base, _, name = url.rpartition("/")
     admin = create_async_engine(
         f"{base}/postgres", isolation_level="AUTOCOMMIT", poolclass=NullPool
@@ -257,7 +257,12 @@ async def prepare_database() -> async_sessionmaker[AsyncSession]:
     await asyncio.to_thread(command.upgrade, cfg, "head")
 
     engine = create_async_engine(url, poolclass=NullPool)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    return async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def prepare_database() -> async_sessionmaker[AsyncSession]:
+    """Create/migrate the eval DB and index a fresh copy of the base repo."""
+    sessions = await migrated_database("eval")
     with tempfile.TemporaryDirectory(prefix="gita-eval-") as tmp:
         repo_copy = Path(tmp) / "shop"
         shutil.copytree(BASE_REPO, repo_copy)

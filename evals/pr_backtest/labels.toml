@@ -1,0 +1,118 @@
+# Hand labels for the mined defects, written BEFORE any review was run, so
+# they can't drift toward the results. One entry per later-fixed defect
+# (case id + fix id from cases.json).
+#
+# visible  "code"    a careful reviewer could see it in the PR: the diff, the
+#                    files it touches, and the declarations it calls
+#          "domain"  needs knowledge the repository doesn't hold (the game
+#                    client's packet layouts, its crypto quirks, game rules)
+#          "none"    not a product defect: excluded from scoring
+# origin   "introduced"  the PR wrote the defective code
+#          "moved"       the PR moved or rewrote code that already had it
+#                        (line tracing credits the mover; a reviewer still
+#                        sees the code in the diff)
+
+[[label]]
+case = "pr31"
+bug = "fix505"
+visible = "domain"
+origin = "introduced"
+note = "The client drops leading zero bytes of S before the interleave hash (cited from the client binary)."
+
+[[label]]
+case = "pr39"
+bug = "fix40"
+visible = "code"
+origin = "introduced"
+note = "The staging stream arms the cipher for any opcode instead of only CMSG_AUTH_CONTINUED_SESSION; the announce ordering half needs client knowledge."
+
+[[label]]
+case = "pr206"
+bug = "fix208"
+visible = "code"
+origin = "introduced"
+note = "mktime on a struct tm whose tm_isdst is carried over from another date: the reset misses local midnight across DST changes."
+
+[[label]]
+case = "pr319"
+bug = "fix605"
+visible = "code"
+origin = "moved"
+note = "C-style casts ((Pet*)pet) on a unit that may be a charmed creature or a mind-controlled player; the same function checks IsPet() elsewhere."
+
+[[label]]
+case = "pr411"
+bug = "fix468"
+visible = "code"
+origin = "moved"
+note = "Loading one character deletes every character's row of an unknown currency (DELETE ... WHERE id = X, no guid)."
+
+[[label]]
+case = "pr415"
+bug = "fix465"
+visible = "code"
+origin = "moved"
+note = "Same pattern for talents and specs: DELETE without the owner's guid."
+
+[[label]]
+case = "pr451"
+bug = "fix507"
+visible = "code"
+origin = "moved"
+note = "The member row loop reads 8 bank tabs but the SELECT lists 6, so name/level/class/zone are read as tab numbers; the PR's own comment describes it."
+
+[[label]]
+case = "pr516"
+bug = "fix754"
+visible = "domain"
+origin = "moved"
+note = "Gameobject query reply layout (32 data words, scale, quest items, required level) is the client's packet format."
+
+[[label]]
+case = "pr516"
+bug = "fix756"
+visible = "domain"
+origin = "moved"
+note = "Creature query reply layout (female name, second type-flags word, expansion) is the client's packet format."
+
+[[label]]
+case = "pr520"
+bug = "fix759"
+visible = "domain"
+origin = "moved"
+note = "Auto-accept quests should enter the log when details are shown: game behaviour, not visible in the moved handler."
+
+[[label]]
+case = "pr603"
+bug = "fix609"
+visible = "none"
+origin = "introduced"
+note = "Test harness scenario moved to a quieter map; no product defect."
+
+[[label]]
+case = "pr625"
+bug = "fix635"
+visible = "code"
+origin = "moved"
+note = "Building an update packet writes the creature's lootable flag through const_cast: a side effect in a const packet builder."
+
+[[label]]
+case = "pr656"
+bug = "fix736"
+visible = "code"
+origin = "introduced"
+note = "IsDisabledFor(DISABLE_TYPE_SPELL, id, SPELL_ATTR_EX2_IGNORE_LOS) passes a spell attribute where a disable flag belongs; seeing it needs IsDisabledFor's declaration (another file)."
+
+[[label]]
+case = "pr668"
+bug = "fix755"
+visible = "domain"
+origin = "moved"
+note = "Quest packets send zeros for the reputation mask, minimap mark and overrides: client packet format."
+
+[[label]]
+case = "pr691"
+bug = "fix735"
+visible = "domain"
+origin = "introduced"
+note = "Battleground two-text yells need the monster-yell packet layout: client packet format."
