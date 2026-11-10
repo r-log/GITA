@@ -12,7 +12,8 @@ Architecture:
   ``httpx.MockTransport``.
 - Installation lookup (``(owner, repo) → installation_id``) is cached
   indefinitely because installation assignments rarely change.
-- Installation tokens are cached per installation with a 5-minute safety
+- Installation tokens are scoped to the one repository a call concerns
+  and cached per (installation, repository) with a 5-minute safety
   window before their real expiry.
 - Every HTTP call uses a fresh JWT (cheap to sign, safer than caching).
 """
@@ -82,7 +83,7 @@ class GithubClient:
             headers={"User-Agent": _USER_AGENT},
         )
         self._installation_ids: dict[tuple[str, str], int] = {}
-        self._installation_tokens: dict[int, _CachedToken] = {}
+        self._installation_tokens: dict[tuple[int, str | None], _CachedToken] = {}
 
     # -----------------------------------------------------------------
     # Lifecycle
@@ -290,10 +291,23 @@ class GithubClient:
         return installation_id
 
     async def _get_installation_token(
-        self, installation_id: int, *, now: datetime | None = None
+        self,
+        installation_id: int,
+        *,
+        repo: str | None = None,
+        now: datetime | None = None,
     ) -> str:
+        """An installation token, scoped to ``repo`` when given.
+
+        An unscoped installation token works on *every* repository the
+        installation covers. Each API call here concerns one repository,
+        so tokens are requested for just that one: a leaked or misused
+        token can't reach the installation's other repos. Cached per
+        ``(installation, repo)``.
+        """
         current = now if now is not None else datetime.now(timezone.utc)
-        cached = self._installation_tokens.get(installation_id)
+        key = (installation_id, repo)
+        cached = self._installation_tokens.get(key)
         if cached is not None and cached.is_fresh(current):
             return cached.token
 
@@ -305,6 +319,7 @@ class GithubClient:
                 "Accept": _ACCEPT,
                 "X-GitHub-Api-Version": _API_VERSION,
             },
+            json={"repositories": [repo]} if repo else None,
         )
         response.raise_for_status()
         data = response.json()
@@ -312,16 +327,14 @@ class GithubClient:
             data["expires_at"].replace("Z", "+00:00")
         )
         token = data["token"]
-        self._installation_tokens[installation_id] = _CachedToken(
-            token=token, expires_at=expires_at
-        )
+        self._installation_tokens[key] = _CachedToken(token=token, expires_at=expires_at)
         return token
 
     async def _installation_token_for_repo(
         self, owner: str, repo: str
     ) -> str:
         installation_id = await self._get_installation_id(owner, repo)
-        return await self._get_installation_token(installation_id)
+        return await self._get_installation_token(installation_id, repo=repo)
 
     # -----------------------------------------------------------------
     # Action handlers

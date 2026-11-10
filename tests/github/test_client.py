@@ -6,6 +6,8 @@ and bodies.
 """
 from __future__ import annotations
 
+import json
+
 import base64
 from datetime import datetime, timedelta, timezone
 
@@ -305,6 +307,20 @@ class TestInstallationLookup:
         assert len(install_requests) == 1
 
 
+class TestInstallationTokenScope:
+    async def test_repo_calls_request_a_token_for_that_repo_only(self, client, capture):
+        await client._installation_token_for_repo("owner", "repo")
+        token_request = next(r for r in capture.requests if "/access_tokens" in r.url.path)
+        assert json.loads(token_request.content) == {"repositories": ["repo"]}
+
+    async def test_tokens_are_cached_per_repo(self, client, capture):
+        await client._get_installation_token(999, repo="a")
+        await client._get_installation_token(999, repo="a")
+        await client._get_installation_token(999, repo="b")
+        token_requests = [r for r in capture.requests if "/access_tokens" in r.url.path]
+        assert len(token_requests) == 2
+
+
 class TestInstallationTokenCache:
     async def test_fresh_token_comes_from_api(self, client, capture):
         token = await client._get_installation_token(999)
@@ -329,7 +345,7 @@ class TestInstallationTokenCache:
         assert first == "ghs_fake_installation_token"
 
         # Force-expire the cached token
-        client._installation_tokens[999] = _CachedToken(
+        client._installation_tokens[(999, None)] = _CachedToken(
             token="ghs_old",
             expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
         )
