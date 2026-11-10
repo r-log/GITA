@@ -20,6 +20,7 @@ dependencies = [
     "tree-sitter-c>=0.23",
     "tree-sitter-cpp>=0.23",
     "tree-sitter-c-sharp>=0.23",
+    "mcp>=2.3,<3",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",

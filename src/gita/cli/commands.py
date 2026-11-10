@@ -74,6 +74,74 @@ _DEFAULT_MAX_ISSUES = 10
 # ---------------------------------------------------------------------------
 # Index / repos / stats
 # ---------------------------------------------------------------------------
+async def cmd_history_sync(args: argparse.Namespace) -> int:
+    """Read merged PRs and trace fixes to the PRs they repaired (git only, no model calls)."""
+    from gita.history.sync import sync_history
+
+    root = Path(args.path).resolve()
+    if not (root / ".git").exists():
+        print(f"error: not a git repository: {root}", file=sys.stderr)
+        return 2
+    name = args.name or root.name
+    async with SessionLocal() as session:
+        result = await sync_history(session, name, root, full=args.full)
+        await session.commit()
+    print(f"History of {name!r} ({result.mode}) at {result.head_sha[:10]}")
+    print(f"  merged PRs added: {result.prs_added}")
+    print(f"  fix PRs traced:   {result.fixes_linked} ({result.links_added} links)")
+    print(f"  elapsed:          {result.elapsed_s}s")
+    if result.shallow:
+        print(
+            "  warning: shallow clone; changes older than its history count as "
+            "inherited code (fetch more history for a fuller record)"
+        )
+    return 0
+
+
+async def cmd_scoreboard(args: argparse.Namespace) -> int:
+    """How often merged PRs later needed a fix, from the history memory."""
+    import json
+
+    from gita.history import queries
+    from gita.history.report import render_scoreboard
+
+    async with SessionLocal() as session:
+        try:
+            mem = await queries.load(session, args.repo)
+        except queries.NotSynced as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        board = queries.scoreboard(mem, since=args.since)
+    print(json.dumps(board, indent=2) if args.json else render_scoreboard(args.repo, board))
+    return 0
+
+
+async def cmd_mcp(args: argparse.Namespace) -> int:
+    """Serve the repository's memory to coding agents over MCP (stdio)."""
+    from gita.history.queries import repo_for_directory
+    from gita.mcp_server import build_server
+
+    name = args.repo
+    if name is None:
+        async with SessionLocal() as session:
+            repos = (
+                (await session.execute(select(Repo).where(Repo.history_synced_sha.isnot(None))))
+                .scalars()
+                .all()
+            )
+        repo = repo_for_directory(Path.cwd(), list(repos))
+        if repo is None:
+            print(
+                "error: no tracked repository contains this directory; pass --repo NAME "
+                "or run `gita history sync <clone>` first",
+                file=sys.stderr,
+            )
+            return 2
+        name = repo.name
+    await build_server(name, SessionLocal).run_stdio_async()
+    return 0
+
+
 async def cmd_index(args: argparse.Namespace) -> int:
     import time
 

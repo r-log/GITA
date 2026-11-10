@@ -37,7 +37,9 @@ from gita.cli.commands import (  # noqa: E402
     _DEFAULT_MAX_ISSUES,
     cmd_auto_test_gen_preview,
     cmd_generate_tests,
+    cmd_history_sync,
     cmd_index,
+    cmd_mcp,
     cmd_onboard,
     cmd_query_concept,
     cmd_query_history,
@@ -46,6 +48,7 @@ from gita.cli.commands import (  # noqa: E402
     cmd_query_symbol,
     cmd_repos,
     cmd_review_pr,
+    cmd_scoreboard,
     cmd_stats,
 )
 
@@ -118,6 +121,33 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="auto_test_gen",
         action="store_false",
         help="Opt this repo OUT of the auto-test-generation trigger.",
+    )
+
+    history_p = sub.add_parser(
+        "history", help="Repository memory: merged PRs and the defects later fixed in them"
+    )
+    history_sub = history_p.add_subparsers(dest="history_command", required=True)
+    hist_sync = history_sub.add_parser(
+        "sync", help="Read merged PRs from a clone and trace fix PRs to the PRs they repaired"
+    )
+    hist_sync.add_argument("path", help="Path to a clone with history (not shallow, ideally)")
+    hist_sync.add_argument("--name", help="Repo name (defaults to the directory name)")
+    hist_sync.add_argument(
+        "--full", action="store_true", help="Rebuild from scratch instead of reading new merges"
+    )
+
+    score_p = sub.add_parser("scoreboard", help="How often merged PRs later needed a fix")
+    score_p.add_argument("repo", help="Repo name")
+    score_p.add_argument("--json", action="store_true", help="JSON instead of Markdown")
+    score_p.add_argument(
+        "--since", default=None, metavar="YYYY-MM-DD", help="Only PRs merged from this day"
+    )
+
+    mcp_p = sub.add_parser(
+        "mcp", help="Serve the repository's memory to coding agents over MCP (stdio)"
+    )
+    mcp_p.add_argument(
+        "--repo", default=None, help="Repo name (default: the tracked clone containing the cwd)"
     )
 
     sub.add_parser("repos", help="List indexed repos")
@@ -386,6 +416,9 @@ _HANDLERS = {
     ("query", "history"): cmd_query_history,
     ("query", "concept"): cmd_query_concept,
     ("auto-test-gen", "preview"): cmd_auto_test_gen_preview,
+    ("history", "sync"): cmd_history_sync,
+    "mcp": cmd_mcp,
+    "scoreboard": cmd_scoreboard,
 }
 
 
@@ -397,6 +430,8 @@ def main(argv: list[str] | None = None) -> int:
         handler = _HANDLERS.get((args.command, args.query_type))
     elif args.command == "auto-test-gen":
         handler = _HANDLERS.get((args.command, args.auto_test_gen_subcommand))
+    elif args.command == "history":
+        handler = _HANDLERS.get((args.command, args.history_command))
     else:
         handler = _HANDLERS.get(args.command)
 
