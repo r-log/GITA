@@ -29,7 +29,7 @@ from gita.indexer.diff import (
 from gita.indexer.embeddings import EmbeddingClient, prepare_embedding_input
 from gita.indexer.imports import discover_package_roots, resolve_import
 from gita.indexer.parsers import parse_file
-from gita.indexer.walker import LANGUAGE_BY_EXT, _is_skipped, iter_files
+from gita.indexer.walker import indexable_language, iter_files
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,13 @@ async def _attach_embeddings(
     if not inputs:
         return 0
 
-    vectors = await client.embed(inputs)
+    try:
+        vectors = await client.embed(inputs)
+    except Exception as exc:  # noqa: BLE001 — embeddings are optional
+        # Concept search falls back to full-text search for rows without
+        # an embedding; losing them must not lose the whole reindex.
+        logger.warning("embedding_failed rows=%d error=%r", len(inputs), exc)
+        return 0
     if len(vectors) != len(indexed_rows):
         logger.warning(
             "embedding_count_mismatch expected=%d got=%d",
@@ -287,17 +293,6 @@ async def _full_index(
 # ---------------------------------------------------------------------------
 # Incremental index (selective update)
 # ---------------------------------------------------------------------------
-def _is_indexable(relative_path: str, include_tests: bool) -> str | None:
-    """Return the language if the file passes the walker's filter, else None."""
-    p = Path(relative_path)
-    language = LANGUAGE_BY_EXT.get(p.suffix)
-    if language is None:
-        return None
-    if _is_skipped(p, include_tests):
-        return None
-    return language
-
-
 async def _incremental_index(
     session: AsyncSession,
     repo: Repo,
@@ -315,38 +310,24 @@ async def _incremental_index(
     added_files: list[str] = []
 
     for change in changes:
+        # Every change starts by removing the old row, if any: "added" can
+        # still collide with a row (e.g. a file indexed while untracked and
+        # committed later), and a unique violation would wedge every
+        # future reindex. Edges are rebuilt repo-wide below.
+        await session.execute(
+            delete(CodeIndex)
+            .where(CodeIndex.repo_id == repo.id)
+            .where(CodeIndex.file_path == change.relative_path)
+        )
         if change.status == "deleted":
-            # Remove the file's code_index row + its outgoing import edges.
-            await session.execute(
-                delete(ImportEdge)
-                .where(ImportEdge.repo_id == repo.id)
-                .where(ImportEdge.src_file == change.relative_path)
-            )
-            await session.execute(
-                delete(CodeIndex)
-                .where(CodeIndex.repo_id == repo.id)
-                .where(CodeIndex.file_path == change.relative_path)
-            )
             files_deleted += 1
             continue
 
-        # added or modified — check if it's an indexable source file.
-        language = _is_indexable(change.relative_path, include_tests)
+        language = indexable_language(
+            root_path, change.relative_path, include_tests=include_tests
+        )
         if language is None:
             continue
-
-        if change.status == "modified":
-            # Remove old row + old outgoing edges before re-inserting.
-            await session.execute(
-                delete(ImportEdge)
-                .where(ImportEdge.repo_id == repo.id)
-                .where(ImportEdge.src_file == change.relative_path)
-            )
-            await session.execute(
-                delete(CodeIndex)
-                .where(CodeIndex.repo_id == repo.id)
-                .where(CodeIndex.file_path == change.relative_path)
-            )
 
         result = _parse_and_build_row(
             repo.id,
@@ -370,9 +351,19 @@ async def _incremental_index(
 
     files_embedded = await _attach_embeddings(code_rows, embedding_client)
 
-    # Rebuild import edges for the newly parsed files.
+    # Rebuild every import edge, not just the changed files' outgoing
+    # ones: deleting or adding a file changes how *other* files' imports
+    # resolve (stale dst_file for a removed module, a previously
+    # unresolved import that now has a target). Resolution only needs the
+    # stored import lists and the checkout, so this is cheap.
+    await session.execute(delete(ImportEdge).where(ImportEdge.repo_id == repo.id))
+    all_rows = list(
+        (await session.execute(select(CodeIndex).where(CodeIndex.repo_id == repo.id)))
+        .scalars()
+        .all()
+    )
     edge_rows, edges_resolved = _build_edges(
-        repo.id, root_path, code_rows, package_roots
+        repo.id, root_path, all_rows, package_roots
     )
     session.add_all(edge_rows)
 

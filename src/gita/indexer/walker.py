@@ -92,35 +92,71 @@ def _is_skipped(path: Path, include_tests: bool) -> bool:
     return False
 
 
+def indexable_language(
+    root: Path,
+    relative_path: str,
+    *,
+    include_tests: bool = False,
+    max_file_size: int = MAX_FILE_SIZE,
+) -> str | None:
+    """The file's language if it should be indexed, else ``None``.
+
+    The single filter shared by full and incremental indexing: supported
+    extension, not in a skipped directory, a regular file (symlinks are
+    never followed — a committed ``x.py -> /etc/passwd`` must not end up
+    in the database, the embeddings API, or a prompt), and under the size
+    cap.
+    """
+    rel = Path(relative_path)
+    language = LANGUAGE_BY_EXT.get(rel.suffix)
+    if language is None or _is_skipped(rel, include_tests):
+        return None
+    path = root / rel
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        if path.stat().st_size > max_file_size:
+            return None
+    except OSError:
+        return None
+    return language
+
+
 def iter_files(
     root: Path,
     *,
     include_tests: bool = False,
     max_file_size: int = MAX_FILE_SIZE,
 ) -> Iterator[DiscoveredFile]:
-    """Yield source files under ``root`` that pass the allowlist."""
+    """Yield source files under ``root`` that pass the allowlist.
+
+    In a git work tree only tracked files are considered, so the index
+    reflects the commit (which is what incremental updates diff against)
+    rather than whatever untracked scratch files sit in the checkout.
+    Outside git, the filesystem is walked.
+    """
+    from gita.indexer.diff import tracked_files
+
     root = root.resolve()
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        language = LANGUAGE_BY_EXT.get(path.suffix)
+    tracked = tracked_files(root)
+    if tracked is not None:
+        relative_paths = sorted(tracked)
+    else:
+        relative_paths = sorted(
+            str(p.relative_to(root)).replace("\\", "/")
+            for p in root.rglob("*")
+            if p.is_file() or p.is_symlink()
+        )
+    for relative in relative_paths:
+        language = indexable_language(
+            root, relative, include_tests=include_tests, max_file_size=max_file_size
+        )
         if language is None:
             continue
-        try:
-            relative = path.relative_to(root)
-        except ValueError:
-            continue
-        if _is_skipped(relative, include_tests):
-            continue
-        try:
-            size = path.stat().st_size
-        except OSError:
-            continue
-        if size > max_file_size:
-            continue
+        path = root / relative
         yield DiscoveredFile(
             path=path,
-            relative_path=str(relative).replace("\\", "/"),
+            relative_path=relative,
             language=language,
-            size=size,
+            size=path.stat().st_size,
         )

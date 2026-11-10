@@ -14,10 +14,29 @@ import pytest
 from gita.indexer.diff import (
     FileChange,
     detect_changes,
-    parse_name_status,
     discover_default_branch,
+    parse_name_status,
+    parse_name_status_z,
     read_head_sha,
 )
+
+
+# ---------------------------------------------------------------------------
+# Pure parser: parse_name_status_z (what detect_changes uses)
+# ---------------------------------------------------------------------------
+class TestParseNameStatusZ:
+    def test_verbatim_paths_renames_and_copies(self):
+        out = "M\0src/café.py\0R087\0old name.py\0new\tname.py\0C100\0a.py\0b.py\0D\0gone.py\0"
+        assert parse_name_status_z(out) == [
+            FileChange("src/café.py", "modified"),
+            FileChange("old name.py", "deleted"),
+            FileChange("new\tname.py", "added", previous_path="old name.py"),
+            FileChange("b.py", "added"),
+            FileChange("gone.py", "deleted"),
+        ]
+
+    def test_empty(self):
+        assert parse_name_status_z("") == []
 
 
 # ---------------------------------------------------------------------------
