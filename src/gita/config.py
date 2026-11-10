@@ -31,6 +31,10 @@ class Settings(BaseSettings):
         default=None, alias="GITHUB_APP_PRIVATE_KEY_PATH"
     )
 
+    # The App's slug (github.com/apps/<slug>). Used to recognise GITA's own
+    # bot account in webhooks; unset means "ignore every bot sender".
+    github_app_slug: str | None = Field(default=None, alias="GITHUB_APP_SLUG")
+
     # Webhook HMAC secret. Required for the FastAPI webhook receiver to
     # verify that incoming payloads actually came from GitHub.
     github_webhook_secret: str | None = Field(

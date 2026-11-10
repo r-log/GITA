@@ -22,29 +22,27 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from gita.config import settings
 from gita.jobs import ALL_JOBS
+from gita.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
 
 def _parse_redis_url(url: str) -> RedisSettings:
-    """Convert a ``redis://host:port/db`` URL to ARQ ``RedisSettings``."""
-    parsed = urlparse(url)
-    return RedisSettings(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 6379,
-        database=int(parsed.path.lstrip("/") or 0),
-        password=parsed.password,
-        username=parsed.username,
-    )
+    """``redis://`` / ``rediss://`` URL to ARQ ``RedisSettings``.
+
+    Delegates to ARQ so ``rediss://`` enables TLS; hand-parsing the URL
+    used to drop the scheme and connect in plaintext.
+    """
+    return RedisSettings.from_dsn(url)
 
 
 def _mask_url(url: str) -> str:
     """Mask password in a URL for safe logging."""
     parsed = urlparse(url)
     if parsed.password:
-        masked = parsed._replace(
-            netloc=f"{parsed.username or ''}:***@{parsed.hostname}:{parsed.port}"
-        )
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        masked = parsed._replace(netloc=f"{parsed.username or ''}:***@{host}{port}")
         return masked.geturl()
     return url
 
@@ -57,6 +55,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     (via ``SessionLocal``), but the startup check catches config errors
     early — before the first job arrives.
     """
+    configure_logging(settings.log_level)
     logger.info(
         "worker_startup redis=%s db=%s write_mode=%s",
         _mask_url(settings.redis_url),
@@ -95,16 +94,22 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
 
-    # One job at a time. The dedupe layers handle duplicate deliveries.
+    # One job at a time: the reindex job owns the repo checkout.
     max_jobs = 1
 
-    # Retry failed jobs up to 2 times with 30s delay.
-    # Week 7 adds exponential backoff for LLM failures.
+    # Jobs raise arq.Retry for transient failures (see gita.jobs); ARQ
+    # does not retry ordinary exceptions, so this only bounds those.
     max_tries = 3
-    retry_delay_seconds = 30
 
-    # Job results expire after 1 hour (for debugging via arq CLI).
-    keep_result = 3600
+    # A review is two LLM calls (up to 180 s each, plus client retries)
+    # and a handful of GitHub calls; ARQ's 300 s default was too short.
+    job_timeout = 900
+
+    # Job IDs only collapse bursts of identical deliveries; durable
+    # idempotency lives in agent_actions. A long keep_result would make
+    # ARQ refuse legitimate re-enqueues of the same ID (e.g. a retry
+    # after a failed job), so results are kept just long enough to debug.
+    keep_result = 300
 
     # Health check interval — ARQ pings Redis every 60s.
     health_check_interval = 60

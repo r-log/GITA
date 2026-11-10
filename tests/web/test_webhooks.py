@@ -477,3 +477,20 @@ class TestArqPoolIntegration:
             _make_payload(pr_number=11, repo_full_name="other/repo"),
         )
         assert resp2.json()["status"] == "dispatched"
+
+
+class TestOwnBotOnly:
+    def test_other_bots_reviewed_when_slug_configured(self, client, monkeypatch):
+        monkeypatch.setattr("gita.web.webhooks.settings.github_app_slug", "gita-agents")
+        payload = _make_payload(sender_type="Bot", sender_login="dependabot[bot]")
+        assert _post_webhook(client, payload).json()["status"] == "dispatched"
+
+    def test_own_bot_ignored_when_slug_configured(self, client, monkeypatch):
+        monkeypatch.setattr("gita.web.webhooks.settings.github_app_slug", "gita-agents")
+        payload = _make_payload(sender_type="Bot", sender_login="gita-agents[bot]")
+        assert _post_webhook(client, payload).json()["reason"] == "bot sender"
+
+    def test_all_bots_ignored_without_slug(self, client, monkeypatch):
+        monkeypatch.setattr("gita.web.webhooks.settings.github_app_slug", None)
+        payload = _make_payload(sender_type="Bot", sender_login="dependabot[bot]")
+        assert _post_webhook(client, payload).json()["reason"] == "bot sender"

@@ -17,8 +17,10 @@ from contextlib import asynccontextmanager
 from arq import create_pool
 from fastapi import FastAPI, Response
 
+from gita import __version__
+from gita.logging_config import configure_logging
 from gita.web.webhooks import router as webhooks_router
-from gita.worker import _parse_redis_url
+from gita.worker import _mask_url, _parse_redis_url
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ async def lifespan(application: FastAPI):
         redis_settings = _parse_redis_url(settings.redis_url)
         pool = await create_pool(redis_settings)
         application.state.arq_pool = pool
-        logger.info("arq_pool_created redis=%s", settings.redis_url)
+        logger.info("arq_pool_created redis=%s", _mask_url(settings.redis_url))
     except Exception:
         logger.warning("arq_pool_unavailable — enqueue will return 503")
         application.state.arq_pool = None
@@ -50,10 +52,13 @@ def create_app(*, use_lifespan: bool = True) -> FastAPI:
     ``use_lifespan=False`` is for tests that don't need a real Redis
     connection — they inject a fake pool via ``app.state.arq_pool``.
     """
+    from gita.config import settings
+
+    configure_logging(settings.log_level)
     application = FastAPI(
         title="GITA Webhook Receiver",
         description="GitHub Assistant v2 — webhook ingestion endpoint",
-        version="0.7.0",
+        version=__version__,
         lifespan=lifespan if use_lifespan else None,
     )
     application.include_router(webhooks_router)

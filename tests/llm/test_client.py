@@ -15,8 +15,13 @@ from pydantic import BaseModel
 from gita.llm.client import (
     FakeLLMClient,
     LLMError,
+    LLMRefusalError,
+    LLMRequestError,
     LLMSchemaError,
+    LLMTransientError,
+    LLMTruncatedError,
     OpenRouterClient,
+    strict_json_schema,
 )
 
 
@@ -77,6 +82,18 @@ def _build_client(
 # ===========================================================================
 # OpenRouterClient
 # ===========================================================================
+@pytest.fixture
+def no_sleep(monkeypatch) -> list[float]:
+    """Record backoff delays instead of sleeping."""
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr("gita.llm.client.asyncio.sleep", fake_sleep)
+    return delays
+
+
 class TestOpenRouterBasic:
     async def test_plain_call_returns_content(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -144,13 +161,17 @@ class TestOpenRouterBasic:
         body = json.loads(req.content)
         assert body["model"] == "test/model"
 
-    async def test_http_500_raises(self):
+    async def test_http_500_retried_then_transient_error(self, no_sleep):
+        capture = Capture()
+
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(500, json={"error": "down"})
 
-        client = _build_client(handler)
-        with pytest.raises(httpx.HTTPStatusError):
+        client = _build_client(handler, capture)
+        with pytest.raises(LLMTransientError):
             await client.call(system="x", user="y")
+        assert len(capture.requests) == client.max_retries + 1
+        assert len(no_sleep) == client.max_retries
 
     async def test_usage_tokens_preserved(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -319,3 +340,99 @@ class TestFakeLLMClient:
             await fake.call(
                 system="x", user="y", response_schema=SimpleResponse
             )
+
+
+# ===========================================================================
+# Failure shapes
+# ===========================================================================
+class TestOpenRouterFailureShapes:
+    async def test_429_honours_retry_after_then_succeeds(self, no_sleep):
+        responses = iter(
+            [
+                httpx.Response(429, headers={"retry-after": "3"}, json={}),
+                httpx.Response(200, json=_make_chat_response("ok")),
+            ]
+        )
+        client = _build_client(lambda request: next(responses))
+        result = await client.call(system="x", user="y")
+        assert result.content == "ok"
+        assert no_sleep == [3.0]
+
+    async def test_transport_error_is_transient(self, no_sleep):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused", request=request)
+
+        client = _build_client(handler)
+        with pytest.raises(LLMTransientError):
+            await client.call(system="x", user="y")
+
+    async def test_400_is_not_retried(self, no_sleep):
+        capture = Capture()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json={"error": "unknown model"})
+
+        client = _build_client(handler, capture)
+        with pytest.raises(LLMRequestError) as info:
+            await client.call(system="x", user="y")
+        assert info.value.status_code == 400
+        assert len(capture.requests) == 1 and no_sleep == []
+
+    async def test_truncated_json_is_reported_as_truncation(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _make_chat_response('{"label": "cut of')
+            body["choices"][0]["finish_reason"] = "length"
+            return httpx.Response(200, json=body)
+
+        client = _build_client(handler)
+        with pytest.raises(LLMTruncatedError, match="max_tokens"):
+            await client.call(system="x", user="y", response_schema=SimpleResponse)
+
+    async def test_missing_content_is_a_refusal(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _make_chat_response("x")
+            body["choices"][0]["message"]["content"] = None
+            return httpx.Response(200, json=body)
+
+        client = _build_client(handler)
+        with pytest.raises(LLMRefusalError):
+            await client.call(system="x", user="y")
+
+    async def test_fenced_json_is_accepted(self):
+        fenced = '```json\n{"label": "hi", "count": 3}\n```'
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_make_chat_response(fenced))
+
+        client = _build_client(handler)
+        result = await client.call(system="x", user="y", response_schema=SimpleResponse)
+        assert result.parsed == SimpleResponse(label="hi", count=3)
+
+
+class TestStrictJsonSchema:
+    def test_every_object_requires_all_properties_and_is_closed(self):
+        from gita.agents.onboarding.schemas import FindingsResponse
+
+        schema = strict_json_schema(FindingsResponse)
+        finding = schema["$defs"]["LLMFinding"]
+        assert finding["required"] == list(finding["properties"])  # incl. fix_sketch
+        assert finding["additionalProperties"] is False
+        assert schema["additionalProperties"] is False
+        assert finding["properties"]["severity"]["enum"] == [
+            "low",
+            "medium",
+            "high",
+            "critical",
+        ]
+
+    async def test_sent_in_request(self):
+        capture = Capture()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_make_chat_response('{"label": "a", "count": 1}'))
+
+        client = _build_client(handler, capture)
+        await client.call(system="x", user="y", response_schema=SimpleResponse)
+        sent = json.loads(capture.requests[0].content)["response_format"]["json_schema"]
+        assert sent["strict"] is True
+        assert sent["schema"] == strict_json_schema(SimpleResponse)

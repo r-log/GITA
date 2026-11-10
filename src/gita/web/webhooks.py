@@ -8,8 +8,10 @@ enqueued:
    → 500 (fail closed).
 2. **Well-formed payload** — a JSON object and an ``X-GitHub-Event``
    header, else 400.
-3. **Bot sender filter** — events whose sender is a bot are dropped, so
-   GITA's own comments, branches and PRs can't trigger more GITA work.
+3. **Bot sender filter** — events sent by GITA's own bot account are
+   dropped, so its comments, branches and PRs can't trigger more GITA
+   work. With ``GITHUB_APP_SLUG`` set only that account is ignored (other
+   bots' PRs, e.g. Dependabot's, are reviewed); unset, every bot is.
 4. **Event allowlist** — ``dispatch_event`` only handles the events in
    ``EVENT_HANDLERS``; see that module for how job IDs are chosen.
 5. **Job-ID dedupe** — ARQ refuses a job whose ID is already queued,
@@ -86,6 +88,13 @@ def _parse_event(
     )
 
 
+def _is_own_bot(event: WebhookEvent) -> bool:
+    if event.sender_type != "Bot":
+        return False
+    slug = settings.github_app_slug
+    return slug is None or event.sender_login == f"{slug}[bot]"
+
+
 def _reply(status_code: int, **body: object) -> JSONResponse:
     return JSONResponse(status_code=status_code, content=body)
 
@@ -129,7 +138,7 @@ async def receive_webhook(
     event = _parse_event(payload, x_github_event, x_github_delivery)
 
     # --- Gate 3: bot senders (loop prevention) ---
-    if event.sender_type == "Bot":
+    if _is_own_bot(event):
         logger.info(
             "webhook_ignored_bot sender=%s event=%s action=%s repo=%s",
             event.sender_login,
