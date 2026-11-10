@@ -56,9 +56,17 @@ class PRReviewResult:
     pr_number: int
     pr_title: str
     summary: str  # 2-3 sentence review from the LLM
-    verdict: str  # "approve" | "request_changes" | "comment"
+    # Decided in code from the verified findings, never by the model:
+    # "approve" | "request_changes" | "comment".
+    verdict: str
     findings: list[Finding] = field(default_factory=list)
     confidence: float = 0.0
+    # Findings the guardrails discarded. Reported so a reader knows the
+    # review isn't silently narrower than what the model saw.
+    dropped_findings: int = 0
+    # Changed files the model was not shown in full (binary, patch too
+    # large, over the file cap or prompt budget).
+    unreviewed_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from gita.agents.decisions import Decision
+from gita.agents.render import inline, quote_lines
 from gita.agents.types import Finding, Milestone, OnboardingResult
 
 logger = logging.getLogger(__name__)
@@ -52,13 +53,13 @@ def _render_finding_card(index: int, finding: Finding) -> list[str]:
     icon = _severity_icon(finding.severity)
     lines = [
         f"> {icon} **{index + 1}. {finding.severity.upper()}** \u2014 "
-        f"_{finding.kind}_ at `{finding.file}:{finding.line}`",
+        f"_{finding.kind}_ at `{inline(finding.file)}:{finding.line}`",
         ">",
-        f"> {finding.description}",
+        *quote_lines(finding.description),
     ]
     if finding.fix_sketch:
         lines.append(">")
-        lines.append(f"> \U0001f4a1 {finding.fix_sketch}")
+        lines.extend(quote_lines(finding.fix_sketch, prefix="\U0001f4a1 "))
     lines.append("")
     return lines
 
@@ -71,9 +72,9 @@ def _render_milestone_card(
 ) -> list[str]:
     conf_pct = f"{milestone.confidence:.0%}"
     lines = [
-        f"#### \U0001f3af {milestone.title}",
+        f"#### \U0001f3af {inline(milestone.title)}",
         "",
-        f"> {milestone.summary}",
+        *quote_lines(milestone.summary),
         "",
     ]
     if milestone.finding_indices:
@@ -85,10 +86,10 @@ def _render_milestone_card(
         if cited:
             for finding in cited:
                 icon = _severity_icon(finding.severity)
+                short = inline(finding.description)
                 lines.append(
-                    f"- {icon} `{finding.file}:{finding.line}` \u2014 "
-                    f"{finding.description[:80]}"
-                    f"{'...' if len(finding.description) > 80 else ''}"
+                    f"- {icon} `{inline(finding.file)}:{finding.line}` \u2014 "
+                    f"{short[:80]}{'...' if len(short) > 80 else ''}"
                 )
             lines.append("")
     lines.append(f"_Confidence: {conf_pct}_")
@@ -103,7 +104,7 @@ def _render_comment_body(result: OnboardingResult) -> str:
     lines: list[str] = [
         f"## \U0001f4cb Onboarding Review \u2014 `{result.repo_name}`",
         "",
-        f"> {result.project_summary}",
+        *quote_lines(result.project_summary),
         "",
         f"\U0001f4ca {len(result.findings)} finding"
         f"{'s' if len(result.findings) != 1 else ''}"
@@ -220,7 +221,7 @@ def _render_issue_body(
     """Render an issue body for a single milestone."""
     conf_pct = f"{milestone.confidence:.0%}"
     lines: list[str] = [
-        f"> {milestone.summary.strip()}",
+        *quote_lines(milestone.summary),
         "",
         f"_Confidence: {conf_pct}_",
         "",
@@ -241,11 +242,11 @@ def _render_issue_body(
             icon = _severity_icon(finding.severity)
             checklist.append(
                 f"- [ ] {icon} **{finding.severity.upper()}** "
-                f"_{finding.kind}_ at `{finding.file}:{finding.line}`"
+                f"_{finding.kind}_ at `{inline(finding.file)}:{finding.line}`"
             )
-            checklist.append(f"  {finding.description}")
+            checklist.append(f"  {inline(finding.description)}")
             if finding.fix_sketch:
-                checklist.append(f"  \U0001f4a1 {finding.fix_sketch}")
+                checklist.append(f"  \U0001f4a1 {inline(finding.fix_sketch)}")
             checklist.append("")
 
         if collapse:
@@ -314,7 +315,7 @@ def build_onboarding_issue_decisions(
         )
 
         payload: dict[str, Any] = {
-            "title": milestone.title,
+            "title": inline(milestone.title),
             "body": _render_issue_body(
                 milestone, result.findings, result.repo_name
             ),

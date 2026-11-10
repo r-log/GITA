@@ -6,7 +6,12 @@ import them without pulling in the full agent pipeline.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+Severity = Literal["low", "medium", "high", "critical"]
+FindingKind = Literal["bug", "security", "quality", "missing", "design"]
 
 
 class PickFilesResponse(BaseModel):
@@ -24,15 +29,32 @@ class PickFilesResponse(BaseModel):
 
 
 class LLMFinding(BaseModel):
+    """One finding as the model reports it.
+
+    ``severity`` and ``kind`` are closed vocabularies: the JSON schema
+    sent to the provider lists them as enums, and anything else fails
+    validation instead of flowing into rendered output and verdict
+    logic. Case and surrounding whitespace are forgiven.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     file: str
     line: int
-    severity: str
-    kind: str
+    severity: Severity
+    kind: FindingKind
     description: str
     fix_sketch: str = ""
 
+    @field_validator("severity", "kind", mode="before")
+    @classmethod
+    def _normalize_vocab(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
+
 
 class FindingsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     findings: list[LLMFinding] = Field(default_factory=list)
 
 

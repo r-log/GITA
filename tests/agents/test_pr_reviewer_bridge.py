@@ -181,3 +181,44 @@ class TestRenderReviewBody:
         findings = [_finding(), _finding(file="other.py", line=5)]
         body = _render_review_body(_result(findings=findings))
         assert "<details>" not in body
+
+
+# ---------------------------------------------------------------------------
+# Model-written text is neutralised before posting
+# ---------------------------------------------------------------------------
+class TestRenderedOutputSafety:
+    def test_mentions_html_and_images_are_defused(self):
+        evil = _finding(
+            description="Ping @org/everyone <img src=x onerror=1> ![px](https://t.example/p.gif)",
+            fix_sketch="cc @maintainer",
+        )
+        body = _render_review_body(_result(findings=[evil], summary="@admin approved"))
+        assert "@org/everyone" not in body
+        assert "@maintainer" not in body
+        assert "@admin" not in body
+        assert "<img" not in body
+        assert "![px]" not in body
+        # Still readable: the words survive, only parsing is defused.
+        assert "everyone" in body and "maintainer" in body
+
+    def test_multiline_text_cannot_escape_the_blockquote(self):
+        evil = _finding(description="real issue\n\n## ✅ Approved by security team")
+        body = _render_review_body(_result(findings=[evil]))
+        heading_lines = [ln for ln in body.splitlines() if ln.startswith("## ")]
+        assert heading_lines == ["## \U0001f50d PR Review — #42"]
+
+
+class TestCoverageNotes:
+    def test_unreviewed_and_dropped_are_stated(self):
+        result = _result(findings=[], verdict="comment")
+        result.unreviewed_files = ["assets/logo.png", "src/huge.py"]
+        result.dropped_findings = 3
+        body = _render_review_body(result)
+        assert "Not reviewed (2 files)" in body
+        assert "`assets/logo.png`" in body
+        assert "3 findings discarded" in body
+
+    def test_full_coverage_has_no_notes(self):
+        body = _render_review_body(_result(findings=[], verdict="approve"))
+        assert "Not reviewed" not in body
+        assert "discarded" not in body

@@ -7,6 +7,7 @@ diff-line-to-file-line mapping.
 from __future__ import annotations
 
 from gita.agents.decisions import Decision
+from gita.agents.render import inline, quote_lines
 from gita.agents.types import Finding, PRReviewResult
 
 # Collapse findings into <details> when there are this many or more.
@@ -35,15 +36,38 @@ def _render_finding_card(finding: Finding) -> list[str]:
     icon = _severity_icon(finding.severity)
     lines = [
         f"> {icon} **{finding.severity.upper()}** \u2014 "
-        f"_{finding.kind}_ at `{finding.file}:{finding.line}`",
+        f"_{finding.kind}_ at `{inline(finding.file)}:{finding.line}`",
         ">",
-        f"> {finding.description}",
+        *quote_lines(finding.description),
     ]
     if finding.fix_sketch:
         lines.append(">")
-        lines.append(f"> \U0001f4a1 {finding.fix_sketch}")
+        lines.extend(quote_lines(finding.fix_sketch, prefix="\U0001f4a1 "))
     lines.append("")
     return lines
+
+
+def _render_coverage_notes(result: PRReviewResult) -> list[str]:
+    """Say what the review did *not* cover, so silence isn't read as approval."""
+    notes: list[str] = []
+    if result.unreviewed_files:
+        shown = ", ".join(f"`{inline(p)}`" for p in result.unreviewed_files[:10])
+        more = len(result.unreviewed_files) - 10
+        suffix = f" and {more} more" if more > 0 else ""
+        notes.append(
+            f"\u26a0\ufe0f Not reviewed ({len(result.unreviewed_files)} "
+            f"file{'s' if len(result.unreviewed_files) != 1 else ''}): "
+            f"{shown}{suffix}"
+        )
+    if result.dropped_findings:
+        notes.append(
+            f"\u2139\ufe0f {result.dropped_findings} finding"
+            f"{'s' if result.dropped_findings != 1 else ''} discarded by "
+            "automated verification."
+        )
+    if notes:
+        notes.append("")
+    return notes
 
 
 def _render_review_body(result: PRReviewResult) -> str:
@@ -55,7 +79,7 @@ def _render_review_body(result: PRReviewResult) -> str:
     lines: list[str] = [
         f"## \U0001f50d PR Review \u2014 #{result.pr_number}",
         "",
-        f"> {result.summary}",
+        *quote_lines(result.summary),
         "",
         f"{verdict_icon} **{verdict_text}** "
         f"\u00b7 {len(result.findings)} finding{'s' if len(result.findings) != 1 else ''} "
@@ -63,10 +87,10 @@ def _render_review_body(result: PRReviewResult) -> str:
         "",
     ]
 
+    lines.extend(_render_coverage_notes(result))
+
     if not result.findings:
-        lines.append(
-            "\u2705 No issues found in the changed code."
-        )
+        lines.append("\u2705 No issues found in the reviewed changes.")
         lines.append("")
     else:
         # --- Group findings by file ---
