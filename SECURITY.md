@@ -45,6 +45,7 @@ and never the last line of defence.
 | Cost abuse | Onboarding only runs when a trusted user applies a label (a self-applied label counts only from owners/members/collaborators). Reviews are debounced per commit; drafts are skipped; prompts have file, patch and total budgets. | `web/dispatch.py`, `agents/pr_reviewer/recipe.py` |
 | Token blast radius | Installation tokens are requested for the single repository a call concerns. | `github/client.py` |
 | Host file disclosure via the index | Symlinks are never followed when indexing or preparing sandbox workspaces; only tracked files are indexed. | `indexer/walker.py`, `agents/test_generator/sandbox.py` |
+| Exposing repository history to agents | `gita mcp` is read-only (every tool is annotated read-only and only runs SELECTs), serves over stdio to the agent that started it, and answers for one repository. It returns PR titles, file paths, author names from git and code lines: anyone who can run it can read what the clone already contains. | `mcp_server.py`, `history/queries.py` |
 | Secrets in logs | Redis/database URLs are masked; tokens and keys are never logged. | `worker.py` |
 
 ## Known gaps

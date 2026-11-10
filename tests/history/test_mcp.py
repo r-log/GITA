@@ -90,3 +90,10 @@ async def test_served_over_stdio_as_an_agent_would_start_it():
     async with Client(params) as client:
         tools = (await client.list_tools()).tools
     assert {t.name for t in tools} == TOOLS
+
+
+async def test_scoreboard_window(server):
+    later = (await _call(server, "scoreboard", since="2027-01-01")).structured_content
+    assert "error" in later  # nothing merged in the window
+    same = (await _call(server, "scoreboard", since="2026-01-01")).structured_content
+    assert same["merged_prs"] == 5

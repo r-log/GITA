@@ -361,14 +361,23 @@ async def review_context(
     }
 
 
-def scoreboard(mem: Memory) -> dict:
-    """How often merged PRs needed a later fix, and where, from the traced defects."""
+def scoreboard(mem: Memory, *, since: str | None = None) -> dict:
+    """How often merged PRs needed a later fix, and where, from the traced defects.
+
+    ``since`` (YYYY-MM-DD) limits it to PRs merged on or after that day, e.g.
+    to leave out a fork's inherited upstream merges.
+    """
     prs = sorted(mem.prs.values(), key=lambda p: p.merged_at)
+    if since:
+        day = datetime.fromisoformat(since).date()
+        prs = [p for p in prs if p.merged_at.date() >= day]
     if not prs:
         return {"error": "no merged PRs in the history"}
+    window = {p.number for p in prs}
     by_fix: dict[int, list[DefectLink]] = collections.defaultdict(list)
     for link in mem.links:
-        by_fix[link.fix_pr].append(link)
+        if link.fix_pr in window:
+            by_fix[link.fix_pr].append(link)
     primary: dict[int, DefectLink] = {}
     inherited = 0
     for fix, links in by_fix.items():
@@ -377,7 +386,7 @@ def scoreboard(mem: Memory) -> dict:
             continue
         if top.introducing_pr is None:
             inherited += 1
-        elif top.introducing_pr in mem.prs:
+        elif top.introducing_pr in window:
             primary[fix] = top
     introducing = {link.introducing_pr for link in primary.values()}
     fixes = [p for p in prs if p.kind == "fix"]

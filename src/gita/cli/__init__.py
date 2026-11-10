@@ -48,6 +48,7 @@ from gita.cli.commands import (  # noqa: E402
     cmd_query_symbol,
     cmd_repos,
     cmd_review_pr,
+    cmd_scoreboard,
     cmd_stats,
 )
 
@@ -133,6 +134,13 @@ def _build_parser() -> argparse.ArgumentParser:
     hist_sync.add_argument("--name", help="Repo name (defaults to the directory name)")
     hist_sync.add_argument(
         "--full", action="store_true", help="Rebuild from scratch instead of reading new merges"
+    )
+
+    score_p = sub.add_parser("scoreboard", help="How often merged PRs later needed a fix")
+    score_p.add_argument("repo", help="Repo name")
+    score_p.add_argument("--json", action="store_true", help="JSON instead of Markdown")
+    score_p.add_argument(
+        "--since", default=None, metavar="YYYY-MM-DD", help="Only PRs merged from this day"
     )
 
     mcp_p = sub.add_parser(
@@ -410,6 +418,7 @@ _HANDLERS = {
     ("auto-test-gen", "preview"): cmd_auto_test_gen_preview,
     ("history", "sync"): cmd_history_sync,
     "mcp": cmd_mcp,
+    "scoreboard": cmd_scoreboard,
 }
 
 

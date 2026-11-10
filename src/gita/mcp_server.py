@@ -125,12 +125,13 @@ def build_server(repo_name: str, sessions: async_sessionmaker[AsyncSession]) -> 
     @server.tool(
         description=(
             "How often merged PRs later needed a fix: overall, by kind of PR, by size, by area "
-            "and by month, with time to fix. Read the caveats it returns."
+            "and by month, with time to fix. `since` (YYYY-MM-DD) limits the window. "
+            "Read the caveats it returns."
         ),
         annotations=_READ_ONLY,
     )
-    async def scoreboard() -> dict[str, Any]:
+    async def scoreboard(since: str | None = None) -> dict[str, Any]:
         async with sessions() as session:
-            return q.scoreboard(await memory(session))
+            return q.scoreboard(await memory(session), since=since)
 
     return server

@@ -49,6 +49,7 @@ from gita.config import settings
 from gita.db.session import SessionLocal
 from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
+from gita.history.sync import sync_history
 from gita.indexer.embeddings import make_embedding_client
 from gita.indexer.ingest import IngestResult, index_repository
 from gita.jobs.ids import review_job_id
@@ -499,6 +500,8 @@ async def run_reindex_job(
             root_path = Path(repo.root_path)
             repo_auto_test_gen = bool(repo.auto_test_generation)
             repo_default_branch = repo.default_branch or "main"
+            # History memory is opt-in: kept current once synced by hand.
+            repo_tracks_history = repo.history_synced_sha is not None
         except RepoNotFoundError:
             logger.warning("reindex_no_index repo=%s — skipping", repo_full_name)
             return {
@@ -553,6 +556,24 @@ async def run_reindex_job(
         after_sha,
     )
 
+    # Keep the history memory current (incremental: a push costs about a
+    # second). Best-effort: a failure here doesn't fail the reindex.
+    history_summary: dict[str, Any] = {"status": "not tracked"}
+    if repo_tracks_history:
+        try:
+            async with SessionLocal() as session:
+                synced = await sync_history(session, repo_name, root_path)
+                await session.commit()
+            history_summary = {
+                "status": "synced",
+                "mode": synced.mode,
+                "prs_added": synced.prs_added,
+                "links_added": synced.links_added,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.error("history_sync_failed repo=%s error=%s", repo_full_name, exc)
+            history_summary = {"status": "error", "error": str(exc)}
+
     # Post-reindex auto-test-generation trigger. Best-effort:
     # the reindex job's "completed" status does not depend on whether
     # any test_gen jobs were enqueued.
@@ -586,6 +607,7 @@ async def run_reindex_job(
         "edges_total": result.edges_total,
         "added_files": list(result.added_files),
         "test_gen_trigger": test_gen_summary,
+        "history": history_summary,
     }
 
 

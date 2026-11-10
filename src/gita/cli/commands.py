@@ -98,6 +98,24 @@ async def cmd_history_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_scoreboard(args: argparse.Namespace) -> int:
+    """How often merged PRs later needed a fix, from the history memory."""
+    import json
+
+    from gita.history import queries
+    from gita.history.report import render_scoreboard
+
+    async with SessionLocal() as session:
+        try:
+            mem = await queries.load(session, args.repo)
+        except queries.NotSynced as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        board = queries.scoreboard(mem, since=args.since)
+    print(json.dumps(board, indent=2) if args.json else render_scoreboard(args.repo, board))
+    return 0
+
+
 async def cmd_mcp(args: argparse.Namespace) -> int:
     """Serve the repository's memory to coding agents over MCP (stdio)."""
     from gita.history.queries import repo_for_directory

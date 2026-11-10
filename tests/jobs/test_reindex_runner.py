@@ -247,3 +247,55 @@ class TestReindexRunnerSuccess:
 
         rows = (await db_session.execute(select(CodeIndex))).scalars().all()
         assert len(rows) > 0
+
+
+class TestReindexKeepsHistoryCurrent:
+    """After a push to the default branch, the history memory catches up."""
+
+    @staticmethod
+    def _shop(tmp_path):
+        from tests.history.repo_builder import RepoBuilder
+
+        root = tmp_path / "shop"
+        root.mkdir()
+        repo = RepoBuilder(root)
+        repo.commit("initial", src__shop__cart_py="def total(prices):\n    return sum(prices)\n")
+        repo.pr(
+            1, "feat/discount", "Add discounts", src__shop__cart_py="def total(p):\n    return 1\n"
+        )
+        return repo
+
+    @pytest.mark.usefixtures("_patch_runner_session")
+    async def test_tracked_repo_syncs_new_merges(self, db_session: AsyncSession, tmp_path):
+        from gita.history.sync import sync_history
+        from gita.jobs.runners import run_reindex_job
+
+        repo = self._shop(tmp_path)
+        await index_repository(db_session, "shop", repo.root, github_full_name="acme/shop")
+        await sync_history(db_session, "shop", repo.root)  # opting in
+        repo.pr(
+            2,
+            "fix/total",
+            "Total sums again",
+            src__shop__cart_py="def total(p):\n    return sum(p)\n",
+        )
+
+        with patch("gita.jobs.runners._git_sync", return_value=(True, "")):
+            result = await run_reindex_job("acme/shop", after_sha="abc")
+
+        assert result["history"] == {
+            "status": "synced",
+            "mode": "incremental",
+            "prs_added": 1,
+            "links_added": 1,
+        }
+
+    @pytest.mark.usefixtures("_patch_runner_session")
+    async def test_untracked_repo_is_left_alone(self, db_session: AsyncSession, tmp_path):
+        from gita.jobs.runners import run_reindex_job
+
+        repo = self._shop(tmp_path)
+        await index_repository(db_session, "shop", repo.root, github_full_name="acme/shop")
+        with patch("gita.jobs.runners._git_sync", return_value=(True, "")):
+            result = await run_reindex_job("acme/shop", after_sha="abc")
+        assert result["history"] == {"status": "not tracked"}
