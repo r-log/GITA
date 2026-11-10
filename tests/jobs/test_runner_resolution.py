@@ -97,7 +97,7 @@ class TestPrReviewResolution:
                 with patch("gita.jobs.runners.OpenRouterClient", return_value=mock_llm):
                     captured = {}
 
-                    async def fake_review(session, repo_name, pr_info, diff_hunks, *, llm):
+                    async def fake_review(session, repo_name, pr_info, diff_hunks, *, llm, **_kwargs):
                         captured["repo_name"] = repo_name
                         return PRReviewResult(
                             repo_name=repo_name,

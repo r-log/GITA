@@ -54,7 +54,7 @@ from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
 from gita.indexer.embeddings import make_embedding_client
 from gita.indexer.ingest import index_repository
-from gita.jobs.runners import run_test_generation_job
+from gita.jobs.runners import fetch_head_contents, run_test_generation_job
 from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError
 from gita.views.concept import concept_view
@@ -329,8 +329,10 @@ async def cmd_review_pr(args: argparse.Namespace) -> int:
         print(f"Fetching PR #{pr_number} from {repo_full}...")
         pr_info = await gh.get_pr(owner, repo, pr_number)
         pr_files_json = await gh.get_pr_files(owner, repo, pr_number)
-
-    diff_hunks = parse_pr_files(pr_files_json)
+        diff_hunks = parse_pr_files(pr_files_json)
+        head_contents = await fetch_head_contents(
+            gh, owner, repo, diff_hunks, pr_info.head_sha
+        )
     print(
         f"PR #{pr_number}: {pr_info.title} "
         f"({pr_info.changed_files} files, "
@@ -339,28 +341,28 @@ async def cmd_review_pr(args: argparse.Namespace) -> int:
 
     async with OpenRouterClient(
         api_key=settings.openrouter_api_key, default_model=model
-    ) as llm:
-        async with SessionLocal() as session:
-            try:
-                result = await run_pr_review(
-                    session,
-                    repo_name,
-                    pr_info,
-                    diff_hunks,
-                    llm=llm,
-                )
-            except RepoNotFoundError:
-                print(
-                    f"warning: repo {repo_name!r} not indexed — "
-                    f"reviewing diff without code context",
-                    file=sys.stderr,
-                )
-                # Re-run with a fallback: index doesn't exist but the
-                # diff alone is still reviewable. For now, bail.
-                return 1
-            except PRReviewError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
+    ) as llm, SessionLocal() as session:
+        try:
+            result = await run_pr_review(
+                session,
+                repo_name,
+                pr_info,
+                diff_hunks,
+                llm=llm,
+                head_contents=head_contents,
+            )
+        except RepoNotFoundError:
+            print(
+                f"warning: repo {repo_name!r} not indexed — "
+                f"reviewing diff without code context",
+                file=sys.stderr,
+            )
+            # Re-run with a fallback: index doesn't exist but the
+            # diff alone is still reviewable. For now, bail.
+            return 1
+        except PRReviewError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     print()
     print(fmt_pr_review_result(result))
@@ -515,22 +517,21 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
     model = args.model or settings.ai_default_model
     async with OpenRouterClient(
         api_key=settings.openrouter_api_key, default_model=model
-    ) as llm:
-        async with SessionLocal() as session:
-            try:
-                result = await run_onboarding(
-                    session,
-                    args.repo,
-                    llm=llm,
-                    load_bearing_limit=args.load_bearing,
-                    deep_read_limit=args.deep_read,
-                )
-            except RepoNotFoundError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
-            except OnboardingError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
+    ) as llm, SessionLocal() as session:
+        try:
+            result = await run_onboarding(
+                session,
+                args.repo,
+                llm=llm,
+                load_bearing_limit=args.load_bearing,
+                deep_read_limit=args.deep_read,
+            )
+        except RepoNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        except OnboardingError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     print(fmt_onboarding_result(result))
 

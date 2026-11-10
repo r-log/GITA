@@ -23,9 +23,9 @@ from gita.agents.guardrails import (
     _check_banned_phrase,
     _claims_syntax_error,
     _file_parses_cleanly,
-    _line_in_diff_ranges,
     structural_confidence,
     verify_findings,
+    verify_pr_findings,
 )
 from gita.agents.pr_reviewer.diff_parser import ChangedLineRange, DiffHunk
 from gita.agents.types import Finding
@@ -129,12 +129,13 @@ class TestCheckBannedPhrase:
         f = _finding(description="Add more documentation to the API")
         assert _check_banned_phrase(f) is not None
 
-    def test_fix_sketch_also_checked(self):
+    def test_fix_sketch_is_not_checked(self):
+        """A real bug whose fix sketch mentions tests is still a real bug."""
         f = _finding(
-            description="Something legitimate",
-            fix_sketch="Add tests to cover this edge case",
+            description="Off-by-one: slice drops the last element",
+            fix_sketch="Use items[:n + 1] and add tests for the empty case",
         )
-        assert _check_banned_phrase(f) is not None
+        assert _check_banned_phrase(f) is None
 
     def test_real_bug_not_banned(self):
         f = _finding(description="SQL injection via f-string on line 42")
@@ -220,82 +221,6 @@ class TestVerifyFindingsLineRange:
         )
         assert len(verified) == 0
         assert "line_out_of_range" in dropped[0][1]
-
-    async def test_out_of_range_allowed_if_in_diff_range(
-        self, db_session: AsyncSession
-    ):
-        """PR review context: the diff adds lines beyond the indexed file
-        length. A finding citing a line in the diff's changed range
-        should pass even though it exceeds code_index.line_count."""
-        repo_id = await _seed_repo_with_files(db_session, {
-            "src/app.py": ("python", 28, "x = 1\n" * 28),
-        })
-        diff_hunks = [
-            DiffHunk(
-                file_path="src/app.py",
-                status="modified",
-                additions=10,
-                deletions=0,
-                patch="@@ -28,0 +29,10 @@\n+new code",
-                changed_ranges=[ChangedLineRange(start=29, count=10)],
-            )
-        ]
-        # Line 34 is beyond the 28-line file but within the diff range 29-38.
-        findings = [_finding(file="src/app.py", line=34)]
-        verified, dropped = await verify_findings(
-            db_session, repo_id, findings, diff_hunks=diff_hunks
-        )
-        assert len(verified) == 1
-        assert len(dropped) == 0
-
-    async def test_out_of_range_still_dropped_if_not_in_diff(
-        self, db_session: AsyncSession
-    ):
-        """Even with diff_hunks provided, a line that's out of range AND
-        not in any diff range is still dropped."""
-        repo_id = await _seed_repo_with_files(db_session, {
-            "src/app.py": ("python", 28, "x = 1\n" * 28),
-        })
-        diff_hunks = [
-            DiffHunk(
-                file_path="src/app.py",
-                status="modified",
-                additions=5,
-                deletions=0,
-                patch="@@ -28,0 +29,5 @@\n+new",
-                changed_ranges=[ChangedLineRange(start=29, count=5)],
-            )
-        ]
-        # Line 999 is way beyond both the file AND the diff range.
-        findings = [_finding(file="src/app.py", line=999)]
-        verified, dropped = await verify_findings(
-            db_session, repo_id, findings, diff_hunks=diff_hunks
-        )
-        assert len(verified) == 0
-        assert "line_out_of_range" in dropped[0][1]
-
-
-class TestLineInDiffRanges:
-    def test_line_inside_range(self):
-        hunks = [DiffHunk(
-            file_path="a.py", status="modified", additions=5, deletions=0,
-            patch="", changed_ranges=[ChangedLineRange(start=10, count=5)],
-        )]
-        assert _line_in_diff_ranges("a.py", 12, hunks) is True
-
-    def test_line_outside_range(self):
-        hunks = [DiffHunk(
-            file_path="a.py", status="modified", additions=5, deletions=0,
-            patch="", changed_ranges=[ChangedLineRange(start=10, count=5)],
-        )]
-        assert _line_in_diff_ranges("a.py", 50, hunks) is False
-
-    def test_different_file_no_match(self):
-        hunks = [DiffHunk(
-            file_path="a.py", status="modified", additions=5, deletions=0,
-            patch="", changed_ranges=[ChangedLineRange(start=1, count=100)],
-        )]
-        assert _line_in_diff_ranges("b.py", 50, hunks) is False
 
 
 class TestVerifyFindingsASTGate:
@@ -461,3 +386,91 @@ class TestStructuralConfidence:
         result = structural_confidence(7, 6, 0.87)
         expected = 0.87 * (6 / 7)
         assert result == pytest.approx(expected, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# verify_pr_findings — PR ground truth, no DB
+# ---------------------------------------------------------------------------
+def _ctx(
+    path: str,
+    *,
+    ranges: list[tuple[int, int]],
+    head: str | None = None,
+    windows: list[tuple[int, int]] | None = None,
+    status: str = "modified",
+):
+    from gita.views.diff_context import FileContext, count_lines, language_for
+
+    hunk = DiffHunk(
+        file_path=path,
+        status=status,
+        additions=1,
+        deletions=0,
+        patch="@@ ... @@",
+        changed_ranges=[ChangedLineRange(start=s, count=c) for s, c in ranges],
+    )
+    return FileContext(
+        file_path=path,
+        diff_hunk=hunk,
+        indexed=status != "added",
+        language=language_for(path),
+        head_content=head,
+        head_line_count=count_lines(head) if head is not None else None,
+        context_windows=windows or [],
+    )
+
+
+class TestVerifyPrFindings:
+    def test_finding_in_file_added_by_pr_is_kept(self):
+        """The original bug: new files aren't in the index, so this was dropped."""
+        ctx = _ctx("src/new_auth.py", ranges=[(1, 3)], status="added", head="a\nb\nc\n")
+        f = _finding(file="src/new_auth.py", line=2, severity="critical", kind="security",
+                     description="SQL injection via f-string")
+        verified, dropped = verify_pr_findings([f], [ctx])
+        assert verified == [f] and dropped == []
+
+    def test_file_outside_the_review_is_dropped(self):
+        ctx = _ctx("src/a.py", ranges=[(1, 1)])
+        verified, dropped = verify_pr_findings([_finding(file="src/ghost.py", line=1)], [ctx])
+        assert verified == []
+        assert dropped[0][1].startswith("not_in_review")
+
+    def test_line_the_model_never_saw_is_dropped(self):
+        ctx = _ctx("src/a.py", ranges=[(100, 2)], head="x\n" * 1000, windows=[(70, 131)])
+        seen, unseen = _finding(file="src/a.py", line=75), _finding(file="src/a.py", line=500)
+        verified, dropped = verify_pr_findings([seen, unseen], [ctx])
+        assert verified == [seen]
+        assert dropped[0][1].startswith("line_not_shown")
+
+    def test_syntax_error_introduced_by_pr_is_kept(self):
+        """The index copy parses; the head doesn't. The claim is true."""
+        ctx = _ctx("src/pay.py", ranges=[(1, 1)], head="def f(:\n    return (x\n", windows=[(1, 2)])
+        f = _finding(file="src/pay.py", line=1, description="Syntax error: unclosed paren")
+        verified, _ = verify_pr_findings([f], [ctx])
+        assert verified == [f]
+
+    def test_false_syntax_claim_on_valid_head_is_dropped(self):
+        ctx = _ctx("src/ok.py", ranges=[(1, 2)], head="x = (\n    1)\n", windows=[(1, 2)])
+        f = _finding(file="src/ok.py", line=1, description="Syntax error: unclosed paren")
+        verified, dropped = verify_pr_findings([f], [ctx])
+        assert verified == []
+        assert dropped[0][1].startswith("syntax_claim_on_valid_file")
+
+    def test_syntax_claim_kept_when_head_unknown(self):
+        ctx = _ctx("src/x.py", ranges=[(1, 1)], head=None)
+        f = _finding(file="src/x.py", line=1, description="Syntax error here")
+        verified, _ = verify_pr_findings([f], [ctx])
+        assert verified == [f]
+
+    def test_test_and_tsx_files_are_reviewable(self):
+        """Neither is in the index; both are ordinary changed files here."""
+        files = [_ctx("tests/test_pay.py", ranges=[(3, 1)]), _ctx("web/App.tsx", ranges=[(9, 1)])]
+        findings = [_finding(file="tests/test_pay.py", line=3), _finding(file="web/App.tsx", line=9)]
+        verified, dropped = verify_pr_findings(findings, files)
+        assert verified == findings and dropped == []
+
+    def test_boilerplate_description_dropped(self):
+        ctx = _ctx("src/a.py", ranges=[(1, 1)])
+        f = _finding(file="src/a.py", line=1, description="Improve test coverage")
+        verified, _ = verify_pr_findings([f], [ctx])
+        assert verified == []

@@ -491,3 +491,84 @@ class TestNoGithubIO:
         source = inspect.getsource(recipe)
         assert "client.execute" not in source
         assert "GithubClient" not in source.replace("PRInfo", "")
+
+
+# ---------------------------------------------------------------------------
+# Regression: findings are checked against the PR, not the stale index
+# ---------------------------------------------------------------------------
+class TestReviewAgainstPRHead:
+    async def test_critical_bug_in_new_file_is_reported_not_approved(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        """The original bug: this finding was dropped as file_not_found and
+        the PR was approved with 0 findings."""
+        session, repo_name = indexed_synth_py
+        head = (
+            "def charge(q):\n"
+            '    return db.execute(f"SELECT * FROM t WHERE id={q}")\n'
+        )
+        hunk = DiffHunk(
+            file_path="src/myapp/payments.py",
+            status="added",
+            additions=2,
+            deletions=0,
+            patch="@@ -0,0 +1,2 @@\n+def charge(q):\n+    return db.execute(...)\n",
+            changed_ranges=[ChangedLineRange(start=1, count=2)],
+        )
+        bug = LLMFinding(
+            file="src/myapp/payments.py",
+            line=2,
+            severity="critical",
+            kind="security",
+            description="SQL injection via f-string in new code",
+        )
+        llm = FakeLLMClient(
+            responses=[_findings_response(findings=[bug]), _summary_response()]
+        )
+
+        result = await run_pr_review(
+            session,
+            repo_name,
+            _pr_info(),
+            [hunk],
+            llm=llm,
+            head_contents={"src/myapp/payments.py": head},
+        )
+
+        assert [f.file for f in result.findings] == ["src/myapp/payments.py"]
+        assert result.verdict == "request_changes"
+        # The model saw numbered head content for the new file.
+        assert "FILE AFTER THIS PR (2 lines)" in llm.calls[0]["user"]
+        assert '    2:     return db.execute(f"SELECT' in llm.calls[0]["user"]
+
+    async def test_long_file_shows_numbered_windows_only(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        session, repo_name = indexed_synth_py
+        head = "".join(f"x_{i} = {i}\n" for i in range(1, 1001))
+        hunk = DiffHunk(
+            file_path="src/myapp/big.py",
+            status="modified",
+            additions=1,
+            deletions=1,
+            patch="@@ -500,1 +500,1 @@\n-x_500 = 0\n+x_500 = 500\n",
+            changed_ranges=[ChangedLineRange(start=500, count=1)],
+        )
+        outside = LLMFinding(
+            file="src/myapp/big.py", line=900, severity="low", kind="quality",
+            description="unused variable",
+        )
+        llm = FakeLLMClient(
+            responses=[_findings_response(findings=[outside]), _summary_response()]
+        )
+
+        result = await run_pr_review(
+            session, repo_name, _pr_info(), [hunk], llm=llm,
+            head_contents={"src/myapp/big.py": head},
+        )
+
+        user = llm.calls[0]["user"]
+        assert "  470: x_470 = 470" in user and "  530: x_530 = 530" in user
+        assert "x_900" not in user
+        # Line 900 was never shown, so the citation can't be checked: dropped.
+        assert result.findings == [] and result.dropped_findings == 1

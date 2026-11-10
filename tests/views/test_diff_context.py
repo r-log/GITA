@@ -24,10 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gita.agents.pr_reviewer.diff_parser import ChangedLineRange, DiffHunk
 from gita.views.diff_context import (
     DiffContextResult,
-    FileContext,
     SymbolInDiff,
     _overlaps,
     _symbols_near_changes,
+    context_windows,
+    count_lines,
     diff_context_view,
 )
 
@@ -124,8 +125,10 @@ class TestSymbolsNearChanges:
 # ---------------------------------------------------------------------------
 # DB-integrated: diff_context_view against indexed_synth_py
 # ---------------------------------------------------------------------------
-class TestDiffContextViewIndexed:
-    async def test_indexed_file_returns_context(
+class TestDiffContextViewWithoutHead:
+    """No head content (e.g. fetch failed): base copy as unnumbered context."""
+
+    async def test_indexed_file_falls_back_to_base_copy(
         self, indexed_synth_py: tuple[AsyncSession, str]
     ):
         session, repo_name = indexed_synth_py
@@ -134,80 +137,116 @@ class TestDiffContextViewIndexed:
         result = await diff_context_view(session, repo_name, hunks)
 
         assert isinstance(result, DiffContextResult)
-        assert result.total_count == 1
-        assert result.indexed_count == 1
-        assert len(result.files) == 1
-
+        assert result.total_count == 1 and result.indexed_count == 1
         ctx = result.files[0]
         assert ctx.indexed is True
         assert ctx.language == "python"
-        assert ctx.content is not None
-        assert "format_name" in ctx.content
-
-    async def test_symbols_near_changes_found(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
-        """A diff touching lines 1-3 of utils.py should overlap format_name
-        (starts at line 1) but not validate_email (starts at line 5)."""
-        session, repo_name = indexed_synth_py
-        hunks = [_hunk("src/myapp/utils.py", ranges=[(1, 2)])]
-
-        result = await diff_context_view(session, repo_name, hunks)
-        ctx = result.files[0]
-
-        symbol_names = [s.name for s in ctx.symbols_near_changes]
-        assert "format_name" in symbol_names
-        # validate_email is at lines 5-6, should NOT overlap lines 1-2
-        assert "validate_email" not in symbol_names
+        assert ctx.head_content is None
+        assert "format_name" in ctx.base_content
+        # Base-side symbols would be in the wrong coordinates; none given.
+        assert ctx.symbols_near_changes == []
+        # Only the diff's own new-side lines are citable.
+        assert ctx.visible_lines() == {1, 2, 3}
 
     async def test_imported_by_populated(
         self, indexed_synth_py: tuple[AsyncSession, str]
     ):
-        """utils.py is imported by core.py and models.py — those should
-        appear in imported_by so the agent knows the change is high-impact."""
+        """utils.py is imported by core.py and models.py — high impact."""
         session, repo_name = indexed_synth_py
         hunks = [_hunk("src/myapp/utils.py", ranges=[(1, 2)])]
 
         result = await diff_context_view(session, repo_name, hunks)
-        ctx = result.files[0]
 
-        assert len(ctx.imported_by) >= 2
-        paths = set(ctx.imported_by)
-        assert "src/myapp/core.py" in paths
-        assert "src/myapp/models.py" in paths
+        assert {"src/myapp/core.py", "src/myapp/models.py"} <= set(
+            result.files[0].imported_by
+        )
 
-    async def test_all_symbols_populated(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
-        """all_symbols should include every symbol in the file, not just
-        those near changes — the agent uses this for full-file context."""
-        session, repo_name = indexed_synth_py
-        hunks = [_hunk("src/myapp/utils.py", ranges=[(1, 1)])]
-
-        result = await diff_context_view(session, repo_name, hunks)
-        ctx = result.files[0]
-
-        all_names = [s.name for s in ctx.all_symbols]
-        assert "format_name" in all_names
-        assert "validate_email" in all_names
-
-
-class TestDiffContextViewUnindexed:
-    async def test_unindexed_file_graceful_fallback(
+    async def test_unindexed_added_file(
         self, indexed_synth_py: tuple[AsyncSession, str]
     ):
         session, repo_name = indexed_synth_py
-        hunks = [_hunk("src/brand_new_file.py", ranges=[(1, 10)])]
+        hunks = [_hunk("src/brand_new_file.py", status="added", ranges=[(1, 10)])]
 
         result = await diff_context_view(session, repo_name, hunks)
 
-        assert result.total_count == 1
+        ctx = result.files[0]
         assert result.indexed_count == 0
+        assert ctx.indexed is False
+        assert ctx.base_content is None and ctx.head_content is None
+        assert ctx.imported_by == []
+
+
+_HEAD_UTILS = (
+    "def format_name(name: str) -> str:\n"
+    "    if not name.strip():\n"
+    "        return ''\n"
+    "    return name.strip().title()\n"
+    "\n"
+    "\n"
+    "def validate_email(email: str) -> bool:\n"
+    "    return '@' in email\n"
+)
+
+
+class TestDiffContextViewWithHead:
+    async def test_head_content_is_numbered_context_and_symbols(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        session, repo_name = indexed_synth_py
+        hunks = [_hunk("src/myapp/utils.py", ranges=[(2, 2)])]
+
+        result = await diff_context_view(
+            session, repo_name, hunks, head_contents={"src/myapp/utils.py": _HEAD_UTILS}
+        )
+
+        ctx = result.files[0]
+        assert ctx.head_content == _HEAD_UTILS
+        assert ctx.head_line_count == 8
+        assert ctx.context_windows == [(1, 8)]  # short file: shown whole
+        assert ctx.visible_lines() == set(range(1, 9))
+        # Symbols come from the head version, in head coordinates.
+        names = {s.name: (s.start_line, s.end_line) for s in ctx.symbols_near_changes}
+        assert names == {"format_name": (1, 4)}
+
+    async def test_file_added_by_the_pr_gets_full_context(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        session, repo_name = indexed_synth_py
+        head = "def charge(q):\n    return db.execute(f'SELECT {q}')\n"
+        hunks = [_hunk("src/myapp/payments.py", status="added", ranges=[(1, 2)])]
+
+        result = await diff_context_view(
+            session, repo_name, hunks, head_contents={"src/myapp/payments.py": head}
+        )
+
         ctx = result.files[0]
         assert ctx.indexed is False
-        assert ctx.content is None
-        assert ctx.symbols_near_changes == []
-        assert ctx.imported_by == []
+        assert ctx.visible_lines() == {1, 2}
+        assert [s.name for s in ctx.symbols_near_changes] == ["charge"]
+
+
+class TestContextWindows:
+    def test_short_file_shown_whole(self):
+        assert context_windows(120, [ChangedLineRange(50, 3)]) == [(1, 120)]
+
+    def test_long_file_windows_merge(self):
+        ranges = [ChangedLineRange(100, 5), ChangedLineRange(140, 1), ChangedLineRange(900, 2)]
+        assert context_windows(1000, ranges) == [(70, 170), (870, 931)]
+
+    def test_windows_clamped_to_file(self):
+        assert context_windows(400, [ChangedLineRange(395, 6)]) == [(365, 400)]
+
+    def test_empty_file(self):
+        assert context_windows(0, []) == []
+
+
+def test_count_lines_matches_git():
+    assert count_lines("") == 0
+    assert count_lines("a") == 1
+    assert count_lines("a\n") == 1
+    assert count_lines("a\nb") == 2
+    # Form feed and U+2028 are not line breaks for git/GitHub.
+    assert count_lines("a\fb\u2028c\n") == 1
 
 
 class TestDiffContextViewMixed:

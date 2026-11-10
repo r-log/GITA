@@ -10,7 +10,16 @@ has been structurally confirmed against the code_index**. Prompts still
 guide the LLM toward better output (reducing the filter volume), but
 they are never the last line of defense.
 
-Guardrails (applied in order):
+Two entry points:
+
+* ``verify_findings`` — onboarding. Ground truth is ``code_index``
+  (the default branch), because that is what the model was shown.
+* ``verify_pr_findings`` — PR review. Ground truth is the PR itself: the
+  reviewed files, the lines the model was shown, and the head content.
+  The index is the wrong reference there (new files aren't in it, and
+  its line numbers are pre-PR).
+
+``verify_findings`` guardrails (applied in order):
 1. **File existence** — ``finding.file`` must exist in ``code_index``
    for this repo. Catches hallucinated file paths.
 2. **Line range** — ``finding.line`` must be ≤ ``code_index.line_count``.
@@ -32,7 +41,7 @@ from __future__ import annotations
 import ast
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,12 +49,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gita.agents.types import Finding
 from gita.db.models import CodeIndex
 
-# Lazy import to avoid circular dependency at module level.
-# DiffHunk is only needed when diff_hunks kwarg is passed.
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from gita.agents.pr_reviewer.diff_parser import DiffHunk
+if TYPE_CHECKING:  # type-only: importing these at runtime would be circular
+    from gita.views.diff_context import FileContext
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +94,13 @@ _SYNTAX_ERROR_PATTERNS: list[re.Pattern[str]] = [
 # Individual guardrail checks
 # ---------------------------------------------------------------------------
 def _check_banned_phrase(finding: Finding) -> str | None:
-    """Return a reason string if the finding matches a banned phrase, else None."""
-    text = f"{finding.description} {finding.fix_sketch}"
+    """Return a reason string if the finding *is* boilerplate, else None.
+
+    Only the description is checked. A real bug whose fix sketch ends
+    with "...and add tests for the empty case" is still a real bug.
+    """
     for pattern in _BANNED_DESCRIPTION_PATTERNS:
-        if pattern.search(text):
+        if pattern.search(finding.description):
             return f"banned phrase: {pattern.pattern!r}"
     return None
 
@@ -120,46 +128,16 @@ def _file_parses_cleanly(content: str, language: str) -> bool:
 # ---------------------------------------------------------------------------
 # Main verification pass
 # ---------------------------------------------------------------------------
-def _line_in_diff_ranges(
-    file_path: str,
-    line: int,
-    diff_hunks: list["DiffHunk"],
-) -> bool:
-    """True if ``line`` falls within any changed range of the file's hunk.
-
-    Used to relax the line-range guardrail for PR reviews: the diff adds
-    new lines beyond the indexed file length, so findings citing those
-    new lines should be allowed even though ``code_index.line_count``
-    doesn't include them yet.
-    """
-    for hunk in diff_hunks:
-        if hunk.file_path != file_path:
-            continue
-        for r in hunk.changed_ranges:
-            if r.start <= line <= r.end:
-                return True
-    return False
-
-
 async def verify_findings(
     session: AsyncSession,
     repo_id: Any,
     findings: list[Finding],
-    *,
-    diff_hunks: list["DiffHunk"] | None = None,
 ) -> tuple[list[Finding], list[tuple[Finding, str]]]:
     """Verify each finding against structural ground truth.
 
     Returns ``(verified, dropped)`` where ``dropped`` is a list of
     ``(finding, reason)`` tuples. The recipe feeds ``verified`` into
     stage 4 (milestone grouping); ``dropped`` is logged for diagnostics.
-
-    When ``diff_hunks`` is provided (PR review context), the line-range
-    check is relaxed: a finding at line L passes if either
-    ``L <= code_index.line_count`` OR ``L`` falls within one of the
-    diff's changed ranges for that file. This handles the "PR adds new
-    lines beyond the indexed file length" case without disabling the
-    guardrail entirely.
 
     This function hits the DB once (batch fetch of all cited files) and
     then runs pure checks in-memory. Cost: one SQL query + negligible
@@ -196,28 +174,18 @@ async def verify_findings(
             continue
 
         # --- Guardrail 2: line range ---
-        if finding.line > row.line_count:
-            # In PR review context, the diff may add lines beyond the
-            # indexed file length. Allow if the line falls within a
-            # diff changed range.
-            in_diff = (
-                diff_hunks is not None
-                and _line_in_diff_ranges(finding.file, finding.line, diff_hunks)
+        if not 1 <= finding.line <= row.line_count:
+            reason = (
+                f"line_out_of_range: line {finding.line} not in 1..{row.line_count}"
             )
-            if not in_diff:
-                reason = (
-                    f"line_out_of_range: line {finding.line} > "
-                    f"{row.line_count} (file has {row.line_count} lines)"
-                )
-                dropped.append((finding, reason))
-                logger.warning(
-                    "guardrail_drop reason=line_out_of_range "
-                    "file=%s line=%d max=%d",
-                    finding.file,
-                    finding.line,
-                    row.line_count,
-                )
-                continue
+            dropped.append((finding, reason))
+            logger.warning(
+                "guardrail_drop reason=line_out_of_range file=%s line=%d max=%d",
+                finding.file,
+                finding.line,
+                row.line_count,
+            )
+            continue
 
         # --- Guardrail 3: AST parse gate for syntax-error claims ---
         if _claims_syntax_error(finding):
@@ -288,3 +256,73 @@ def structural_confidence(
     pass_rate = verified_count / original_count
     blended = llm_confidence * pass_rate
     return max(0.1, min(1.0, blended))
+
+
+# ---------------------------------------------------------------------------
+# PR review guardrails — checked against the PR, not the index
+# ---------------------------------------------------------------------------
+def verify_pr_findings(
+    findings: list[Finding],
+    files: list[FileContext],
+) -> tuple[list[Finding], list[tuple[Finding, str]]]:
+    """Verify PR findings against what the model was actually shown.
+
+    The index describes the default branch, so it is the wrong ground
+    truth for a PR: files the PR adds aren't in it, line numbers have
+    moved, and a syntax error the PR introduces isn't there. Instead:
+
+    1. **In the review** — the file must be one of the changed files the
+       model was shown. Catches invented paths and citations of files
+       outside the change.
+    2. **Visible line** — the line must be one the model saw: inside a
+       changed range of the diff (new side) or a numbered context window
+       of the head content. Catches invented and out-of-range lines.
+    3. **Syntax claims** — a claimed syntax error in a Python file is
+       dropped only if the *head* content parses. If the head content is
+       unknown, the claim is kept: we can't disprove it.
+    4. **Boilerplate** — banned phrases in the description.
+
+    Pure function: no database, no I/O.
+    """
+    by_path = {ctx.file_path: ctx for ctx in files}
+    visible = {path: ctx.visible_lines() for path, ctx in by_path.items()}
+
+    verified: list[Finding] = []
+    dropped: list[tuple[Finding, str]] = []
+
+    def drop(finding: Finding, reason: str) -> None:
+        dropped.append((finding, reason))
+        logger.warning(
+            "pr_guardrail_drop file=%s line=%s reason=%s",
+            finding.file,
+            finding.line,
+            reason,
+        )
+
+    for finding in findings:
+        ctx = by_path.get(finding.file)
+        if ctx is None:
+            drop(finding, f"not_in_review: {finding.file!r} is not a reviewed file")
+            continue
+        if finding.line not in visible[finding.file]:
+            drop(
+                finding,
+                f"line_not_shown: line {finding.line} of {finding.file} "
+                "was not in the diff or context the model saw",
+            )
+            continue
+        if (
+            _claims_syntax_error(finding)
+            and ctx.head_content is not None
+            and ctx.language == "python"
+            and _file_parses_cleanly(ctx.head_content, "python")
+        ):
+            drop(finding, "syntax_claim_on_valid_file: head version parses cleanly")
+            continue
+        banned = _check_banned_phrase(finding)
+        if banned is not None:
+            drop(finding, banned)
+            continue
+        verified.append(finding)
+
+    return verified, dropped

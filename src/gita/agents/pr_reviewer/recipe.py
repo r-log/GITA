@@ -3,7 +3,7 @@
 Pipeline:
     1. diff_context_view(session, repo, hunks)           deterministic
     2. LLM: "given the diff + context, find issues"       call 1
-    3. verify_findings(session, repo_id, findings)         deterministic (guardrails)
+    3. verify_pr_findings(findings, reviewed files)        deterministic (guardrails)
     4. decide_verdict(verified findings, coverage)         deterministic
     5. LLM: "summarize the verified findings"              call 2
     6. structural_confidence blending                       deterministic
@@ -30,7 +30,7 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gita.agents.guardrails import structural_confidence, verify_findings
+from gita.agents.guardrails import structural_confidence, verify_pr_findings
 from gita.agents.onboarding.schemas import FindingsResponse, LLMFinding
 from gita.agents.pr_reviewer.diff_parser import DiffHunk
 from gita.agents.pr_reviewer.schemas import ReviewSummaryResponse
@@ -84,13 +84,24 @@ def fence(text: str, *, nonce: str, source: str) -> str:
 # ---------------------------------------------------------------------------
 # Prompt rendering
 # ---------------------------------------------------------------------------
-def _prepend_line_numbers(content: str) -> str:
-    # split("\n"), not splitlines(): the latter also breaks on form feeds,
-    # U+2028 and friends, which shifts every later number relative to
-    # how git, GitHub and the indexer count lines.
-    return "\n".join(
-        f"{i:>4}: {line}" for i, line in enumerate(content.split("\n"), start=1)
-    )
+def _numbered_windows(content: str, windows: list[tuple[int, int]]) -> str:
+    """Render head-content windows with their real line numbers.
+
+    Uses ``split("\\n")``, not ``splitlines()``: the latter also breaks on
+    form feeds, U+2028 and friends, which would shift every later number
+    relative to how git, GitHub and the indexer count lines.
+    """
+    lines = content.split("\n")
+    total = len(lines) - (1 if lines and lines[-1] == "" else 0)
+    out: list[str] = []
+    for i, (start, end) in enumerate(windows):
+        if i > 0 or start > 1:
+            out.append("   ...")
+        for n in range(start, min(end, total) + 1):
+            out.append(f"{n:>5}: {lines[n - 1]}")
+    if windows and windows[-1][1] < total:
+        out.append("   ...")
+    return "\n".join(out)
 
 
 def _render_file_block(ctx: FileContext) -> str:
@@ -106,7 +117,7 @@ def _render_file_block(ctx: FileContext) -> str:
 
     if ctx.symbols_near_changes:
         lines.append("")
-        lines.append("SYMBOLS NEAR CHANGES:")
+        lines.append("SYMBOLS NEAR CHANGES (line numbers after this PR):")
         for sym in ctx.symbols_near_changes:
             parent = f" in {sym.parent_class}" if sym.parent_class else ""
             lines.append(
@@ -123,18 +134,23 @@ def _render_file_block(ctx: FileContext) -> str:
         if len(ctx.imported_by) > 5:
             lines.append(f"  ... and {len(ctx.imported_by) - 5} more")
 
-    if ctx.content:
-        content = ctx.content
+    if ctx.head_content is not None and ctx.context_windows:
         lines.append("")
-        if len(content) > _FILE_CONTEXT_CAP_CHARS:
-            content = content[:_FILE_CONTEXT_CAP_CHARS]
-            lines.append(
-                f"FILE CONTEXT (first {_FILE_CONTEXT_CAP_CHARS} chars, "
-                f"{ctx.line_count} lines total):"
-            )
-        else:
-            lines.append(f"FILE CONTEXT ({ctx.line_count} lines):")
-        lines.append(_prepend_line_numbers(content))
+        whole = ctx.context_windows == [(1, ctx.head_line_count)]
+        lines.append(
+            f"FILE AFTER THIS PR ({ctx.head_line_count} lines"
+            + ("" if whole else ", windows around the changes")
+            + "):"
+        )
+        lines.append(_numbered_windows(ctx.head_content, ctx.context_windows))
+    elif ctx.base_content:
+        base = ctx.base_content[:_FILE_CONTEXT_CAP_CHARS]
+        lines.append("")
+        lines.append(
+            "FILE BEFORE THIS PR (for context only; cite line numbers "
+            "from the diff, not from this copy):"
+        )
+        lines.append(base)
 
     return "\n".join(lines)
 
@@ -283,14 +299,18 @@ async def run_pr_review(
     *,
     llm: LLMClient,
     max_files: int = _MAX_FILES_PER_REVIEW,
+    head_contents: dict[str, str] | None = None,
 ) -> PRReviewResult:
     """Run the two-stage PR review recipe.
 
     The caller provides ``pr_info`` + ``diff_hunks`` (fetched from the
-    GitHub API). The recipe handles context lookup, LLM calls, guardrails,
-    the verdict, and confidence blending.
+    GitHub API) and, ideally, ``head_contents``: each changed file's text
+    at the PR head. With it, the model sees numbered head-side context
+    and the guardrails can check syntax claims against the real file.
+    The recipe handles context, LLM calls, guardrails, the verdict, and
+    confidence blending.
     """
-    repo = await resolve_repo(session, repo_name)
+    await resolve_repo(session, repo_name)  # fail fast on an unindexed repo
     nonce = _new_nonce()
 
     # Cap the number of files we review; the rest are reported, not hidden.
@@ -306,7 +326,9 @@ async def run_pr_review(
         )
 
     # Stage 1: context for each changed file (deterministic).
-    diff_context = await diff_context_view(session, repo_name, diff_hunks)
+    diff_context = await diff_context_view(
+        session, repo_name, diff_hunks, head_contents=head_contents
+    )
 
     # Stage 2: model proposes findings.
     prompt = build_review_prompt(pr_info, diff_context.files, nonce=nonce)
@@ -327,13 +349,11 @@ async def run_pr_review(
         findings = _convert_findings(findings_response.parsed.findings)
         original_count = len(findings)
 
-    # Stage 3: guardrails. Lines added by the PR are beyond the indexed
-    # file length, so the diff ranges are passed to relax that check.
+    # Stage 3: guardrails, against the files and lines the model saw.
     dropped = 0
     if findings:
-        findings, dropped_list = await verify_findings(
-            session, repo.id, findings, diff_hunks=diff_hunks
-        )
+        reviewed = [f for f in diff_context.files if f.file_path in prompt.reviewed_paths]
+        findings, dropped_list = verify_pr_findings(findings, reviewed)
         dropped = len(dropped_list)
         if dropped:
             logger.info(

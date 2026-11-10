@@ -13,6 +13,7 @@ arrive after the first review already covered that SHA.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 from pathlib import Path
@@ -89,6 +90,51 @@ async def _check_sha_already_reviewed(
     ).bindparams(repo=repo_lower, sha_json=f'["{sha_tag}"]')
     result = await session.execute(stmt)
     return result.scalar_one_or_none() is not None
+
+
+# ---------------------------------------------------------------------------
+# PR head content
+# ---------------------------------------------------------------------------
+# Changed files larger than this are reviewed from the diff alone.
+_MAX_HEAD_FILE_BYTES = 512 * 1024
+_HEAD_FETCH_CONCURRENCY = 5
+
+
+async def fetch_head_contents(
+    gh: GithubClient,
+    owner: str,
+    repo: str,
+    hunks: list,
+    head_sha: str | None,
+) -> dict[str, str]:
+    """Text of each changed file at the PR head, keyed by path.
+
+    The reviewer numbers context and checks syntax claims against this,
+    not against the index (which is the pre-PR default branch). Removed,
+    binary, oversized, and unfetchable files are left out; the reviewer
+    then falls back to the diff for them.
+    """
+    if not head_sha:
+        return {}
+    semaphore = asyncio.Semaphore(_HEAD_FETCH_CONCURRENCY)
+
+    async def fetch(hunk) -> tuple[str, str] | None:
+        if hunk.status == "removed" or not hunk.patch:
+            return None
+        async with semaphore:
+            try:
+                contents = await gh.get_contents(owner, repo, hunk.file_path, ref=head_sha)
+            except (httpx.HTTPError, ValueError, UnicodeDecodeError) as exc:
+                logger.info(
+                    "pr_head_fetch_skipped file=%s reason=%s", hunk.file_path, exc
+                )
+                return None
+        if contents.encoding != "base64" or contents.size > _MAX_HEAD_FILE_BYTES:
+            return None  # GitHub omits content above 1 MB ("encoding": "none")
+        return hunk.file_path, contents.content
+
+    results = await asyncio.gather(*(fetch(h) for h in hunks))
+    return dict(r for r in results if r is not None)
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +253,10 @@ async def run_pr_review_job(
 
     # --- Run the PR reviewer ---
     diff_hunks = parse_pr_files(pr_files_json)
+    async with GithubClient(auth=auth) as gh:
+        head_contents = await fetch_head_contents(
+            gh, owner, repo, diff_hunks, actual_sha
+        )
     model = settings.ai_default_model
 
     async with OpenRouterClient(
@@ -214,7 +264,12 @@ async def run_pr_review_job(
     ) as llm, SessionLocal() as session:
         try:
             result = await run_pr_review(
-                session, repo_name, pr_info, diff_hunks, llm=llm
+                session,
+                repo_name,
+                pr_info,
+                diff_hunks,
+                llm=llm,
+                head_contents=head_contents,
             )
         except PRReviewError as exc:
             logger.error(
