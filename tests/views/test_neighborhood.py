@@ -107,7 +107,5 @@ class TestNeighborhoodErrors:
     async def test_backslash_path_normalized(self, indexed_synth_py):
         session, repo = indexed_synth_py
         # Should work when caller passes Windows-style path
-        result = await neighborhood_view(
-            session, repo, "src\\myapp\\core.py"
-        )
+        result = await neighborhood_view(session, repo, "src\\myapp\\core.py")
         assert result.file.file_path == "src/myapp/core.py"

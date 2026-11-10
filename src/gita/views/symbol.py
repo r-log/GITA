@@ -11,6 +11,7 @@ Query syntax:
 Multiple matches are returned (e.g. two files define ``format_name``). We cap
 at 10 matches to avoid runaway; ``total_matches`` reports the true count.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -117,9 +118,7 @@ def _match_symbol(
     return matches
 
 
-async def symbol_view(
-    session: AsyncSession, repo_name: str, query: str
-) -> SymbolResult:
+async def symbol_view(session: AsyncSession, repo_name: str, query: str) -> SymbolResult:
     """Look up a symbol by name (optionally ``ClassName.method``)."""
     repo = await resolve_repo(session, repo_name)
     parent_filter, name = _parse_query(query)

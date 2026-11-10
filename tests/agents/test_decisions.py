@@ -11,6 +11,7 @@ Covers:
 - Client exceptions produce ERROR outcome
 - Downgrade comment body includes evidence chain
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -23,7 +24,6 @@ from gita.agents.decisions import (
     DEFAULT_THRESHOLDS,
     ActionClient,
     Decision,
-    DecisionResult,
     Outcome,
     WriteMode,
     execute_decision,
@@ -115,7 +115,7 @@ class TestThresholds:
             get_threshold("create_issue", {"comment": 0.3})
 
     def test_code_actions_default_to_higher_threshold(self):
-        """Week 8: ``create_branch`` / ``update_file`` / ``open_pr`` sit
+        """``create_branch`` / ``update_file`` / ``open_pr`` sit
         above the comment/issue gate because generated code has a larger
         blast radius than generated prose."""
         for action in ("create_branch", "update_file", "open_pr"):
@@ -132,9 +132,7 @@ class TestShadowMode:
         client = FakeActionClient()
         decision = _make_decision(action="comment", confidence=0.9)
 
-        result = await execute_decision(
-            decision, mode=WriteMode.SHADOW, client=client
-        )
+        result = await execute_decision(decision, mode=WriteMode.SHADOW, client=client)
 
         assert result.outcome == Outcome.SHADOW_LOGGED
         assert result.executed is False
@@ -171,9 +169,7 @@ class TestFullMode:
     async def test_high_confidence_comment_executes(self):
         client = FakeActionClient()
         decision = _make_decision(action="comment", confidence=0.9)
-        result = await execute_decision(
-            decision, mode=WriteMode.FULL, client=client
-        )
+        result = await execute_decision(decision, mode=WriteMode.FULL, client=client)
         assert result.outcome == Outcome.EXECUTED
         assert result.executed is True
         assert len(client.calls) == 1
@@ -182,9 +178,7 @@ class TestFullMode:
     async def test_high_confidence_create_issue_executes(self):
         client = FakeActionClient()
         decision = _make_decision(action="create_issue", confidence=0.9)
-        result = await execute_decision(
-            decision, mode=WriteMode.FULL, client=client
-        )
+        result = await execute_decision(decision, mode=WriteMode.FULL, client=client)
         assert result.outcome == Outcome.EXECUTED
         assert client.calls[0].action == "create_issue"
 
@@ -198,9 +192,7 @@ class TestFullMode:
     async def test_full_mode_client_raises_becomes_error(self):
         client = FakeActionClient(should_raise=True)
         decision = _make_decision(action="comment", confidence=0.9)
-        result = await execute_decision(
-            decision, mode=WriteMode.FULL, client=client
-        )
+        result = await execute_decision(decision, mode=WriteMode.FULL, client=client)
         assert result.outcome == Outcome.ERROR
         assert result.executed is False
         assert "simulated client failure" in (result.error or "")
@@ -213,9 +205,7 @@ class TestCommentMode:
     async def test_comment_action_executes(self):
         client = FakeActionClient()
         decision = _make_decision(action="comment", confidence=0.9)
-        result = await execute_decision(
-            decision, mode=WriteMode.COMMENT, client=client
-        )
+        result = await execute_decision(decision, mode=WriteMode.COMMENT, client=client)
         assert result.outcome == Outcome.EXECUTED
         assert result.executed is True
         assert len(client.calls) == 1
@@ -224,9 +214,7 @@ class TestCommentMode:
     async def test_create_issue_downgrades_to_comment(self):
         client = FakeActionClient()
         decision = _make_decision(action="create_issue", confidence=0.9)
-        result = await execute_decision(
-            decision, mode=WriteMode.COMMENT, client=client
-        )
+        result = await execute_decision(decision, mode=WriteMode.COMMENT, client=client)
         assert result.outcome == Outcome.DOWNGRADED_WRITE_MODE
         assert result.executed is True  # the comment was posted
         assert len(client.calls) == 1
@@ -238,9 +226,7 @@ class TestCommentMode:
     async def test_close_issue_downgrades_to_comment(self):
         client = FakeActionClient()
         decision = _make_decision(action="close_issue", confidence=0.95)
-        result = await execute_decision(
-            decision, mode=WriteMode.COMMENT, client=client
-        )
+        result = await execute_decision(decision, mode=WriteMode.COMMENT, client=client)
         assert result.outcome == Outcome.DOWNGRADED_WRITE_MODE
         assert client.calls[0].action == "comment"
 
@@ -253,30 +239,29 @@ class TestLowConfidenceDowngrade:
         client = FakeActionClient()
         # create_issue threshold is 0.7; 0.4 is below
         decision = _make_decision(action="create_issue", confidence=0.4)
-        result = await execute_decision(
-            decision, mode=WriteMode.FULL, client=client
-        )
+        result = await execute_decision(decision, mode=WriteMode.FULL, client=client)
         assert result.outcome == Outcome.DOWNGRADED_LOW_CONFIDENCE
         assert result.executed is True
         assert client.calls[0].action == "comment"
         assert "confidence" in (result.downgrade_reason or "").lower()
 
-    async def test_low_confidence_comment_in_full_mode(self):
+    async def test_low_confidence_comment_is_held_not_replaced(self):
+        """Below the bar a comment is not posted. It used to be "downgraded"
+        to a meta-comment ("Intended action: comment ...") that replaced
+        the content with noise on a public PR."""
         client = FakeActionClient()
         # comment threshold is 0.3; 0.1 is below
         decision = _make_decision(action="comment", confidence=0.1)
-        result = await execute_decision(
-            decision, mode=WriteMode.FULL, client=client
-        )
-        assert result.outcome == Outcome.DOWNGRADED_LOW_CONFIDENCE
-        assert client.calls[0].action == "comment"
+        result = await execute_decision(decision, mode=WriteMode.FULL, client=client)
+        assert result.outcome == Outcome.HELD_LOW_CONFIDENCE
+        assert result.executed is False
+        assert "below threshold" in result.downgrade_reason
+        assert client.calls == []
 
     async def test_low_confidence_in_comment_mode(self):
         client = FakeActionClient()
         decision = _make_decision(action="close_issue", confidence=0.2)
-        result = await execute_decision(
-            decision, mode=WriteMode.COMMENT, client=client
-        )
+        result = await execute_decision(decision, mode=WriteMode.COMMENT, client=client)
         # Low confidence wins over write-mode downgrade
         assert result.outcome == Outcome.DOWNGRADED_LOW_CONFIDENCE
         assert client.calls[0].action == "comment"
@@ -293,9 +278,7 @@ class TestDowngradeBody:
             confidence=0.4,
             evidence=["commit abc says 'fixes #1'", "all tests passing"],
         )
-        await execute_decision(
-            decision, mode=WriteMode.FULL, client=client
-        )
+        await execute_decision(decision, mode=WriteMode.FULL, client=client)
         body = client.calls[0].payload["body"]
         assert "Intended action" in body
         assert "create_issue" in body
@@ -306,9 +289,7 @@ class TestDowngradeBody:
     async def test_body_has_downgrade_reason(self):
         client = FakeActionClient()
         decision = _make_decision(action="create_issue", confidence=0.4)
-        await execute_decision(
-            decision, mode=WriteMode.FULL, client=client
-        )
+        await execute_decision(decision, mode=WriteMode.FULL, client=client)
         body = client.calls[0].payload["body"]
         assert "below threshold" in body.lower()
 
@@ -414,9 +395,7 @@ class TestDedupeShadowMode:
 
 
 class TestDedupeFullMode:
-    async def test_full_mode_first_run_executes_and_records(
-        self, db_session: AsyncSession
-    ):
+    async def test_full_mode_first_run_executes_and_records(self, db_session: AsyncSession):
         client = FakeActionClient()
         decision = _make_decision(action="comment", confidence=0.9)
         result = await execute_decision(
@@ -432,9 +411,7 @@ class TestDedupeFullMode:
         assert len(client.calls) == 1
         assert await _count_rows(db_session) == 1
 
-    async def test_full_mode_second_run_dedupes_and_skips_client(
-        self, db_session: AsyncSession
-    ):
+    async def test_full_mode_second_run_dedupes_and_skips_client(self, db_session: AsyncSession):
         client = FakeActionClient()
         decision = _make_decision(action="comment", confidence=0.9)
         await execute_decision(
@@ -489,10 +466,8 @@ class TestDedupeFullMode:
 
 
 class TestDedupeCommentModeDowngrade:
-    async def test_create_issue_downgrade_records_and_dedupes(
-        self, db_session: AsyncSession
-    ):
-        """Week 3 acceptance regression: a downgraded create_issue in comment
+    async def test_create_issue_downgrade_records_and_dedupes(self, db_session: AsyncSession):
+        """Regression: a downgraded create_issue in comment
         mode must dedupe against itself on a second run."""
         client = FakeActionClient()
         decision = Decision(
@@ -532,9 +507,7 @@ class TestDedupeCommentModeDowngrade:
 
 
 class TestDedupeAgentScoping:
-    async def test_different_agent_does_not_dedupe(
-        self, db_session: AsyncSession
-    ):
+    async def test_different_agent_does_not_dedupe(self, db_session: AsyncSession):
         client = FakeActionClient()
         decision = _make_decision(action="comment", confidence=0.9)
 
@@ -562,9 +535,7 @@ class TestDedupeAgentScoping:
 
 
 class TestDedupedResultShape:
-    async def test_deduped_result_carries_previous_external_id(
-        self, db_session: AsyncSession
-    ):
+    async def test_deduped_result_carries_previous_external_id(self, db_session: AsyncSession):
         class IdentifyingClient(FakeActionClient):
             async def execute(self, decision: Decision) -> dict[str, Any]:
                 self.calls.append(decision)

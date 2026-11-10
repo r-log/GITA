@@ -1,10 +1,9 @@
 """Structured types returned by agents.
 
-These live in their own module so the checklist infrastructure can import
-them before the actual onboarding agent lands on Day 5. The dataclass fields
-are meant to stay stable across Week 2 — if the agent discovers it needs
-different shape, we revise here and everything else follows.
+They live in their own module so the bridges, guardrails and golden-test
+checklists can share them without importing the agents themselves.
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -18,8 +17,8 @@ class Finding:
 
     file: str
     line: int
-    severity: str         # "low" | "medium" | "high" | "critical"
-    kind: str             # "bug" | "security" | "quality" | "missing" | ...
+    severity: str  # "low" | "medium" | "high" | "critical"
+    kind: str  # "bug" | "security" | "quality" | "missing" | ...
     description: str
     fix_sketch: str = ""
 
@@ -56,9 +55,17 @@ class PRReviewResult:
     pr_number: int
     pr_title: str
     summary: str  # 2-3 sentence review from the LLM
-    verdict: str  # "approve" | "request_changes" | "comment"
+    # Decided in code from the verified findings, never by the model:
+    # "approve" | "request_changes" | "comment".
+    verdict: str
     findings: list[Finding] = field(default_factory=list)
     confidence: float = 0.0
+    # Findings the guardrails discarded. Reported so a reader knows the
+    # review isn't silently narrower than what the model saw.
+    dropped_findings: int = 0
+    # Changed files the model was not shown in full (binary, patch too
+    # large, over the file cap or prompt budget).
+    unreviewed_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

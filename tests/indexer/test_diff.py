@@ -4,6 +4,7 @@
 ``detect_changes`` shells out to git — tested against a real tmpdir
 git repo with controlled commits.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -14,10 +15,29 @@ import pytest
 from gita.indexer.diff import (
     FileChange,
     detect_changes,
-    parse_name_status,
     discover_default_branch,
+    parse_name_status,
+    parse_name_status_z,
     read_head_sha,
 )
+
+
+# ---------------------------------------------------------------------------
+# Pure parser: parse_name_status_z (what detect_changes uses)
+# ---------------------------------------------------------------------------
+class TestParseNameStatusZ:
+    def test_verbatim_paths_renames_and_copies(self):
+        out = "M\0src/café.py\0R087\0old name.py\0new\tname.py\0C100\0a.py\0b.py\0D\0gone.py\0"
+        assert parse_name_status_z(out) == [
+            FileChange("src/café.py", "modified"),
+            FileChange("old name.py", "deleted"),
+            FileChange("new\tname.py", "added", previous_path="old name.py"),
+            FileChange("b.py", "added"),
+            FileChange("gone.py", "deleted"),
+        ]
+
+    def test_empty(self):
+        assert parse_name_status_z("") == []
 
 
 # ---------------------------------------------------------------------------
@@ -45,9 +65,7 @@ class TestParseNameStatus:
         changes = parse_name_status(output)
         assert len(changes) == 2
         assert changes[0] == FileChange("src/old.py", "deleted")
-        assert changes[1] == FileChange(
-            "src/new.py", "added", previous_path="src/old.py"
-        )
+        assert changes[1] == FileChange("src/new.py", "added", previous_path="src/old.py")
 
     def test_type_change_treated_as_modified(self):
         output = "T\tsrc/script.py\n"
@@ -99,27 +117,29 @@ def git_repo(tmp_path: Path) -> Path:
     """Create a minimal git repo with two commits."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(
-        ["git", "init", str(repo)], capture_output=True, check=True
-    )
+    subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
     subprocess.run(
         ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     subprocess.run(
         ["git", "-C", str(repo), "config", "user.name", "Test"],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
 
     # Commit 1: initial file
     (repo / "a.py").write_text("x = 1\n")
     subprocess.run(
         ["git", "-C", str(repo), "add", "."],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-m", "initial"],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
 
     # Commit 2: modify a.py, add b.py, delete nothing
@@ -127,11 +147,13 @@ def git_repo(tmp_path: Path) -> Path:
     (repo / "b.py").write_text("y = 1\n")
     subprocess.run(
         ["git", "-C", str(repo), "add", "."],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-m", "second"],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
 
     return repo
@@ -140,7 +162,9 @@ def git_repo(tmp_path: Path) -> Path:
 def _get_sha(repo: Path, ref: str = "HEAD") -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", ref],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return result.stdout.strip()
 
@@ -156,9 +180,7 @@ class TestReadHeadSha:
 
 
 class TestDiscoverDefaultBranch:
-    def test_repo_without_remote_falls_back_to_main(
-        self, git_repo: Path
-    ):
+    def test_repo_without_remote_falls_back_to_main(self, git_repo: Path):
         """Local-only repos (no origin) → fallback ``"main"``.
 
         Both tiers (symbolic-ref + ``git remote show origin``) come up
@@ -180,20 +202,30 @@ class TestDiscoverDefaultBranch:
         """
         subprocess.run(
             [
-                "git", "-C", str(git_repo), "remote", "add", "origin",
+                "git",
+                "-C",
+                str(git_repo),
+                "remote",
+                "add",
+                "origin",
                 "https://example.invalid/x.git",
             ],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         # Use an unusual branch name so a regression to "main" stands
         # out clearly in the assertion failure.
         subprocess.run(
             [
-                "git", "-C", str(git_repo),
-                "symbolic-ref", "refs/remotes/origin/HEAD",
+                "git",
+                "-C",
+                str(git_repo),
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
                 "refs/remotes/origin/trunk",
             ],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         assert discover_default_branch(git_repo) == "trunk"
 
@@ -228,11 +260,13 @@ class TestDetectChanges:
         (git_repo / "b.py").unlink()
         subprocess.run(
             ["git", "-C", str(git_repo), "add", "-A"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         subprocess.run(
             ["git", "-C", str(git_repo), "commit", "-m", "delete b"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
         changes = detect_changes(git_repo, first_sha)
         assert changes is not None

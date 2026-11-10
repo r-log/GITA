@@ -86,11 +86,7 @@ class TestClassHeavy:
 
     def test_method_lines_inside_parent_class(self):
         s = _parse_fixture("class_heavy.ts")
-        class_ranges = {
-            c.name: (c.start_line, c.end_line)
-            for c in s.classes
-            if c.kind == "class"
-        }
+        class_ranges = {c.name: (c.start_line, c.end_line) for c in s.classes if c.kind == "class"}
         for m in s.functions:
             if m.parent_class in class_ranges:
                 cs, ce = class_ranges[m.parent_class]
@@ -180,20 +176,14 @@ class TestTsSignatureExtraction:
 
     def test_method_signature(self):
         s = _parse_fixture("class_heavy.ts")
-        sound = next(
-            f for f in s.functions
-            if f.name == "sound" and f.parent_class == "Dog"
-        )
+        sound = next(f for f in s.functions if f.name == "sound" and f.parent_class == "Dog")
         assert sound.signature is not None
         assert "sound()" in sound.signature
         assert ": string" in sound.signature
 
     def test_constructor_signature(self):
         s = _parse_fixture("class_heavy.ts")
-        ctor = next(
-            f for f in s.functions
-            if f.name == "constructor" and f.parent_class == "Dog"
-        )
+        ctor = next(f for f in s.functions if f.name == "constructor" and f.parent_class == "Dog")
         assert ctor.signature is not None
         assert "name: string" in ctor.signature
 
@@ -206,7 +196,7 @@ class TestTsJsdocExtraction:
         """JSDoc comment before a function is extracted."""
         from gita.indexer.parsers import parse_file
 
-        code = '/** Add numbers. */\nfunction add(a: number): number { return a; }\n'
+        code = "/** Add numbers. */\nfunction add(a: number): number { return a; }\n"
         s = parse_file(Path("test.ts"), code, "typescript")
         add = next(f for f in s.functions if f.name == "add")
         assert add.docstring == "Add numbers."
@@ -214,7 +204,7 @@ class TestTsJsdocExtraction:
     def test_jsdoc_on_exported_function(self):
         from gita.indexer.parsers import parse_file
 
-        code = '/** Exported. */\nexport function foo(): void {}\n'
+        code = "/** Exported. */\nexport function foo(): void {}\n"
         s = parse_file(Path("test.ts"), code, "typescript")
         foo = next(f for f in s.functions if f.name == "foo")
         assert foo.docstring == "Exported."
@@ -222,7 +212,7 @@ class TestTsJsdocExtraction:
     def test_jsdoc_on_method(self):
         from gita.indexer.parsers import parse_file
 
-        code = 'class C {\n  /** A method. */\n  bar(): void {}\n}\n'
+        code = "class C {\n  /** A method. */\n  bar(): void {}\n}\n"
         s = parse_file(Path("test.ts"), code, "typescript")
         bar = next(f for f in s.functions if f.name == "bar")
         assert bar.docstring == "A method."

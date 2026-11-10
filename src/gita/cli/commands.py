@@ -4,6 +4,7 @@ Each ``cmd_*`` function takes an ``argparse.Namespace`` and returns an
 integer exit code. The main entry point in ``cli/__init__.py`` maps
 subcommands to handlers via the ``_HANDLERS`` dict.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -54,7 +55,7 @@ from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
 from gita.indexer.embeddings import make_embedding_client
 from gita.indexer.ingest import index_repository
-from gita.jobs.runners import run_test_generation_job
+from gita.jobs.runners import fetch_head_contents, run_test_generation_job
 from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError
 from gita.views.concept import concept_view
@@ -103,9 +104,7 @@ async def cmd_index(args: argparse.Namespace) -> int:
             # routine reindex doesn't reset a flag the user previously set.
             if auto_test_gen is not None:
                 stmt = select(Repo).where(Repo.name == name)
-                repo_row = (
-                    await session.execute(stmt)
-                ).scalar_one_or_none()
+                repo_row = (await session.execute(stmt)).scalar_one_or_none()
                 if repo_row is not None:
                     repo_row.auto_test_generation = bool(auto_test_gen)
             await session.commit()
@@ -122,11 +121,15 @@ async def cmd_index(args: argparse.Namespace) -> int:
 
 async def cmd_repos(args: argparse.Namespace) -> int:  # noqa: ARG001
     async with SessionLocal() as session:
-        stmt = select(
-            Repo,
-            func.count(CodeIndex.id).label("files"),
-            func.coalesce(func.sum(CodeIndex.line_count), 0).label("lines"),
-        ).outerjoin(CodeIndex, CodeIndex.repo_id == Repo.id).group_by(Repo.id)
+        stmt = (
+            select(
+                Repo,
+                func.count(CodeIndex.id).label("files"),
+                func.coalesce(func.sum(CodeIndex.line_count), 0).label("lines"),
+            )
+            .outerjoin(CodeIndex, CodeIndex.repo_id == Repo.id)
+            .group_by(Repo.id)
+        )
         rows = (await session.execute(stmt)).all()
     print(fmt_repos(list(rows)))
     return 0
@@ -157,18 +160,14 @@ async def cmd_stats(args: argparse.Namespace) -> int:
                 else:
                     total_classes += 1
 
-        edges_total_stmt = select(func.count(ImportEdge.id)).where(
-            ImportEdge.repo_id == repo.id
-        )
+        edges_total_stmt = select(func.count(ImportEdge.id)).where(ImportEdge.repo_id == repo.id)
         edges_resolved_stmt = (
             select(func.count(ImportEdge.id))
             .where(ImportEdge.repo_id == repo.id)
             .where(ImportEdge.dst_file.isnot(None))
         )
         edges_total = (await session.execute(edges_total_stmt)).scalar_one()
-        edges_resolved = (
-            await session.execute(edges_resolved_stmt)
-        ).scalar_one()
+        edges_resolved = (await session.execute(edges_resolved_stmt)).scalar_one()
 
     print(
         fmt_stats(
@@ -216,9 +215,7 @@ async def cmd_query_neighborhood(args: argparse.Namespace) -> int:
 async def cmd_query_load_bearing(args: argparse.Namespace) -> int:
     async with SessionLocal() as session:
         try:
-            result = await load_bearing_view(
-                session, args.repo, limit=args.limit
-            )
+            result = await load_bearing_view(session, args.repo, limit=args.limit)
         except RepoNotFoundError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -269,20 +266,14 @@ async def cmd_query_history(args: argparse.Namespace) -> int:
 def _parse_pr_target(value: str) -> tuple[str, str, int]:
     """Parse ``OWNER/REPO#N`` into ``(owner, repo, pr_number)``."""
     if "#" not in value:
-        raise ValueError(
-            f"review-pr expects OWNER/REPO#PR_NUMBER, got {value!r}"
-        )
+        raise ValueError(f"review-pr expects OWNER/REPO#PR_NUMBER, got {value!r}")
     repo_full, pr_str = value.rsplit("#", 1)
     if repo_full.count("/") != 1:
-        raise ValueError(
-            f"review-pr repo must be owner/repo, got {repo_full!r}"
-        )
+        raise ValueError(f"review-pr repo must be owner/repo, got {repo_full!r}")
     try:
         pr_number = int(pr_str)
     except ValueError as exc:
-        raise ValueError(
-            f"review-pr PR number must be an integer, got {pr_str!r}"
-        ) from exc
+        raise ValueError(f"review-pr PR number must be an integer, got {pr_str!r}") from exc
     owner, repo = repo_full.split("/", 1)
     return owner, repo, pr_number
 
@@ -307,10 +298,7 @@ async def cmd_review_pr(args: argparse.Namespace) -> int:
 
     # GitHub credentials needed for fetching the PR (even in shadow mode,
     # because we need to read the PR diff from the API).
-    if (
-        not settings.github_app_id
-        or not settings.github_app_private_key_path
-    ):
+    if not settings.github_app_id or not settings.github_app_private_key_path:
         print(
             "error: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be "
             "set in .env (needed to fetch the PR from GitHub)",
@@ -329,38 +317,38 @@ async def cmd_review_pr(args: argparse.Namespace) -> int:
         print(f"Fetching PR #{pr_number} from {repo_full}...")
         pr_info = await gh.get_pr(owner, repo, pr_number)
         pr_files_json = await gh.get_pr_files(owner, repo, pr_number)
-
-    diff_hunks = parse_pr_files(pr_files_json)
+        diff_hunks = parse_pr_files(pr_files_json)
+        head_contents = await fetch_head_contents(gh, owner, repo, diff_hunks, pr_info.head_sha)
     print(
         f"PR #{pr_number}: {pr_info.title} "
         f"({pr_info.changed_files} files, "
         f"+{pr_info.additions}/-{pr_info.deletions})"
     )
 
-    async with OpenRouterClient(
-        api_key=settings.openrouter_api_key, default_model=model
-    ) as llm:
-        async with SessionLocal() as session:
-            try:
-                result = await run_pr_review(
-                    session,
-                    repo_name,
-                    pr_info,
-                    diff_hunks,
-                    llm=llm,
-                )
-            except RepoNotFoundError:
-                print(
-                    f"warning: repo {repo_name!r} not indexed — "
-                    f"reviewing diff without code context",
-                    file=sys.stderr,
-                )
-                # Re-run with a fallback: index doesn't exist but the
-                # diff alone is still reviewable. For now, bail.
-                return 1
-            except PRReviewError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
+    async with (
+        OpenRouterClient(api_key=settings.openrouter_api_key, default_model=model) as llm,
+        SessionLocal() as session,
+    ):
+        try:
+            result = await run_pr_review(
+                session,
+                repo_name,
+                pr_info,
+                diff_hunks,
+                llm=llm,
+                head_contents=head_contents,
+            )
+        except RepoNotFoundError:
+            print(
+                f"warning: repo {repo_name!r} not indexed — reviewing diff without code context",
+                file=sys.stderr,
+            )
+            # Re-run with a fallback: index doesn't exist but the
+            # diff alone is still reviewable. For now, bail.
+            return 1
+        except PRReviewError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     print()
     print(fmt_pr_review_result(result))
@@ -370,7 +358,10 @@ async def cmd_review_pr(args: argparse.Namespace) -> int:
 
     # --- Posting flow ---
     decision = build_pr_review_decision(
-        result, repo_full_name=repo_full, pr_number=pr_number
+        result,
+        repo_full_name=repo_full,
+        pr_number=pr_number,
+        head_sha=pr_info.head_sha,
     )
 
     print()
@@ -421,29 +412,21 @@ async def cmd_review_pr(args: argparse.Namespace) -> int:
 def _parse_post_to(value: str) -> tuple[str, int]:
     """Parse ``owner/repo#123`` into ``("owner/repo", 123)``."""
     if "#" not in value:
-        raise ValueError(
-            f"--post-to expects owner/repo#issue_number, got {value!r}"
-        )
+        raise ValueError(f"--post-to expects owner/repo#issue_number, got {value!r}")
     repo_full, issue_str = value.rsplit("#", 1)
     if repo_full.count("/") != 1:
-        raise ValueError(
-            f"--post-to repo must be owner/repo, got {repo_full!r}"
-        )
+        raise ValueError(f"--post-to repo must be owner/repo, got {repo_full!r}")
     try:
         issue_number = int(issue_str)
     except ValueError as exc:
-        raise ValueError(
-            f"--post-to issue number must be an integer, got {issue_str!r}"
-        ) from exc
+        raise ValueError(f"--post-to issue number must be an integer, got {issue_str!r}") from exc
     return repo_full, issue_number
 
 
 def _parse_target_repo(value: str) -> str:
     """Validate ``owner/repo`` shape (used by ``--create-issues``)."""
     if value.count("/") != 1 or not all(value.split("/")):
-        raise ValueError(
-            f"--create-issues expects owner/repo, got {value!r}"
-        )
+        raise ValueError(f"--create-issues expects owner/repo, got {value!r}")
     return value
 
 
@@ -466,8 +449,7 @@ def _print_decision_summary(decision: Decision, result: DecisionResult) -> None:
 async def cmd_onboard(args: argparse.Namespace) -> int:
     if not settings.openrouter_api_key:
         print(
-            "error: OPENROUTER_API_KEY is not set in .env — cannot call the "
-            "onboarding LLM",
+            "error: OPENROUTER_API_KEY is not set in .env — cannot call the onboarding LLM",
             file=sys.stderr,
         )
         return 2
@@ -500,11 +482,7 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
 
     # --create-issues in comment mode needs a fallback landing issue, since
     # create_issue can't be downgraded in place (no issue exists yet).
-    if (
-        create_target_repo is not None
-        and mode == WriteMode.COMMENT
-        and args.fallback_issue is None
-    ):
+    if create_target_repo is not None and mode == WriteMode.COMMENT and args.fallback_issue is None:
         print(
             "error: --create-issues with WRITE_MODE=comment requires "
             "--fallback-issue N so downgrades have somewhere to land",
@@ -513,24 +491,24 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
         return 2
 
     model = args.model or settings.ai_default_model
-    async with OpenRouterClient(
-        api_key=settings.openrouter_api_key, default_model=model
-    ) as llm:
-        async with SessionLocal() as session:
-            try:
-                result = await run_onboarding(
-                    session,
-                    args.repo,
-                    llm=llm,
-                    load_bearing_limit=args.load_bearing,
-                    deep_read_limit=args.deep_read,
-                )
-            except RepoNotFoundError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
-            except OnboardingError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                return 1
+    async with (
+        OpenRouterClient(api_key=settings.openrouter_api_key, default_model=model) as llm,
+        SessionLocal() as session,
+    ):
+        try:
+            result = await run_onboarding(
+                session,
+                args.repo,
+                llm=llm,
+                load_bearing_limit=args.load_bearing,
+                deep_read_limit=args.deep_read,
+            )
+        except RepoNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        except OnboardingError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     print(fmt_onboarding_result(result))
 
@@ -551,7 +529,7 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# --post-to flow (Week 2 Day 7 bridge — single comment)
+# --post-to flow (single comment)
 # ---------------------------------------------------------------------------
 async def _run_post_flow(
     result: OnboardingResult,
@@ -582,16 +560,10 @@ async def _run_post_flow(
             await session.commit()
         print()
         print(f"outcome: {decision_result.outcome.value}")
-        print(
-            "(shadow mode — no comment was posted; "
-            "flip WRITE_MODE=comment to post for real)"
-        )
+        print("(shadow mode — no comment was posted; flip WRITE_MODE=comment to post for real)")
         return 0
 
-    if (
-        not settings.github_app_id
-        or not settings.github_app_private_key_path
-    ):
+    if not settings.github_app_id or not settings.github_app_private_key_path:
         print(
             "error: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be set "
             "in .env when WRITE_MODE is not shadow",
@@ -626,7 +598,7 @@ async def _run_post_flow(
 
 
 # ---------------------------------------------------------------------------
-# --create-issues flow (Week 3 Day 4 bridge — one Decision per milestone)
+# --create-issues flow (one Decision per milestone)
 # ---------------------------------------------------------------------------
 async def _run_create_issues_flow(
     result: OnboardingResult,
@@ -665,10 +637,7 @@ async def _run_create_issues_flow(
     # Non-shadow modes need credentials and a real client.
     gh: GithubClient | None = None
     if mode != WriteMode.SHADOW:
-        if (
-            not settings.github_app_id
-            or not settings.github_app_private_key_path
-        ):
+        if not settings.github_app_id or not settings.github_app_private_key_path:
             print(
                 "error: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be "
                 "set in .env when WRITE_MODE is not shadow",
@@ -712,29 +681,23 @@ async def _run_create_issues_flow(
         f"executed={executed}  deduped={deduped}  errors={errors}"
     )
     if mode == WriteMode.SHADOW:
-        print(
-            "(shadow mode — no issues were created; "
-            "flip WRITE_MODE=full to create real issues)"
-        )
+        print("(shadow mode — no issues were created; flip WRITE_MODE=full to create real issues)")
     return 1 if errors else 0
 
 
 # ---------------------------------------------------------------------------
-# Generate-tests command (Week 8 Day 5)
+# Generate-tests command
 # ---------------------------------------------------------------------------
 def _parse_target_repo_required(value: str) -> str:
     if value.count("/") != 1 or not all(value.split("/")):
-        raise ValueError(
-            f"--target-repo expects owner/repo, got {value!r}"
-        )
+        raise ValueError(f"--target-repo expects owner/repo, got {value!r}")
     return value
 
 
 async def cmd_generate_tests(args: argparse.Namespace) -> int:
     if not settings.openrouter_api_key:
         print(
-            "error: OPENROUTER_API_KEY is not set in .env — cannot call the "
-            "test-generation LLM",
+            "error: OPENROUTER_API_KEY is not set in .env — cannot call the test-generation LLM",
             file=sys.stderr,
         )
         return 2
@@ -751,8 +714,7 @@ async def cmd_generate_tests(args: argparse.Namespace) -> int:
     mode = WriteMode(settings.write_mode)
 
     if target_repo is not None and (
-        not settings.github_app_id
-        or not settings.github_app_private_key_path
+        not settings.github_app_id or not settings.github_app_private_key_path
     ):
         print(
             "error: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be "
@@ -761,11 +723,7 @@ async def cmd_generate_tests(args: argparse.Namespace) -> int:
         )
         return 2
 
-    if (
-        target_repo is not None
-        and mode == WriteMode.COMMENT
-        and args.fallback_issue is None
-    ):
+    if target_repo is not None and mode == WriteMode.COMMENT and args.fallback_issue is None:
         print(
             "error: --target-repo with WRITE_MODE=comment requires "
             "--fallback-issue N so downgrades have somewhere to land",
@@ -804,10 +762,7 @@ async def cmd_generate_tests(args: argparse.Namespace) -> int:
     if summary["base_sha"]:
         print(f"base SHA:    {summary['base_sha'][:12]}")
     decisions = summary["decisions"]
-    print(
-        f"decisions:   {len(decisions)} "
-        f"(confidence={summary['confidence']:.2f})"
-    )
+    print(f"decisions:   {len(decisions)} (confidence={summary['confidence']:.2f})")
     for i, dec in enumerate(decisions):
         _print_decision_summary_dict(i, dec)
     if mode == WriteMode.SHADOW:
@@ -852,9 +807,7 @@ def _print_decision_summary_dict(index: int, dec: dict) -> None:
     elif dec["action"] == "update_file":
         print(f"      path: {dec.get('path')}")
     elif dec["action"] == "open_pr":
-        print(
-            f"      head: {dec.get('head')} → base: {dec.get('base')}"
-        )
+        print(f"      head: {dec.get('head')} → base: {dec.get('base')}")
     side = dec.get("side_effect") or {}
     url = side.get("html_url")
     if url:
@@ -866,7 +819,7 @@ def _print_decision_summary_dict(index: int, dec: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# auto-test-gen preview command (Week 10)
+# auto-test-gen preview command
 # ---------------------------------------------------------------------------
 async def cmd_auto_test_gen_preview(args: argparse.Namespace) -> int:
     """Preview what the auto-test-generation trigger would do for a repo.
@@ -887,8 +840,7 @@ async def cmd_auto_test_gen_preview(args: argparse.Namespace) -> int:
         repo_root = Path(repo.root_path)
         if not repo_root.is_dir():
             print(
-                f"error: indexed repo {repo.name!r} root_path "
-                f"{repo_root} no longer exists",
+                f"error: indexed repo {repo.name!r} root_path {repo_root} no longer exists",
                 file=sys.stderr,
             )
             return 1

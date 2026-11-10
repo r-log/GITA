@@ -3,6 +3,7 @@
 Pure functions: each takes a result dataclass and returns a formatted
 string. No I/O, no side effects, no imports beyond the types they format.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,11 +23,7 @@ from gita.views.symbol import SymbolResult
 
 
 def fmt_ingest(name: str, root: Path, elapsed: float, result: IngestResult) -> str:
-    resolved_pct = (
-        (result.edges_resolved / result.edges_total * 100)
-        if result.edges_total
-        else 0.0
-    )
+    resolved_pct = (result.edges_resolved / result.edges_total * 100) if result.edges_total else 0.0
     mode_label = {
         "full": "full re-index",
         "incremental": "incremental update",
@@ -43,49 +40,41 @@ def fmt_ingest(name: str, root: Path, elapsed: float, result: IngestResult) -> s
         return "\n".join(lines)
 
     if result.mode == "incremental" and result.files_deleted > 0:
-        lines.append(
-            f"  files:     {result.files_indexed} updated, "
-            f"{result.files_deleted} deleted"
-        )
+        lines.append(f"  files:     {result.files_indexed} updated, {result.files_deleted} deleted")
     else:
         lines.append(f"  files:     {result.files_indexed}")
-    lines.extend([
-        f"  functions: {result.functions_extracted}",
-        f"  classes:   {result.classes_extracted}",
-        f"  imports:   {result.edges_total} "
-        f"({result.edges_resolved} resolved, "
-        f"{result.edges_total - result.edges_resolved} unresolved, "
-        f"{resolved_pct:.0f}% rate)",
-    ])
+    lines.extend(
+        [
+            f"  functions: {result.functions_extracted}",
+            f"  classes:   {result.classes_extracted}",
+            f"  imports:   {result.edges_total} "
+            f"({result.edges_resolved} resolved, "
+            f"{result.edges_total - result.edges_resolved} unresolved, "
+            f"{resolved_pct:.0f}% rate)",
+        ]
+    )
     if result.files_embedded:
         lines.append(f"  embedded:  {result.files_embedded}")
-    lines.extend([
-        f"  head:      {result.head_sha or '<not a git repo>'}",
-        f"  elapsed:   {elapsed:.2f}s",
-    ])
+    lines.extend(
+        [
+            f"  head:      {result.head_sha or '<not a git repo>'}",
+            f"  elapsed:   {elapsed:.2f}s",
+        ]
+    )
     return "\n".join(lines)
 
 
 def fmt_repos(rows: list[tuple[Repo, int, int]]) -> str:
     if not rows:
         return "(no repos indexed)"
-    lines = [
-        f"{'NAME':<30} {'FILES':>6} {'INDEXED':<20} {'AUTOTG':<7} ROOT"
-    ]
+    lines = [f"{'NAME':<30} {'FILES':>6} {'INDEXED':<20} {'AUTOTG':<7} ROOT"]
     for repo, file_count, _ in rows:
-        indexed = (
-            repo.indexed_at.strftime("%Y-%m-%d %H:%M")
-            if repo.indexed_at
-            else "-"
-        )
-        # Week 9 — auto_test_generation flag visibility in the repo
+        indexed = repo.indexed_at.strftime("%Y-%m-%d %H:%M") if repo.indexed_at else "-"
+        # auto_test_generation flag visibility in the repo
         # listing so the user can see at a glance which repos are
         # opted in to the post-reindex trigger.
         autotg = "yes" if getattr(repo, "auto_test_generation", False) else "no"
-        lines.append(
-            f"{repo.name:<30} {file_count:>6} {indexed:<20} "
-            f"{autotg:<7} {repo.root_path}"
-        )
+        lines.append(f"{repo.name:<30} {file_count:>6} {indexed:<20} {autotg:<7} {repo.root_path}")
     return "\n".join(lines)
 
 
@@ -101,9 +90,7 @@ def fmt_stats(
 ) -> str:
     resolved_pct = (edges_resolved / edges_total * 100) if edges_total else 0.0
     head = repo.head_sha[:7] if repo.head_sha else "-"
-    indexed = (
-        repo.indexed_at.strftime("%Y-%m-%d %H:%M") if repo.indexed_at else "-"
-    )
+    indexed = repo.indexed_at.strftime("%Y-%m-%d %H:%M") if repo.indexed_at else "-"
 
     lines = [
         f"Repo: {repo.name}",
@@ -149,14 +136,9 @@ def fmt_symbol_result(result: SymbolResult) -> str:
 
     chunks = [header, ""]
     for i, match in enumerate(result.matches, start=1):
-        label = (
-            f"{match.parent_class}.{match.name}"
-            if match.parent_class
-            else match.name
-        )
+        label = f"{match.parent_class}.{match.name}" if match.parent_class else match.name
         chunks.append(
-            f"[{i}] {match.file_path}:{match.start_line}-{match.end_line}  "
-            f"({match.kind} {label})"
+            f"[{i}] {match.file_path}:{match.start_line}-{match.end_line}  ({match.kind} {label})"
         )
         chunks.append(match.code)
         chunks.append("")
@@ -173,9 +155,7 @@ def fmt_neighborhood_result(result: NeighborhoodResult) -> str:
         lines.append("  symbols:")
         for brief in file.symbol_summary:
             parent = f" in {brief.parent_class}" if brief.parent_class else ""
-            lines.append(
-                f"    line {brief.line:>4}  {brief.kind:<16} {brief.name}{parent}"
-            )
+            lines.append(f"    line {brief.line:>4}  {brief.kind:<16} {brief.name}{parent}")
 
     lines.append("")
     if result.imports:
@@ -190,9 +170,7 @@ def fmt_neighborhood_result(result: NeighborhoodResult) -> str:
         for raw in result.unresolved_imports[:10]:
             lines.append(f"  ?  {raw}")
         if len(result.unresolved_imports) > 10:
-            lines.append(
-                f"  ... and {len(result.unresolved_imports) - 10} more"
-            )
+            lines.append(f"  ... and {len(result.unresolved_imports) - 10} more")
 
     lines.append("")
     if result.imported_by:
@@ -226,17 +204,10 @@ def fmt_load_bearing_result(result: LoadBearingResult) -> str:
         )
         shown = ranked.symbol_summary[:6]
         for brief in shown:
-            parent = (
-                f" in {brief.parent_class}" if brief.parent_class else ""
-            )
-            lines.append(
-                f"          line {brief.line:>4}  {brief.kind:<16} "
-                f"{brief.name}{parent}"
-            )
+            parent = f" in {brief.parent_class}" if brief.parent_class else ""
+            lines.append(f"          line {brief.line:>4}  {brief.kind:<16} {brief.name}{parent}")
         if len(ranked.symbol_summary) > len(shown):
-            lines.append(
-                f"          ... and {len(ranked.symbol_summary) - len(shown)} more"
-            )
+            lines.append(f"          ... and {len(ranked.symbol_summary) - len(shown)} more")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -254,8 +225,7 @@ def fmt_onboarding_result(result: OnboardingResult) -> str:
         lines.append(f"findings ({len(result.findings)}):")
         for i, finding in enumerate(result.findings):
             lines.append(
-                f"  [{i}] {finding.severity:<8} {finding.kind:<10} "
-                f"{finding.file}:{finding.line}"
+                f"  [{i}] {finding.severity:<8} {finding.kind:<10} {finding.file}:{finding.line}"
             )
             lines.append(f"      {finding.description}")
             if finding.fix_sketch:
@@ -267,13 +237,9 @@ def fmt_onboarding_result(result: OnboardingResult) -> str:
     if result.milestones:
         lines.append(f"milestones ({len(result.milestones)}):")
         for i, milestone in enumerate(result.milestones):
-            lines.append(
-                f"  [{i}] {milestone.title}  (confidence {milestone.confidence:.2f})"
-            )
+            lines.append(f"  [{i}] {milestone.title}  (confidence {milestone.confidence:.2f})")
             lines.append(f"      {milestone.summary}")
-            lines.append(
-                f"      findings: {', '.join(str(j) for j in milestone.finding_indices)}"
-            )
+            lines.append(f"      findings: {', '.join(str(j) for j in milestone.finding_indices)}")
     else:
         lines.append("milestones: (none)")
 
@@ -327,8 +293,7 @@ def fmt_pr_review_result(result: PRReviewResult) -> str:
         lines.append(f"findings ({len(result.findings)}):")
         for i, finding in enumerate(result.findings):
             lines.append(
-                f"  [{i}] {finding.severity:<8} {finding.kind:<10} "
-                f"{finding.file}:{finding.line}"
+                f"  [{i}] {finding.severity:<8} {finding.kind:<10} {finding.file}:{finding.line}"
             )
             lines.append(f"      {finding.description}")
             if finding.fix_sketch:
@@ -352,18 +317,14 @@ def fmt_history_result(result: HistoryResult) -> str:
         lines.append(f"recent commits ({len(result.recent_commits)}):")
         for c in result.recent_commits:
             date = c.date.split("T")[0] if "T" in c.date else c.date
-            lines.append(
-                f"  {c.short_sha}  {date}  {c.author:<16}  {c.message}"
-            )
+            lines.append(f"  {c.short_sha}  {date}  {c.author:<16}  {c.message}")
     else:
         lines.append("recent commits: (none)")
 
     if result.blame_summary:
         lines.append("")
         lines.append("blame:")
-        for author, count in sorted(
-            result.blame_summary.items(), key=lambda kv: -kv[1]
-        ):
+        for author, count in sorted(result.blame_summary.items(), key=lambda kv: -kv[1]):
             lines.append(f"  {author:<24} {count} lines")
     return "\n".join(lines)
 
@@ -428,8 +389,7 @@ def fmt_preview_summary(
     lines: list[str] = [
         f"auto-test-gen preview for {summary.repo_full_name}",
         f"  default_branch:        {summary.default_branch}",
-        f"  auto_test_generation:  "
-        f"{'on' if summary.auto_test_generation else 'off'}",
+        f"  auto_test_generation:  {'on' if summary.auto_test_generation else 'off'}",
         f"  cap (per reindex):     {cap}",
         f"  total scanned:         {summary.total_scanned}",
         "",
@@ -442,11 +402,7 @@ def fmt_preview_summary(
         lines.append(f"CANDIDATES ({len(candidates)}):")
         if candidates:
             for f in candidates:
-                marker = (
-                    "  ★ "
-                    if f.target_file in {s.target_file for s in selected}
-                    else "    "
-                )
+                marker = "  ★ " if f.target_file in {s.target_file for s in selected} else "    "
                 lines.append(f"{marker}{f.target_file}")
         else:
             lines.append("  (none)")
@@ -458,9 +414,7 @@ def fmt_preview_summary(
         if rejected_a:
             width = max(len(f.target_file) for f in rejected_a)
             for f in rejected_a:
-                lines.append(
-                    f"    {f.target_file:<{width}}  {f.stage_a.reason}"
-                )
+                lines.append(f"    {f.target_file:<{width}}  {f.stage_a.reason}")
         else:
             lines.append("  (none)")
         lines.append("")
@@ -471,25 +425,17 @@ def fmt_preview_summary(
             width = max(len(f.target_file) for f in rejected_b)
             for f in rejected_b:
                 reason = f.stage_b.reason if f.stage_b else "?"
-                lines.append(
-                    f"    {f.target_file:<{width}}  {reason}"
-                )
+                lines.append(f"    {f.target_file:<{width}}  {reason}")
         else:
             lines.append("  (none)")
         lines.append("")
 
     lines.append("Summary:")
     lines.append(f"  total scanned:           {summary.total_scanned}")
-    lines.append(
-        f"  Stage A rejected:        {len(summary.rejected_by_stage_a)}"
-    )
-    lines.append(
-        f"  Stage B rejected:        {len(summary.rejected_by_stage_b)}"
-    )
+    lines.append(f"  Stage A rejected:        {len(summary.rejected_by_stage_a)}")
+    lines.append(f"  Stage B rejected:        {len(summary.rejected_by_stage_b)}")
     lines.append(f"  Candidates:              {len(candidates)}")
-    lines.append(
-        f"  Selected after cap={cap}: {len(selected)}"
-    )
+    lines.append(f"  Selected after cap={cap}: {len(selected)}")
     if selected:
         lines.append("")
         lines.append("  Would enqueue (alphabetical):")

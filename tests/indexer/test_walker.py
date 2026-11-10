@@ -1,6 +1,7 @@
 """Walker tests — uses tmp_path to build ad-hoc file trees and asserts the
 filter yields exactly what we expect.
 """
+
 from pathlib import Path
 
 from gita.indexer.walker import iter_files
@@ -126,9 +127,7 @@ class TestSizeFilter:
         _touch(tmp_path, "huge.py", content=big)
         _touch(tmp_path, "small.py", content="pass\n")
         # Force a tiny cap so the test is deterministic regardless of defaults
-        discovered = {
-            f.relative_path for f in iter_files(tmp_path, max_file_size=100)
-        }
+        discovered = {f.relative_path for f in iter_files(tmp_path, max_file_size=100)}
         assert discovered == {"small.py"}
 
 

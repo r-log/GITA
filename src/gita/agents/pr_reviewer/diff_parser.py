@@ -8,6 +8,7 @@ recipe consume.
 Separated from the GitHub client so tests can exercise the parser with
 fixture JSON (no HTTP) and future sources (git CLI, GitLab) can reuse it.
 """
+
 from __future__ import annotations
 
 import re

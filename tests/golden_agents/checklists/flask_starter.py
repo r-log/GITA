@@ -6,6 +6,7 @@ Planted issues (the agent must catch the majority, not all):
 - app.py:          bare except clause
 - app.py:          plaintext API key comparison (timing attack)
 """
+
 from tests.golden_agents.checklist import Checklist
 
 CHECKLIST = Checklist(

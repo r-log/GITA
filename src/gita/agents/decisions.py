@@ -16,19 +16,28 @@ The framework enforces two invariants *at framework level*, not prompt level:
      to write to GitHub.
    - ``comment`` — execute ``comment`` actions; downgrade every other action
      to a comment.
-   - ``full`` — execute anything that passes its threshold. Not flipped on in
-     Week 2.
+   - ``full`` — execute anything that passes its threshold.
+
+A comment below its threshold is *held*: not posted, not recorded.
+Downgrading a comment to a comment about the comment would replace useful
+content with meta-noise; below the bar, the bot stays quiet.
 
 An ``ActionClient`` is a tiny Protocol with a single ``execute(decision)``
-method. Implementations (the real GitHub client in Day 4, fakes in tests)
-dispatch on ``decision.action`` themselves. Shadow mode never touches the
-client.
+method. Implementations (``gita.github.client.GithubClient``, fakes in
+tests) dispatch on ``decision.action`` themselves. Shadow mode never
+touches the client.
+
+Idempotency (see ``gita.agents.dedupe``): with a ``session``, a decision's
+identity is reserved in ``agent_actions`` *before* the side effect, so
+concurrent runs can't both execute it, and released if the side effect
+fails, so retries can.
 """
+
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field, replace
-from enum import Enum
+from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy.exc import IntegrityError
@@ -42,13 +51,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
-class WriteMode(str, Enum):
+class WriteMode(StrEnum):
     SHADOW = "shadow"
     COMMENT = "comment"
     FULL = "full"
 
 
-class Outcome(str, Enum):
+class Outcome(StrEnum):
     """Terminal state of a decision passed through ``execute_decision``."""
 
     EXECUTED = "executed"
@@ -58,6 +67,7 @@ class Outcome(str, Enum):
     REJECTED_NO_CLIENT = "rejected_no_client"
     ERROR = "error"
     DEDUPED = "deduped"
+    HELD_LOW_CONFIDENCE = "held_low_confidence"
 
 
 # ---------------------------------------------------------------------------
@@ -65,14 +75,15 @@ class Outcome(str, Enum):
 # ---------------------------------------------------------------------------
 # Keys are action names. The value is the minimum confidence for the action
 # to execute as-requested. Below this, the action auto-downgrades to a comment.
-# Tune after Day 6 once we've seen the first real onboarding outputs.
+# These are configuration, never model output: an agent cannot lower them.
 DEFAULT_THRESHOLDS: dict[str, float] = {
     "comment": 0.3,
-    "label": 0.5,
+    "add_label": 0.5,
+    "remove_label": 0.5,
     "edit_issue": 0.75,
     "create_issue": 0.7,
     "close_issue": 0.8,
-    # Code-writing actions (Week 8): higher bar than any comment path.
+    # Code-writing actions: higher bar than any comment path.
     # Bad tests merged into a real repo are harder to unwind than a
     # misphrased issue, so the gate sits at 0.90 by default.
     "create_branch": 0.9,
@@ -95,18 +106,19 @@ class Decision:
     """
 
     action: str
-    target: dict[str, Any]           # e.g. {"repo": "owner/name", "issue": 42}
-    payload: dict[str, Any]          # action-specific body/title/label/etc.
+    target: dict[str, Any]  # e.g. {"repo": "owner/name", "issue": 42}
+    payload: dict[str, Any]  # action-specific body/title/label/etc.
     evidence: list[str] = field(default_factory=list)
     confidence: float = 0.0
+    # Names the intended side effect, e.g. "pr-review:42:<head sha>".
+    # When set, it is the dedupe identity instead of a hash of the payload.
+    idempotency_key: str | None = None
 
     def __post_init__(self) -> None:
         if not self.action:
             raise ValueError("Decision.action cannot be empty")
         if not 0.0 <= self.confidence <= 1.0:
-            raise ValueError(
-                f"Decision.confidence must be in [0.0, 1.0], got {self.confidence}"
-            )
+            raise ValueError(f"Decision.confidence must be in [0.0, 1.0], got {self.confidence}")
 
 
 @dataclass
@@ -128,8 +140,8 @@ class DecisionResult:
 class ActionClient(Protocol):
     """A client that can execute a Decision.
 
-    The real implementation lands in Day 4 (``gita.github.client``); tests use
-    ``FakeActionClient`` below.
+    The real implementation is ``gita.github.client.GithubClient``; tests
+    use fakes.
     """
 
     async def execute(self, decision: Decision) -> dict[str, Any]:
@@ -140,9 +152,7 @@ class ActionClient(Protocol):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def get_threshold(
-    action: str, thresholds: dict[str, float] | None = None
-) -> float:
+def get_threshold(action: str, thresholds: dict[str, float] | None = None) -> float:
     """Look up the threshold for an action. Raises KeyError on unknown actions.
 
     Unknown actions intentionally raise instead of defaulting — if an agent
@@ -267,196 +277,77 @@ def _downgrade_to_comment(original: Decision, reason: str) -> Decision:
     )
 
 
-async def _execute_side_effect(
-    decision: Decision,
-    mode: WriteMode,
-    client: ActionClient | None,
-) -> tuple[bool, dict[str, Any] | None, str | None]:
-    """Run the client (or skip in shadow). Returns (executed, side_effect, error)."""
-    if mode == WriteMode.SHADOW:
-        logger.info(
-            "shadow_decision action=%s target=%s confidence=%.2f evidence=%d",
-            decision.action,
-            decision.target,
-            decision.confidence,
-            len(decision.evidence),
-        )
-        return (False, None, None)
-
-    if client is None:
-        return (False, None, "no ActionClient provided")
-
-    try:
-        side_effect = await client.execute(decision)
-    except Exception as exc:  # noqa: BLE001 — framework intentionally catches
-        logger.warning(
-            "decision_execution_failed action=%s error=%s",
-            decision.action,
-            exc,
-        )
-        return (False, None, str(exc))
-    return (True, side_effect, None)
-
-
 # ---------------------------------------------------------------------------
-# Dedupe plumbing — thin wrappers so execute_decision stays readable.
+# Gate
 # ---------------------------------------------------------------------------
-# Outcomes we never record: either there's nothing to dedupe against (ERROR,
-# REJECTED_NO_CLIENT let the next retry try again) or we've already
-# short-circuited via the pre-gate (DEDUPED).
-_NO_RECORD_OUTCOMES: frozenset[Outcome] = frozenset(
-    {Outcome.ERROR, Outcome.REJECTED_NO_CLIENT, Outcome.DEDUPED}
-)
-
-
 def _external_id_from_side_effect(
     side_effect: dict[str, Any] | None,
 ) -> str | None:
-    """Extract a GitHub-side identifier from a client's return value, if any.
-
-    Clients are free to return whatever shape they want — the framework just
-    copies out anything that looks like an ``id`` or ``external_id`` so it
-    can land in ``agent_actions.external_id`` for traceability. Missing is
-    fine; the column is nullable.
-    """
+    """A GitHub-side identifier from the client's return value, if any."""
     if not side_effect:
         return None
-    for key in ("id", "external_id", "issue_number", "comment_id"):
+    for key in ("id", "external_id", "number", "issue_number", "comment_id", "commit_sha", "ref"):
         value = side_effect.get(key)
         if value is not None:
             return str(value)
     return None
 
 
-async def _dedupe_pregate(
-    decision: Decision,
-    mode: WriteMode,
-    session: "AsyncSession | None",
-    agent: str | None,
-) -> DecisionResult | None:
-    """Check ``agent_actions`` for a prior run of this decision.
+@dataclass
+class _Plan:
+    """What the gates decided to send to the client, before dedupe."""
 
-    Returns a :class:`DecisionResult` with ``outcome=DEDUPED`` if the
-    signature is already in the table, else ``None`` to signal "fall through
-    to the normal gate."
+    to_execute: Decision | None  # None = held (nothing to do)
+    outcome: Outcome  # outcome if the side effect lands
+    reason: str | None = None
 
-    Imports the dedupe module lazily to keep a framework-level import of
-    SQLAlchemy out of the hot path for shadow-without-session callers.
-    """
-    if session is None:
-        return None
 
-    # Lazy import — avoids a framework-level dependency on the dedupe module
-    # when callers don't use dedupe (existing test suite pattern).
-    from gita.agents.dedupe import check_signature, compute_signature
+def _plan(decision: Decision, mode: WriteMode, threshold: float) -> _Plan:
+    if decision.confidence < threshold:
+        reason = (
+            f"confidence {decision.confidence:.2f} is below threshold "
+            f"{threshold:.2f} for action `{decision.action}`"
+        )
+        if decision.action in COMMENT_ACTIONS:
+            return _Plan(None, Outcome.HELD_LOW_CONFIDENCE, reason)
+        return _Plan(
+            _downgrade_to_comment(decision, reason=reason),
+            Outcome.DOWNGRADED_LOW_CONFIDENCE,
+            f"confidence {decision.confidence:.2f} below threshold {threshold:.2f}",
+        )
+    if mode == WriteMode.COMMENT and decision.action not in COMMENT_ACTIONS:
+        return _Plan(
+            _downgrade_to_comment(
+                decision,
+                reason=f"WRITE_MODE=comment disallows action `{decision.action}`",
+            ),
+            Outcome.DOWNGRADED_WRITE_MODE,
+            f"WRITE_MODE=comment, action was `{decision.action}`",
+        )
+    return _Plan(decision, Outcome.EXECUTED)
+
+
+def _signable(decision: Decision) -> bool:
+    from gita.agents.dedupe import compute_signature
 
     try:
-        signature = compute_signature(decision)
+        compute_signature(decision)
     except ValueError as exc:
-        # Decision shape is invalid for signature computation (missing repo,
-        # unknown action). Don't treat this as a framework error — let the
-        # threshold / downgrade flow handle whatever is malformed. Dedupe is
-        # a best-effort optimization; it's OK to skip here.
-        logger.warning(
-            "dedupe_signature_failed action=%s reason=%s",
-            decision.action,
-            exc,
-        )
-        return None
+        # Dedupe is best-effort for malformed decisions; the client will
+        # reject them on its own terms.
+        logger.warning("dedupe_signature_failed action=%s reason=%s", decision.action, exc)
+        return False
+    return True
 
-    existing = await check_signature(session, decision, agent=agent)  # type: ignore[arg-type]
-    if existing is None:
-        return None
 
-    logger.info(
-        "decision_deduped action=%s repo=%s agent=%s "
-        "previous_outcome=%s previous_external_id=%s sig=%s",
-        decision.action,
-        decision.target.get("repo"),
-        agent,
-        existing.outcome,
-        existing.external_id,
-        signature[:12],
-    )
+def _deduped(decision: Decision, mode: WriteMode, side_effect: dict[str, Any]) -> DecisionResult:
     return DecisionResult(
         decision=decision,
         mode=mode,
         outcome=Outcome.DEDUPED,
         executed=False,
-        side_effect={
-            "deduped": True,
-            "agent_action_id": str(existing.id),
-            "external_id": existing.external_id,
-            "previous_outcome": existing.outcome,
-            "signature": signature,
-        },
+        side_effect={"deduped": True, **side_effect},
     )
-
-
-async def _record_and_finalize(
-    result: DecisionResult,
-    session: "AsyncSession | None",
-    agent: str | None,
-) -> DecisionResult:
-    """Persist ``result`` to ``agent_actions`` if appropriate and return it.
-
-    Recording rules:
-    - No session? Skip recording — the caller opted out of dedupe.
-    - Outcome in ``_NO_RECORD_OUTCOMES``? Skip — ``ERROR`` / ``REJECTED_NO_CLIENT``
-      must be retriable; ``DEDUPED`` is already recorded from a prior run.
-    - In shadow mode? Always record — the plan requires shadow-to-shadow
-      dedupe so the same decision can't be logged twice.
-    - Otherwise: record only if the side effect actually landed (``executed``).
-
-    Race handling: a concurrent writer can beat us between the pre-gate and
-    this insert, which triggers a unique-constraint violation. When that
-    happens we roll back and return a fresh ``DEDUPED`` result — the other
-    writer's side effect is authoritative.
-    """
-    if session is None:
-        return result
-
-    if result.outcome in _NO_RECORD_OUTCOMES:
-        return result
-
-    should_record = result.mode == WriteMode.SHADOW or result.executed
-    if not should_record:
-        return result
-
-    from gita.agents.dedupe import record_action
-
-    try:
-        row = await record_action(
-            session,
-            result.decision,
-            agent=agent,  # type: ignore[arg-type]
-            outcome=result.outcome.value,
-            external_id=_external_id_from_side_effect(result.side_effect),
-        )
-    except IntegrityError:
-        # Concurrent race — another caller recorded this signature between
-        # our pre-gate check and now. Roll back so the session is usable,
-        # then report the outcome the other writer would see.
-        await session.rollback()
-        logger.info(
-            "decision_deduped_via_race action=%s repo=%s agent=%s",
-            result.decision.action,
-            result.decision.target.get("repo"),
-            agent,
-        )
-        return DecisionResult(
-            decision=result.decision,
-            mode=result.mode,
-            outcome=Outcome.DEDUPED,
-            executed=False,
-            side_effect={"deduped": True, "via": "integrity_race"},
-        )
-
-    # Thread the agent_action row id into side_effect so the CLI can surface
-    # it in output without re-querying the DB.
-    tagged_side_effect: dict[str, Any] = dict(result.side_effect or {})
-    tagged_side_effect["agent_action_id"] = str(row.id)
-    return replace(result, side_effect=tagged_side_effect)
 
 
 # ---------------------------------------------------------------------------
@@ -468,109 +359,169 @@ async def execute_decision(
     mode: WriteMode,
     client: ActionClient | None = None,
     thresholds: dict[str, float] | None = None,
-    session: "AsyncSession | None" = None,
+    session: AsyncSession | None = None,
     agent: str | None = None,
 ) -> DecisionResult:
-    """Route a decision through the confidence + write-mode gates.
+    """Route a decision through the confidence, write-mode and dedupe gates.
 
-    ``session`` and ``agent`` together enable automatic dedupe against the
-    ``agent_actions`` table. They're optional to preserve the Week 2 call
-    shape for tests that don't care about dedupe; when ``session`` is
-    provided, ``agent`` is required (we need the scoping key). When
-    ``session`` is omitted, the decision flows through the existing three
-    gates unchanged.
+    ``session`` + ``agent`` enable idempotency against ``agent_actions``;
+    without a session the gates run but nothing is recorded. The caller
+    owns the transaction and commits it.
 
-    The dedupe signature is computed from the *original* decision, never
-    from a downgraded intermediate. This means "create_issue X under
-    comment mode" and "create_issue X under full mode" both hash to the
-    same row, so a run that posted a downgrade explanation in comment mode
-    will dedupe a later run in full mode against the same original intent.
-    Simpler to reason about than per-execution-shape signatures, and
-    preserves the "one side effect per original decision" property.
+    The dedupe identity is always the *original* decision's, never a
+    downgraded intermediate's, so "create_issue X" downgraded in comment
+    mode and "create_issue X" executed in full mode are one intent.
     """
-    # 0. Caller validation — require agent whenever session is passed.
     if session is not None and not agent:
         raise ValueError(
             "execute_decision: 'agent' is required when 'session' is "
             "provided (needed to scope agent_actions rows per agent)"
         )
 
-    # 1. Threshold lookup (raises on unknown action — fail loud, not silent).
+    # 1. Threshold lookup (raises on unknown action — fail loud).
     threshold = get_threshold(decision.action, thresholds)
+    plan = _plan(decision, mode, threshold)
+    downgraded = plan.to_execute is not None and plan.to_execute is not decision
 
-    # 2. Dedupe pre-gate — short-circuit if this decision has already run.
-    deduped = await _dedupe_pregate(decision, mode, session, agent)
-    if deduped is not None:
-        return deduped
+    # 2. Below the bar for a comment: say nothing, record nothing.
+    if plan.to_execute is None:
+        logger.info(
+            "decision_held action=%s target=%s reason=%s",
+            decision.action,
+            decision.target,
+            plan.reason,
+        )
+        return DecisionResult(
+            decision=decision,
+            mode=mode,
+            outcome=Outcome.HELD_LOW_CONFIDENCE,
+            downgrade_reason=plan.reason,
+        )
 
-    # 3. Low confidence? Downgrade to comment explaining intent.
-    if decision.confidence < threshold:
-        downgraded = _downgrade_to_comment(
-            decision,
-            reason=(
-                f"confidence {decision.confidence:.2f} is below threshold "
-                f"{threshold:.2f} for action `{decision.action}`"
-            ),
+    live = mode != WriteMode.SHADOW
+    track = session is not None and _signable(decision)
+
+    # 3. Already done (in this partition)?
+    if track:
+        from gita.agents.dedupe import check_signature
+
+        existing = await check_signature(session, decision, agent=agent, live=live)  # type: ignore[arg-type]
+        if existing is not None:
+            logger.info(
+                "decision_deduped action=%s repo=%s agent=%s live=%s previous_outcome=%s",
+                decision.action,
+                decision.target.get("repo"),
+                agent,
+                live,
+                existing.outcome,
+            )
+            return _deduped(
+                decision,
+                mode,
+                {
+                    "agent_action_id": str(existing.id),
+                    "external_id": existing.external_id,
+                    "previous_outcome": existing.outcome,
+                    "signature": existing.signature,
+                },
+            )
+
+    # 4. Shadow: log and record the observation; never touch the client.
+    if not live:
+        logger.info(
+            "shadow_decision action=%s executed_as=%s target=%s confidence=%.2f evidence=%d",
+            decision.action,
+            plan.to_execute.action,
+            decision.target,
+            decision.confidence,
+            len(decision.evidence),
         )
-        executed, side_effect, error = await _execute_side_effect(
-            downgraded, mode, client
-        )
+        outcome = plan.outcome if downgraded else Outcome.SHADOW_LOGGED
         result = DecisionResult(
             decision=decision,
             mode=mode,
-            outcome=Outcome.DOWNGRADED_LOW_CONFIDENCE,
-            executed=executed,
-            downgrade_reason=(
-                f"confidence {decision.confidence:.2f} below threshold "
-                f"{threshold:.2f}"
-            ),
-            side_effect=side_effect,
-            error=error,
+            outcome=outcome,
+            downgrade_reason=plan.reason if downgraded else None,
         )
-        return await _record_and_finalize(result, session, agent)
+        if track:
+            from gita.agents.dedupe import record_action
 
-    # 4. Comment mode with a non-comment action? Downgrade.
-    if mode == WriteMode.COMMENT and decision.action not in COMMENT_ACTIONS:
-        downgraded = _downgrade_to_comment(
-            decision,
-            reason=f"WRITE_MODE=comment disallows action `{decision.action}`",
-        )
-        executed, side_effect, error = await _execute_side_effect(
-            downgraded, mode, client
-        )
-        result = DecisionResult(
+            try:
+                async with session.begin_nested():  # type: ignore[union-attr]
+                    row = await record_action(
+                        session,  # type: ignore[arg-type]
+                        decision,
+                        agent=agent,  # type: ignore[arg-type]
+                        outcome=outcome.value,
+                        live=False,
+                    )
+            except IntegrityError:
+                return _deduped(decision, mode, {"via": "integrity_race"})
+            result.side_effect = {"agent_action_id": str(row.id)}
+        return result
+
+    # 5. Live, but nothing to execute with.
+    if client is None:
+        return DecisionResult(
             decision=decision,
             mode=mode,
-            outcome=Outcome.DOWNGRADED_WRITE_MODE,
-            executed=executed,
-            downgrade_reason=(
-                f"WRITE_MODE=comment, action was `{decision.action}`"
-            ),
-            side_effect=side_effect,
-            error=error,
+            outcome=plan.outcome if downgraded else Outcome.REJECTED_NO_CLIENT,
+            downgrade_reason=plan.reason if downgraded else None,
+            error="no ActionClient provided",
         )
-        return await _record_and_finalize(result, session, agent)
 
-    # 5. Passes all gates → execute as requested (or skip in shadow).
-    executed, side_effect, error = await _execute_side_effect(
-        decision, mode, client
-    )
+    # 6. Reserve the identity before the side effect. A concurrent writer
+    #    blocks on the unique index until we commit, then fails here.
+    row = None
+    if track:
+        from gita.agents.dedupe import record_action
 
-    if executed:
-        outcome = Outcome.EXECUTED
-    elif mode == WriteMode.SHADOW:
-        outcome = Outcome.SHADOW_LOGGED
-    elif error == "no ActionClient provided":
-        outcome = Outcome.REJECTED_NO_CLIENT
-    else:
-        outcome = Outcome.ERROR
+        try:
+            async with session.begin_nested():  # type: ignore[union-attr]
+                row = await record_action(
+                    session,  # type: ignore[arg-type]
+                    decision,
+                    agent=agent,  # type: ignore[arg-type]
+                    outcome="pending",
+                    live=True,
+                )
+        except IntegrityError:
+            logger.info(
+                "decision_deduped_via_race action=%s repo=%s agent=%s",
+                decision.action,
+                decision.target.get("repo"),
+                agent,
+            )
+            return _deduped(decision, mode, {"via": "integrity_race"})
 
-    result = DecisionResult(
+    # 7. Execute; release the reservation if it didn't land.
+    try:
+        side_effect = await client.execute(plan.to_execute)
+    except Exception as exc:  # noqa: BLE001 — the framework reports, never raises
+        logger.warning("decision_execution_failed action=%s error=%s", plan.to_execute.action, exc)
+        if row is not None:
+            await session.delete(row)  # type: ignore[union-attr]
+            await session.flush()  # type: ignore[union-attr]
+        return DecisionResult(
+            decision=decision,
+            mode=mode,
+            outcome=plan.outcome if downgraded else Outcome.ERROR,
+            downgrade_reason=plan.reason if downgraded else None,
+            error=str(exc),
+        )
+
+    tagged: dict[str, Any] = dict(side_effect or {})
+    if row is not None:
+        row.outcome = plan.outcome.value
+        row.external_id = _external_id_from_side_effect(side_effect)
+        await session.flush()  # type: ignore[union-attr]
+        tagged["agent_action_id"] = str(row.id)
+
+    return DecisionResult(
         decision=decision,
         mode=mode,
-        outcome=outcome,
-        executed=executed,
-        side_effect=side_effect,
-        error=error,
+        outcome=plan.outcome,
+        executed=True,
+        downgrade_reason=plan.reason if downgraded else None,
+        side_effect=tagged,
     )
-    return await _record_and_finalize(result, session, agent)

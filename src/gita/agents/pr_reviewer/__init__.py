@@ -1,4 +1,4 @@
-"""PR reviewer agent — Week 4.
+"""PR reviewer agent.
 
 Submodules:
 - ``diff_parser``  — parse GitHub PR file diffs into structured hunks
@@ -8,6 +8,7 @@ Submodules:
 
 Public API re-exported here.
 """
+
 from gita.agents.pr_reviewer.bridge import build_pr_review_decision
 from gita.agents.pr_reviewer.diff_parser import (
     ChangedLineRange,

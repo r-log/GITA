@@ -8,6 +8,7 @@ Two implementations:
   (``text-embedding-3-small``, 1536 dimensions).
 - ``FakeEmbeddingClient``: deterministic vectors for testing (no API calls).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -21,7 +22,9 @@ logger = logging.getLogger(__name__)
 EMBEDDING_DIMS = 1536
 
 # Max texts per OpenAI embedding batch call.
-_BATCH_SIZE = 2048
+# 2048 inputs x 8000 chars is ~4M chars, far over the per-request token
+# limit for embeddings; 128 x 8000 chars stays well under it.
+_BATCH_SIZE = 128
 
 # Per-file character cap for embedding input. OpenAI's
 # ``text-embedding-3-small`` accepts up to ~8191 tokens; we truncate by

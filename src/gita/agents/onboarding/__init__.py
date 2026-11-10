@@ -7,6 +7,7 @@
 All public names are re-exported here so that ``from gita.agents.onboarding
 import run_onboarding`` continues to work everywhere.
 """
+
 from gita.agents.onboarding.bridge import (
     _COLLAPSE_THRESHOLD,
     _render_comment_body,

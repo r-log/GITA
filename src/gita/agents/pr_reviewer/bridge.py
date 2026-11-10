@@ -1,12 +1,15 @@
 """Decision bridge — turn a PRReviewResult into a comment Decision.
 
-Posts the review as a single comment on the PR. Week 5 can upgrade to
-inline PR review comments (GitHub's Review API) once we build the
-diff-line-to-file-line mapping.
+Posts the review as a single comment on the PR. Inline comments through
+GitHub's Review API would need a mapping from file lines to diff
+positions; that isn't implemented.
 """
+
 from __future__ import annotations
 
+from gita import __version__
 from gita.agents.decisions import Decision
+from gita.agents.render import inline, quote_lines
 from gita.agents.types import Finding, PRReviewResult
 
 # Collapse findings into <details> when there are this many or more.
@@ -14,14 +17,14 @@ _COLLAPSE_THRESHOLD = 6
 
 _SEVERITY_BADGE: dict[str, str] = {
     "critical": "\U0001f534",  # red circle
-    "high": "\U0001f7e0",      # orange circle
-    "medium": "\U0001f7e1",    # yellow circle
-    "low": "\U0001f535",       # blue circle
+    "high": "\U0001f7e0",  # orange circle
+    "medium": "\U0001f7e1",  # yellow circle
+    "low": "\U0001f535",  # blue circle
 }
 
 _VERDICT_DISPLAY: dict[str, tuple[str, str]] = {
-    "approve": ("\u2705", "Approved"),              # green check
-    "comment": ("\U0001f4ac", "Comment"),            # speech bubble
+    "approve": ("\u2705", "Approved"),  # green check
+    "comment": ("\U0001f4ac", "Comment"),  # speech bubble
     "request_changes": ("\u26a0\ufe0f", "Changes Requested"),  # warning
 }
 
@@ -35,27 +38,48 @@ def _render_finding_card(finding: Finding) -> list[str]:
     icon = _severity_icon(finding.severity)
     lines = [
         f"> {icon} **{finding.severity.upper()}** \u2014 "
-        f"_{finding.kind}_ at `{finding.file}:{finding.line}`",
+        f"_{finding.kind}_ at `{inline(finding.file)}:{finding.line}`",
         ">",
-        f"> {finding.description}",
+        *quote_lines(finding.description),
     ]
     if finding.fix_sketch:
         lines.append(">")
-        lines.append(f"> \U0001f4a1 {finding.fix_sketch}")
+        lines.extend(quote_lines(finding.fix_sketch, prefix="\U0001f4a1 "))
     lines.append("")
     return lines
+
+
+def _render_coverage_notes(result: PRReviewResult) -> list[str]:
+    """Say what the review did *not* cover, so silence isn't read as approval."""
+    notes: list[str] = []
+    if result.unreviewed_files:
+        shown = ", ".join(f"`{inline(p)}`" for p in result.unreviewed_files[:10])
+        more = len(result.unreviewed_files) - 10
+        suffix = f" and {more} more" if more > 0 else ""
+        notes.append(
+            f"\u26a0\ufe0f Not reviewed ({len(result.unreviewed_files)} "
+            f"file{'s' if len(result.unreviewed_files) != 1 else ''}): "
+            f"{shown}{suffix}"
+        )
+    if result.dropped_findings:
+        notes.append(
+            f"\u2139\ufe0f {result.dropped_findings} finding"
+            f"{'s' if result.dropped_findings != 1 else ''} discarded by "
+            "automated verification."
+        )
+    if notes:
+        notes.append("")
+    return notes
 
 
 def _render_review_body(result: PRReviewResult) -> str:
     """Render the review as a markdown comment body."""
     # --- Header ---
-    verdict_icon, verdict_text = _VERDICT_DISPLAY.get(
-        result.verdict, ("\u2753", result.verdict)
-    )
+    verdict_icon, verdict_text = _VERDICT_DISPLAY.get(result.verdict, ("\u2753", result.verdict))
     lines: list[str] = [
         f"## \U0001f50d PR Review \u2014 #{result.pr_number}",
         "",
-        f"> {result.summary}",
+        *quote_lines(result.summary),
         "",
         f"{verdict_icon} **{verdict_text}** "
         f"\u00b7 {len(result.findings)} finding{'s' if len(result.findings) != 1 else ''} "
@@ -63,10 +87,10 @@ def _render_review_body(result: PRReviewResult) -> str:
         "",
     ]
 
+    lines.extend(_render_coverage_notes(result))
+
     if not result.findings:
-        lines.append(
-            "\u2705 No issues found in the changed code."
-        )
+        lines.append("\u2705 No issues found in the reviewed changes.")
         lines.append("")
     else:
         # --- Group findings by file ---
@@ -102,33 +126,41 @@ def _render_review_body(result: PRReviewResult) -> str:
     lines.append("")
     lines.append("---")
     lines.append(
-        f"<sub>\U0001f916 GITA v0.1.0 \u00b7 PR reviewer \u00b7 "
+        f"<sub>\U0001f916 GITA v{__version__} \u00b7 PR reviewer \u00b7 "
         f"confidence {result.confidence:.0%}</sub>"
     )
     return "\n".join(lines)
+
+
+def pr_review_idempotency_key(pr_number: int, head_sha: str | None) -> str | None:
+    """Identity of "the review of this commit of this PR"."""
+    return f"pr-review:{pr_number}:{head_sha}" if head_sha else None
 
 
 def build_pr_review_decision(
     result: PRReviewResult,
     repo_full_name: str,
     pr_number: int,
+    *,
+    head_sha: str | None = None,
 ) -> Decision:
     """Wrap a PRReviewResult as a ``comment`` Decision on the PR.
 
-    Uses the existing ``comment`` action dispatch — the PR number goes
-    into ``target.issue`` because GitHub treats PR comments and issue
-    comments as the same endpoint (``POST /issues/{n}/comments``).
+    The PR number goes into ``target.issue`` because GitHub treats PR
+    comments and issue comments as the same endpoint. With ``head_sha``
+    the decision's identity is the reviewed commit, so the same commit is
+    never reviewed twice and a new commit always is — regardless of how
+    similar the two comment bodies are.
     """
     evidence = [
         f"pr_reviewer verdict: {result.verdict}",
         f"{len(result.findings)} findings produced",
         f"confidence: {result.confidence:.2f}",
     ]
+    if head_sha:
+        evidence.append(f"head_sha:{head_sha}")
     for finding in result.findings[:3]:
-        evidence.append(
-            f"{finding.severity} {finding.kind} at "
-            f"{finding.file}:{finding.line}"
-        )
+        evidence.append(f"{finding.severity} {finding.kind} at {finding.file}:{finding.line}")
 
     return Decision(
         action="comment",
@@ -136,4 +168,5 @@ def build_pr_review_decision(
         payload={"body": _render_review_body(result)},
         evidence=evidence,
         confidence=result.confidence,
+        idempotency_key=pr_review_idempotency_key(pr_number, head_sha),
     )

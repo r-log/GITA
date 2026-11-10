@@ -10,16 +10,17 @@ Synthetic_py files:
 - src/myapp/core.py:    create_user, main
 - src/myapp/__init__.py: empty
 """
+
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gita.views._common import SymbolBrief
 from gita.views.concept import (
     ConceptResult,
     _symbols_matching_query,
     concept_view,
 )
-from gita.views._common import SymbolBrief
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +69,7 @@ class TestSymbolsMatchingQuery:
 # DB-integrated: concept_view against indexed_synth_py
 # ---------------------------------------------------------------------------
 class TestConceptViewBasic:
-    async def test_finds_file_by_content_keyword(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_finds_file_by_content_keyword(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
         result = await concept_view(session, repo_name, "email")
 
@@ -80,9 +79,7 @@ class TestConceptViewBasic:
         paths = [m.file_path for m in result.matches]
         assert any("utils.py" in p for p in paths)
 
-    async def test_finds_file_by_function_name(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_finds_file_by_function_name(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
         result = await concept_view(session, repo_name, "format_name")
 
@@ -90,9 +87,7 @@ class TestConceptViewBasic:
         paths = [m.file_path for m in result.matches]
         assert any("utils.py" in p for p in paths)
 
-    async def test_finds_file_by_class_name(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_finds_file_by_class_name(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
         result = await concept_view(session, repo_name, "User")
 
@@ -100,21 +95,15 @@ class TestConceptViewBasic:
         paths = [m.file_path for m in result.matches]
         assert any("models.py" in p for p in paths)
 
-    async def test_no_match_returns_empty(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_no_match_returns_empty(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
-        result = await concept_view(
-            session, repo_name, "xyznonexistent"
-        )
+        result = await concept_view(session, repo_name, "xyznonexistent")
         assert result.total_matches == 0
         assert result.matches == []
 
 
 class TestConceptViewRanking:
-    async def test_results_ranked_by_relevance(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_results_ranked_by_relevance(self, indexed_synth_py: tuple[AsyncSession, str]):
         """Files with more occurrences of the term should rank higher."""
         session, repo_name = indexed_synth_py
         result = await concept_view(session, repo_name, "email")
@@ -126,9 +115,7 @@ class TestConceptViewRanking:
 
 
 class TestConceptViewSymbolMatching:
-    async def test_matching_symbols_populated(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_matching_symbols_populated(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
         result = await concept_view(session, repo_name, "validate")
 
@@ -143,9 +130,7 @@ class TestConceptViewSymbolMatching:
 
 
 class TestConceptViewHeadline:
-    async def test_headline_contains_query_term(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_headline_contains_query_term(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
         result = await concept_view(session, repo_name, "email")
 
@@ -156,9 +141,7 @@ class TestConceptViewHeadline:
 
 
 class TestConceptViewLimit:
-    async def test_limit_caps_results(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_limit_caps_results(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
         result = await concept_view(session, repo_name, "def", limit=1)
 
@@ -168,9 +151,7 @@ class TestConceptViewLimit:
 
 
 class TestConceptViewSymbolBoost:
-    async def test_symbol_match_boosts_rank(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_symbol_match_boosts_rank(self, indexed_synth_py: tuple[AsyncSession, str]):
         """A file that DEFINES a symbol matching the query should rank
         higher than one that merely mentions the term in content."""
         session, repo_name = indexed_synth_py
@@ -186,9 +167,7 @@ class TestConceptViewSymbolBoost:
         # (FTS rank for a short file is typically < 0.5; boost adds 0.3)
         assert top.rank > 0.1
 
-    async def test_results_re_sorted_after_boost(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_results_re_sorted_after_boost(self, indexed_synth_py: tuple[AsyncSession, str]):
         """After symbol boosting, the results should still be in
         descending rank order."""
         session, repo_name = indexed_synth_py
@@ -201,16 +180,14 @@ class TestConceptViewSymbolBoost:
 # ---------------------------------------------------------------------------
 # Hybrid mode: FTS + vector similarity
 # ---------------------------------------------------------------------------
-import pytest_asyncio  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
+
+import pytest_asyncio  # noqa: E402
 
 from gita.indexer.embeddings import FakeEmbeddingClient  # noqa: E402
 from gita.indexer.ingest import index_repository as _index_repository  # noqa: E402
 
-
-_SYNTH_REPO_PATH = (
-    _Path(__file__).parent.parent / "fixtures" / "synthetic_py"
-).resolve()
+_SYNTH_REPO_PATH = (_Path(__file__).parent.parent / "fixtures" / "synthetic_py").resolve()
 
 
 @pytest_asyncio.fixture
@@ -231,9 +208,7 @@ async def indexed_synth_py_with_embeddings(
 
 
 class TestConceptViewMode:
-    async def test_defaults_to_fts_mode(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_defaults_to_fts_mode(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
         result = await concept_view(session, repo_name, "email")
         assert result.mode == "fts"
@@ -330,8 +305,6 @@ class TestConceptViewHybridResults:
         many files are being compared against."""
         session, repo_name = indexed_synth_py_with_embeddings
         client = FakeEmbeddingClient()
-        await concept_view(
-            session, repo_name, "user model", embedding_client=client
-        )
+        await concept_view(session, repo_name, "user model", embedding_client=client)
         assert client.call_count == 1
         assert client.total_texts == 1

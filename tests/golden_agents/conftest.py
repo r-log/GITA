@@ -7,6 +7,7 @@ not on every ``pytest`` run.
 The ``test_checklist.py`` module in the same directory is a pure unit test
 of the checklist runner — no LLM — and is NOT gated.
 """
+
 from __future__ import annotations
 
 import os
@@ -21,9 +22,7 @@ from gita.llm.client import OpenRouterClient
 RUN_LLM_TESTS = os.environ.get("GITA_RUN_LLM_TESTS") == "1"
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip every LLM-dependent test under ``tests/golden_agents/``
     unless ``GITA_RUN_LLM_TESTS=1`` is set. Only ``test_checklist.py``
     (a pure unit test of the checklist runner) runs unconditionally."""
@@ -31,9 +30,7 @@ def pytest_collection_modifyitems(
         return
 
     skip_marker = pytest.mark.skip(
-        reason=(
-            "set GITA_RUN_LLM_TESTS=1 to run tests that call the real LLM"
-        )
+        reason=("set GITA_RUN_LLM_TESTS=1 to run tests that call the real LLM")
     )
     for item in items:
         normalized = item.nodeid.replace("\\", "/")

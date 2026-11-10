@@ -11,15 +11,16 @@ the same head SHA. If found, the review is skipped entirely. This
 prevents redundant re-reviews when ``pull_request.synchronize`` events
 arrive after the first review already covered that SHA.
 """
+
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.agents.decisions import (
@@ -28,12 +29,14 @@ from gita.agents.decisions import (
     WriteMode,
     execute_decision,
 )
+from gita.agents.dedupe import check_signature
 from gita.agents.pr_reviewer import (
     PRReviewError,
     build_pr_review_decision,
     parse_pr_files,
     run_pr_review,
 )
+from gita.agents.pr_reviewer.bridge import pr_review_idempotency_key
 from gita.agents.test_generator import (
     TestGenerationArtifact,
     build_test_generation_decisions,
@@ -47,47 +50,80 @@ from gita.github.auth import GithubAppAuth
 from gita.github.client import GithubClient
 from gita.indexer.embeddings import make_embedding_client
 from gita.indexer.ingest import IngestResult, index_repository
+from gita.jobs.ids import review_job_id
 from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError, resolve_repo
 
 logger = logging.getLogger(__name__)
 
-# Evidence tag prefix for SHA-based skip.
-_SHA_EVIDENCE_PREFIX = "head_sha:"
-
 
 # ---------------------------------------------------------------------------
-# SHA-based skip (prevents redundant re-reviews)
+# "Already reviewed this commit?" (before any LLM call)
 # ---------------------------------------------------------------------------
-async def _check_sha_already_reviewed(
+async def _already_reviewed(
     session: AsyncSession,
     repo_full_name: str,
+    pr_number: int,
     head_sha: str,
+    *,
+    live: bool,
 ) -> bool:
-    """Return True if a prior review exists for this repo + SHA.
+    """True if this commit's review is already recorded in this partition.
 
-    Looks for an ``agent_actions`` row where:
-    - ``repo_name`` matches (case-insensitive)
-    - ``agent`` is ``pr_reviewer``
-    - ``evidence`` JSONB array contains ``"head_sha:<sha>"``
-
-    Uses Postgres ``@>`` containment operator on the JSONB column.
+    Uses the same identity the review Decision will carry, so this is the
+    dedupe check moved ahead of the LLM calls. A shadow-mode review does
+    not count for a live run.
     """
-    repo_lower = repo_full_name.strip().lower()
-    sha_tag = f"{_SHA_EVIDENCE_PREFIX}{head_sha}"
+    probe = Decision(
+        action="comment",
+        target={"repo": repo_full_name, "issue": pr_number},
+        payload={},
+        idempotency_key=pr_review_idempotency_key(pr_number, head_sha),
+    )
+    return await check_signature(session, probe, agent="pr_reviewer", live=live) is not None
 
-    # Use raw SQL for the JSONB containment — asyncpg needs the
-    # literal cast on the right-hand side, not a bound parameter.
-    # CAST(...) syntax instead of :: to avoid SQLAlchemy's :param parser.
-    stmt = text(
-        "SELECT id FROM agent_actions "
-        "WHERE repo_name = :repo "
-        "AND agent = 'pr_reviewer' "
-        "AND evidence @> CAST(:sha_json AS JSONB) "
-        "LIMIT 1"
-    ).bindparams(repo=repo_lower, sha_json=f'["{sha_tag}"]')
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none() is not None
+
+# ---------------------------------------------------------------------------
+# PR head content
+# ---------------------------------------------------------------------------
+# Changed files larger than this are reviewed from the diff alone.
+_MAX_HEAD_FILE_BYTES = 512 * 1024
+_HEAD_FETCH_CONCURRENCY = 5
+
+
+async def fetch_head_contents(
+    gh: GithubClient,
+    owner: str,
+    repo: str,
+    hunks: list,
+    head_sha: str | None,
+) -> dict[str, str]:
+    """Text of each changed file at the PR head, keyed by path.
+
+    The reviewer numbers context and checks syntax claims against this,
+    not against the index (which is the pre-PR default branch). Removed,
+    binary, oversized, and unfetchable files are left out; the reviewer
+    then falls back to the diff for them.
+    """
+    if not head_sha:
+        return {}
+    semaphore = asyncio.Semaphore(_HEAD_FETCH_CONCURRENCY)
+
+    async def fetch(hunk) -> tuple[str, str] | None:
+        if hunk.status == "removed" or not hunk.patch:
+            return None
+        async with semaphore:
+            try:
+                contents = await gh.get_contents(owner, repo, hunk.file_path, ref=head_sha)
+            except (httpx.HTTPError, ValueError, UnicodeDecodeError) as exc:
+                logger.info("pr_head_fetch_skipped file=%s reason=%s", hunk.file_path, exc)
+                return None
+        if contents.encoding != "base64" or contents.size > _MAX_HEAD_FILE_BYTES:
+            return None  # GitHub omits content above 1 MB ("encoding": "none")
+        return hunk.file_path, contents.content
+
+    results = await asyncio.gather(*(fetch(h) for h in hunks))
+    return dict(r for r in results if r is not None)
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +155,7 @@ async def run_pr_review_job(
             repo_obj = await resolve_repo(session, repo_full_name)
             repo_name = repo_obj.name  # canonical short name
         except RepoNotFoundError:
-            logger.warning(
-                "pr_review_no_index repo=%s — skipping", repo_full_name
-            )
+            logger.warning("pr_review_no_index repo=%s — skipping", repo_full_name)
             return {
                 "status": "error",
                 "reason": "repo_not_indexed",
@@ -133,9 +167,7 @@ async def run_pr_review_job(
     if not settings.openrouter_api_key:
         raise RuntimeError("OPENROUTER_API_KEY not configured")
     if not settings.github_app_id or not settings.github_app_private_key_path:
-        raise RuntimeError(
-            "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH not configured"
-        )
+        raise RuntimeError("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH not configured")
 
     auth = GithubAppAuth.from_files(
         app_id=settings.github_app_id,
@@ -147,14 +179,51 @@ async def run_pr_review_job(
         pr_info = await gh.get_pr(owner, repo, pr_number)
         pr_files_json = await gh.get_pr_files(owner, repo, pr_number)
 
+    # A newer push supersedes this job: the job for that commit is queued
+    # behind us (see the review debounce in gita.web.dispatch), so skip
+    # before spending any LLM tokens on a commit nobody will look at.
+    if head_sha and pr_info.head_sha and pr_info.head_sha != head_sha:
+        logger.info(
+            "pr_review_superseded repo=%s pr=%d job_sha=%s head_sha=%s",
+            repo_full_name,
+            pr_number,
+            head_sha[:12],
+            pr_info.head_sha[:12],
+        )
+        return {
+            "status": "skipped",
+            "reason": "superseded",
+            "repo": repo_full_name,
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "current_head_sha": pr_info.head_sha,
+        }
+    if pr_info.state != "open":
+        logger.info(
+            "pr_review_skipped_closed repo=%s pr=%d state=%s",
+            repo_full_name,
+            pr_number,
+            pr_info.state,
+        )
+        return {
+            "status": "skipped",
+            "reason": f"pr_{pr_info.state}",
+            "repo": repo_full_name,
+            "pr_number": pr_number,
+        }
+
     # Use the live head SHA from the PR (more accurate than the webhook's).
     actual_sha = pr_info.head_sha or head_sha
 
-    # --- SHA-based skip (before LLM calls) ---
+    # --- Already reviewed this commit? (before LLM calls) ---
     if actual_sha:
         async with SessionLocal() as session:
-            already = await _check_sha_already_reviewed(
-                session, repo_full_name, actual_sha
+            already = await _already_reviewed(
+                session,
+                repo_full_name,
+                pr_number,
+                actual_sha,
+                live=mode != WriteMode.SHADOW,
             )
         if already:
             logger.info(
@@ -173,38 +242,44 @@ async def run_pr_review_job(
 
     # --- Run the PR reviewer ---
     diff_hunks = parse_pr_files(pr_files_json)
+    async with GithubClient(auth=auth) as gh:
+        head_contents = await fetch_head_contents(gh, owner, repo, diff_hunks, actual_sha)
     model = settings.ai_default_model
 
-    async with OpenRouterClient(
-        api_key=settings.openrouter_api_key, default_model=model
-    ) as llm:
-        async with SessionLocal() as session:
-            try:
-                result = await run_pr_review(
-                    session, repo_name, pr_info, diff_hunks, llm=llm
-                )
-            except PRReviewError as exc:
-                logger.error(
-                    "pr_review_failed repo=%s pr=%d error=%s",
-                    repo_full_name,
-                    pr_number,
-                    exc,
-                )
-                return {
-                    "status": "error",
-                    "reason": str(exc),
-                    "repo": repo_full_name,
-                    "pr_number": pr_number,
-                }
+    async with (
+        OpenRouterClient(api_key=settings.openrouter_api_key, default_model=model) as llm,
+        SessionLocal() as session,
+    ):
+        try:
+            result = await run_pr_review(
+                session,
+                repo_name,
+                pr_info,
+                diff_hunks,
+                llm=llm,
+                head_contents=head_contents,
+            )
+        except PRReviewError as exc:
+            logger.error(
+                "pr_review_failed repo=%s pr=%d error=%s",
+                repo_full_name,
+                pr_number,
+                exc,
+            )
+            return {
+                "status": "error",
+                "reason": str(exc),
+                "repo": repo_full_name,
+                "pr_number": pr_number,
+            }
 
     # --- Build decision and execute ---
     decision = build_pr_review_decision(
-        result, repo_full_name=repo_full_name, pr_number=pr_number
+        result,
+        repo_full_name=repo_full_name,
+        pr_number=pr_number,
+        head_sha=actual_sha,
     )
-
-    # Inject head SHA into evidence for future SHA-based skip lookups.
-    if actual_sha:
-        decision.evidence.append(f"{_SHA_EVIDENCE_PREFIX}{actual_sha}")
 
     async with GithubClient(auth=auth) as gh, SessionLocal() as session:
         decision_result = await execute_decision(
@@ -262,9 +337,7 @@ async def run_onboarding_job(
             repo_obj = await resolve_repo(session, repo_full_name)
             repo_name = repo_obj.name  # canonical short name
         except RepoNotFoundError:
-            logger.warning(
-                "onboarding_no_index repo=%s — skipping", repo_full_name
-            )
+            logger.warning("onboarding_no_index repo=%s — skipping", repo_full_name)
             return {
                 "status": "error",
                 "reason": "repo_not_indexed",
@@ -277,25 +350,25 @@ async def run_onboarding_job(
 
     model = settings.ai_default_model
 
-    async with OpenRouterClient(
-        api_key=settings.openrouter_api_key, default_model=model
-    ) as llm:
-        async with SessionLocal() as session:
-            try:
-                result = await run_onboarding(session, repo_name, llm=llm)
-            except OnboardingError as exc:
-                logger.error(
-                    "onboarding_failed repo=%s issue=%d error=%s",
-                    repo_full_name,
-                    issue_number,
-                    exc,
-                )
-                return {
-                    "status": "error",
-                    "reason": str(exc),
-                    "repo": repo_full_name,
-                    "issue_number": issue_number,
-                }
+    async with (
+        OpenRouterClient(api_key=settings.openrouter_api_key, default_model=model) as llm,
+        SessionLocal() as session,
+    ):
+        try:
+            result = await run_onboarding(session, repo_name, llm=llm)
+        except OnboardingError as exc:
+            logger.error(
+                "onboarding_failed repo=%s issue=%d error=%s",
+                repo_full_name,
+                issue_number,
+                exc,
+            )
+            return {
+                "status": "error",
+                "reason": str(exc),
+                "repo": repo_full_name,
+                "issue_number": issue_number,
+            }
 
     decision = build_onboarding_comment_decision(
         result,
@@ -303,11 +376,7 @@ async def run_onboarding_job(
         issue_number=issue_number,
     )
 
-    if (
-        mode != WriteMode.SHADOW
-        and settings.github_app_id
-        and settings.github_app_private_key_path
-    ):
+    if mode != WriteMode.SHADOW and settings.github_app_id and settings.github_app_private_key_path:
         auth = GithubAppAuth.from_files(
             app_id=settings.github_app_id,
             private_key_path=settings.github_app_private_key_path,
@@ -354,34 +423,51 @@ async def run_onboarding_job(
 _GIT_TIMEOUT = 120  # seconds
 
 
+def _git(root_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(root_path), *args],
+        capture_output=True,
+        text=True,
+        timeout=_GIT_TIMEOUT,
+        check=True,
+    )
+
+
 def _git_sync(root_path: Path, after_sha: str | None) -> tuple[bool, str]:
-    """Fetch from origin and reset the working tree to a target SHA.
+    """Fetch from origin and check out ``after_sha`` (detached).
 
     Returns ``(success, error_message)`` — error_message is empty on success.
+
+    The checkout at ``root_path`` belongs to GITA's worker, but it is the
+    directory someone ran ``gita index`` on, so this is careful with it:
+
+    * It refuses to touch a working tree with uncommitted changes —
+      nothing here may discard someone's work.
+    * It checks out the commit detached instead of ``reset --hard``, so
+      no local branch pointer is moved.
+
     Safe to call with ``max_jobs=1`` (no concurrent access to the worktree).
     """
     try:
-        subprocess.run(
-            ["git", "-C", str(root_path), "fetch", "origin"],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            check=True,
+        status = _git(root_path, "status", "--porcelain", "--untracked-files=no")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        return False, f"git status failed: {exc}"
+    if status.stdout.strip():
+        return False, (
+            "working tree has uncommitted changes; refusing to sync. "
+            "Index from a dedicated clone that only GITA uses."
         )
+
+    try:
+        _git(root_path, "fetch", "--quiet", "origin")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         return False, f"git fetch failed: {exc}"
 
     target = after_sha or "origin/HEAD"
     try:
-        subprocess.run(
-            ["git", "-C", str(root_path), "reset", "--hard", target],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-            check=True,
-        )
+        _git(root_path, "checkout", "--quiet", "--detach", target)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        return False, f"git reset failed: {exc}"
+        return False, f"git checkout failed: {exc}"
 
     return True, ""
 
@@ -397,7 +483,7 @@ async def run_reindex_job(
 ) -> dict[str, Any]:
     """Fetch latest code and incrementally re-index.
 
-    1. Resolve the repo by github_full_name (Day 1 fallback)
+    1. Resolve the repo (short name or github_full_name)
     2. ``git fetch origin`` + ``git reset --hard <sha>``
     3. Call ``index_repository()`` (incremental when possible)
     4. Return a summary dict
@@ -412,9 +498,7 @@ async def run_reindex_job(
             repo_auto_test_gen = bool(repo.auto_test_generation)
             repo_default_branch = repo.default_branch or "main"
         except RepoNotFoundError:
-            logger.warning(
-                "reindex_no_index repo=%s — skipping", repo_full_name
-            )
+            logger.warning("reindex_no_index repo=%s — skipping", repo_full_name)
             return {
                 "status": "error",
                 "reason": "repo_not_indexed",
@@ -423,9 +507,7 @@ async def run_reindex_job(
             }
 
     if not root_path.is_dir():
-        logger.error(
-            "reindex_root_missing repo=%s path=%s", repo_full_name, root_path
-        )
+        logger.error("reindex_root_missing repo=%s path=%s", repo_full_name, root_path)
         return {
             "status": "error",
             "reason": "root_path_missing",
@@ -436,9 +518,7 @@ async def run_reindex_job(
     # --- Git sync ---
     ok, err = _git_sync(root_path, after_sha)
     if not ok:
-        logger.error(
-            "reindex_git_sync_failed repo=%s error=%s", repo_full_name, err
-        )
+        logger.error("reindex_git_sync_failed repo=%s error=%s", repo_full_name, err)
         return {
             "status": "error",
             "reason": "git_sync_failed",
@@ -471,7 +551,7 @@ async def run_reindex_job(
         after_sha,
     )
 
-    # Post-reindex auto-test-generation trigger (Week 9). Best-effort:
+    # Post-reindex auto-test-generation trigger. Best-effort:
     # the reindex job's "completed" status does not depend on whether
     # any test_gen jobs were enqueued.
     test_gen_summary: dict[str, Any] = {}
@@ -508,7 +588,7 @@ async def run_reindex_job(
 
 
 # ---------------------------------------------------------------------------
-# Post-reindex auto-trigger for test generation (Week 9)
+# Post-reindex auto-trigger for test generation
 # ---------------------------------------------------------------------------
 async def _maybe_enqueue_test_gen_jobs(
     *,
@@ -579,9 +659,7 @@ async def _maybe_enqueue_test_gen_jobs(
     base_sha = ingest_result.head_sha or "unknown"
     async with SessionLocal() as session:
         for path in after_stage_a:
-            result_b = await is_feasible(
-                session, repo_id, repo_full_name, path
-            )
+            result_b = await is_feasible(session, repo_id, repo_full_name, path)
             if result_b.proceed:
                 after_stage_b.append(path)
             else:
@@ -628,9 +706,7 @@ async def _maybe_enqueue_test_gen_jobs(
         if arq_job is None:
             # ARQ-level dedupe: a job with this _job_id is already
             # queued or running — perfectly fine, count as deduped.
-            logger.info(
-                "test_gen_enqueue_deduped job_id=%s", job_id
-            )
+            logger.info("test_gen_enqueue_deduped job_id=%s", job_id)
             enqueued.append({"target_file": path, "job_id": job_id, "deduped": True})
             continue
         logger.info(
@@ -649,7 +725,7 @@ async def _maybe_enqueue_test_gen_jobs(
 
 
 # ---------------------------------------------------------------------------
-# Test-generation runner (Week 9)
+# Test-generation runner
 # ---------------------------------------------------------------------------
 _PROGRESS_OUTCOMES = {
     Outcome.EXECUTED,
@@ -666,7 +742,7 @@ async def _maybe_enqueue_auto_review(
 ) -> dict[str, Any]:
     """Enqueue ``review_pr`` when test_generator just opened a real PR.
 
-    Closes the autonomous loop (Week 10): push → reindex → test-gen → PR →
+    Closes the autonomous loop: push → reindex → test-gen → PR →
     *review*. Bypasses the webhook path on purpose — the GitHub App's own
     ``pull_request.opened`` delivery is dropped by the bot-sender filter
     in ``gita.web.webhooks`` (Wall 2 of loop prevention). Triggering a
@@ -709,19 +785,21 @@ async def _maybe_enqueue_auto_review(
         summary["reason"] = "no_pr_number"
         return summary
 
-    # ``open_pr``'s side_effect doesn't include the head SHA, but the
-    # review's SHA-based skip is only there to suppress repeat reviews —
-    # a freshly-created auto-PR has never been reviewed, so passing
-    # ``head_sha=None`` is safe and lets ``run_pr_review_job`` resolve
-    # the SHA itself when it fetches the PR from GitHub.
-    repo_lower = target_repo.strip().lower()
-    job_id = f"review-pr:{repo_lower}:{pr_number}"
+    # The PR's head is the commit ``update_file`` created. Using it gives
+    # the same job identity a webhook for that commit would get.
+    update_summary = next(
+        (d for d in decision_summaries if d.get("action") == "update_file"),
+        None,
+    )
+    head_sha = ((update_summary or {}).get("side_effect") or {}).get("commit_sha")
+    job_id = review_job_id(target_repo, pr_number, head_sha)
     try:
         arq_job = await redis.enqueue_job(
             "review_pr",
             _job_id=job_id,
             repo_full_name=target_repo,
             pr_number=pr_number,
+            head_sha=head_sha,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
@@ -764,6 +842,7 @@ async def run_test_generation_job(
     test_file_path: str | None = None,
     model: str | None = None,
     redis: Any = None,
+    require_isolation: bool = False,
 ) -> dict[str, Any]:
     """Generate a verified pytest test file and (optionally) push it.
 
@@ -779,6 +858,11 @@ async def run_test_generation_job(
     that branch + file write + PR all target. ``None`` means
     local-only (recipe + verification, no GitHub side-effects).
 
+    ``require_isolation`` refuses to execute generated tests outside an
+    isolated sandbox. The ARQ job sets it: webhook-triggered runs act on
+    code nobody has reviewed. The CLI leaves it off so an operator can
+    use ``TEST_GEN_SANDBOX=local`` against a repository they trust.
+
     Raises on misconfiguration (missing API keys); returns
     ``{"status": "error", "reason": ...}`` for runtime failures so
     callers don't need their own try/except.
@@ -787,13 +871,9 @@ async def run_test_generation_job(
         raise RuntimeError("OPENROUTER_API_KEY not configured")
 
     need_github = target_repo is not None
-    if need_github and (
-        not settings.github_app_id
-        or not settings.github_app_private_key_path
-    ):
+    if need_github and (not settings.github_app_id or not settings.github_app_private_key_path):
         raise RuntimeError(
-            "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be set "
-            "for the push flow"
+            "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be set for the push flow"
         )
 
     mode = WriteMode(settings.write_mode)
@@ -804,9 +884,7 @@ async def run_test_generation_job(
         try:
             repo = await resolve_repo(session, repo_full_name)
         except RepoNotFoundError:
-            logger.warning(
-                "test_gen_no_index repo=%s — skipping", repo_full_name
-            )
+            logger.warning("test_gen_no_index repo=%s — skipping", repo_full_name)
             return {
                 "status": "error",
                 "reason": "repo_not_indexed",
@@ -825,34 +903,37 @@ async def run_test_generation_job(
             }
 
     # If the caller didn't specify a base_branch, use the indexed repo's
-    # stored default_branch (Week 10). This is what makes the auto-trigger
+    # stored default_branch. This is what makes the auto-trigger
     # behave correctly on repos that don't use "main".
     resolved_base_branch = base_branch or repo_default_branch
 
-    # --- Recipe (LLM + 3-gate verify) ---
+    # --- Recipe (LLM + static checks + sandboxed test run) ---
     try:
-        async with OpenRouterClient(
-            api_key=settings.openrouter_api_key,
-            default_model=resolved_model,
-        ) as llm:
-            async with SessionLocal() as session:
-                try:
-                    recipe_result = await run_test_generation(
-                        session,
-                        repo_name,
-                        target_file,
-                        llm=llm,
-                        repo_root=repo_root,
-                        model=resolved_model,
-                        test_file_path=test_file_path,
-                    )
-                except FileNotFoundError as exc:
-                    return {
-                        "status": "error",
-                        "reason": str(exc),
-                        "repo": repo_full_name,
-                        "target_file": target_file,
-                    }
+        async with (
+            OpenRouterClient(
+                api_key=settings.openrouter_api_key,
+                default_model=resolved_model,
+            ) as llm,
+            SessionLocal() as session,
+        ):
+            try:
+                recipe_result = await run_test_generation(
+                    session,
+                    repo_name,
+                    target_file,
+                    llm=llm,
+                    repo_root=repo_root,
+                    model=resolved_model,
+                    test_file_path=test_file_path,
+                    require_isolation=require_isolation,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                return {
+                    "status": "error",
+                    "reason": str(exc),
+                    "repo": repo_full_name,
+                    "target_file": target_file,
+                }
     except Exception as exc:  # noqa: BLE001 — surface LLM/network errors cleanly
         logger.error(
             "test_gen_recipe_failed repo=%s file=%s error=%s",
@@ -875,6 +956,8 @@ async def run_test_generation_job(
         "test_content": recipe_result.test_content,
         "verified": recipe_result.verified,
         "verification_errors": list(recipe_result.verification_errors),
+        "tests_passed": recipe_result.tests_passed,
+        "sandbox": recipe_result.sandbox,
         "llm_model": recipe_result.llm_model,
         "covered_symbols": list(recipe_result.covered_symbols),
         "notes": recipe_result.notes,
@@ -889,8 +972,7 @@ async def run_test_generation_job(
     if target_repo is None:
         # Local-only run.
         logger.info(
-            "test_gen_local_done repo=%s file=%s verified=%s "
-            "blended_conf=%.2f",
+            "test_gen_local_done repo=%s file=%s verified=%s blended_conf=%.2f",
             repo_full_name,
             target_file,
             recipe_result.verified,
@@ -910,22 +992,17 @@ async def run_test_generation_job(
     async with GithubClient(auth=auth) as gh:
         if resolved_base_sha is None:
             try:
-                ref_info = await gh.get_ref(
-                    owner, repo_short, f"heads/{resolved_base_branch}"
-                )
+                ref_info = await gh.get_ref(owner, repo_short, f"heads/{resolved_base_branch}")
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    "test_gen_base_sha_lookup_failed repo=%s "
-                    "base_branch=%s error=%s",
+                    "test_gen_base_sha_lookup_failed repo=%s base_branch=%s error=%s",
                     target_repo,
                     resolved_base_branch,
                     exc,
                 )
                 base_summary.update(
                     status="error",
-                    reason=(
-                        f"base_sha_lookup_failed: {exc}"
-                    ),
+                    reason=(f"base_sha_lookup_failed: {exc}"),
                     base_branch=resolved_base_branch,
                 )
                 return base_summary
@@ -942,18 +1019,14 @@ async def run_test_generation_job(
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 logger.error(
-                    "test_gen_get_contents_failed repo=%s path=%s "
-                    "status=%s",
+                    "test_gen_get_contents_failed repo=%s path=%s status=%s",
                     target_repo,
                     recipe_result.test_file_path,
                     exc.response.status_code,
                 )
                 base_summary.update(
                     status="error",
-                    reason=(
-                        f"get_contents_failed: HTTP "
-                        f"{exc.response.status_code}"
-                    ),
+                    reason=(f"get_contents_failed: HTTP {exc.response.status_code}"),
                     base_branch=resolved_base_branch,
                     base_sha=resolved_base_sha,
                 )
@@ -973,9 +1046,7 @@ async def run_test_generation_job(
     )
     decisions = build_test_generation_decisions(artifact)
 
-    decision_summaries = await _execute_decision_chain(
-        decisions, mode=mode, auth=auth
-    )
+    decision_summaries = await _execute_decision_chain(decisions, mode=mode, auth=auth)
 
     auto_review_summary: dict[str, Any] = {}
     try:
@@ -1002,8 +1073,7 @@ async def run_test_generation_job(
 
     final_outcomes = [d["outcome"] for d in decision_summaries]
     logger.info(
-        "test_gen_push_done repo=%s file=%s verified=%s "
-        "blended_conf=%.2f outcomes=%s",
+        "test_gen_push_done repo=%s file=%s verified=%s blended_conf=%.2f outcomes=%s",
         target_repo,
         target_file,
         recipe_result.verified,

@@ -1,6 +1,6 @@
 """Golden snapshot test against a local clone of r-log/AMASS.
 
-This is the Day 6 feel-test in automated form. We run the real ingest
+A snapshot test against a real-world repository. We run the real ingest
 pipeline against a real repo and assert aggregate invariants — NOT exact
 counts, because AMASS moves. Counts have a tolerance so normal development
 doesn't break the test; a catastrophic regression still will.
@@ -12,6 +12,7 @@ to point somewhere else if your layout differs.
 To update the snapshot intentionally after you know a change is legitimate:
 adjust the constants at the top of this file.
 """
+
 from __future__ import annotations
 
 import os
@@ -23,10 +24,7 @@ from gita.indexer.ingest import index_repository
 from gita.views.neighborhood import neighborhood_view
 from gita.views.symbol import symbol_view
 
-_DEFAULT_AMASS_PATH = Path(
-    "C:/Users/Roko/Documents/PYTHON/AMAS/electrician-log-mvp"
-)
-AMASS_PATH = Path(os.environ.get("GITA_AMASS_PATH", str(_DEFAULT_AMASS_PATH)))
+AMASS_PATH = Path(os.environ.get("GITA_AMASS_PATH", "/nonexistent"))
 
 pytestmark = pytest.mark.skipif(
     not AMASS_PATH.is_dir(),
@@ -70,15 +68,13 @@ class TestAmassIngest:
         await index_repository(db_session, "amass", AMASS_PATH)
         await db_session.commit()
 
-        repo = (
-            await db_session.execute(select(Repo).where(Repo.name == "amass"))
-        ).scalar_one()
+        repo = (await db_session.execute(select(Repo).where(Repo.name == "amass"))).scalar_one()
 
         rows = (
-            await db_session.execute(
-                select(CodeIndex).where(CodeIndex.repo_id == repo.id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(CodeIndex).where(CodeIndex.repo_id == repo.id)))
+            .scalars()
+            .all()
+        )
 
         by_lang: dict[str, int] = {}
         for row in rows:
@@ -96,15 +92,13 @@ class TestAmassIngest:
         await index_repository(db_session, "amass", AMASS_PATH)
         await db_session.commit()
 
-        repo = (
-            await db_session.execute(select(Repo).where(Repo.name == "amass"))
-        ).scalar_one()
+        repo = (await db_session.execute(select(Repo).where(Repo.name == "amass"))).scalar_one()
 
         rows = (
-            await db_session.execute(
-                select(CodeIndex).where(CodeIndex.repo_id == repo.id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(CodeIndex).where(CodeIndex.repo_id == repo.id)))
+            .scalars()
+            .all()
+        )
 
         for row in rows:
             assert row.structure is not None

@@ -16,6 +16,7 @@ Each one exposes a module-level ``CHECKLIST`` constant. Python modules beat
 YAML here because we get raw-string regex literals, type-safe field names,
 and zero new dependencies.
 """
+
 from __future__ import annotations
 
 import json
@@ -69,9 +70,7 @@ def _matches(pattern: str, text: str) -> bool:
     return bool(re.search(pattern, text, re.IGNORECASE))
 
 
-def check_output(
-    result: OnboardingResult, checklist: Checklist
-) -> list[str]:
+def check_output(result: OnboardingResult, checklist: Checklist) -> list[str]:
     """Run the checklist against ``result``. Returns a list of violations.
 
     An empty list means the output passes every rule.
@@ -81,24 +80,17 @@ def check_output(
     # --- project_summary ---
     for pattern in checklist.project_summary_must_mention:
         if not _matches(pattern, result.project_summary):
-            violations.append(
-                f"project_summary missing required mention: {pattern!r}"
-            )
+            violations.append(f"project_summary missing required mention: {pattern!r}")
 
     # --- findings count ---
     if len(result.findings) < checklist.min_findings:
         violations.append(
-            f"need at least {checklist.min_findings} findings, "
-            f"got {len(result.findings)}"
+            f"need at least {checklist.min_findings} findings, got {len(result.findings)}"
         )
 
     # --- file:line citations on findings ---
     if checklist.require_file_line and result.findings:
-        without_citation = [
-            f
-            for f in result.findings
-            if not f.file or not f.line or f.line <= 0
-        ]
+        without_citation = [f for f in result.findings if not f.file or not f.line or f.line <= 0]
         if without_citation:
             violations.append(
                 f"{len(without_citation)} finding(s) missing file:line "
@@ -108,8 +100,7 @@ def check_output(
     # --- milestones count ---
     if len(result.milestones) > checklist.max_milestones:
         violations.append(
-            f"too many milestones: {len(result.milestones)} > "
-            f"{checklist.max_milestones}"
+            f"too many milestones: {len(result.milestones)} > {checklist.max_milestones}"
         )
 
     # --- banned milestone titles ---
@@ -117,8 +108,7 @@ def check_output(
         for banned in checklist.banned_milestone_titles:
             if _matches(banned, milestone.title):
                 violations.append(
-                    f"banned milestone title: {milestone.title!r} "
-                    f"(matched pattern {banned!r})"
+                    f"banned milestone title: {milestone.title!r} (matched pattern {banned!r})"
                 )
                 break  # one violation per milestone is enough
 

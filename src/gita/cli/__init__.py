@@ -17,6 +17,7 @@ Split into three modules:
 - ``cli.formatters`` — pure plain-text formatters
 - ``cli/__init__``   — argparse wiring + ``main()``
 """
+
 from __future__ import annotations
 
 import argparse
@@ -55,7 +56,7 @@ from gita.cli.commands import (  # noqa: E402
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gita",
-        description="GitHub Assistant v2 — local repo indexer and query layer",
+        description="GITA — GitHub assistant: index repositories, review PRs, onboard contributors, generate tests",
     )
     parser.add_argument(
         "--version",
@@ -109,7 +110,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Opt this repo IN to the post-reindex auto-test-generation "
-            "trigger (Week 9). Off by default; set once and it persists."
+            "trigger. Off by default; set once and it persists."
         ),
     )
     auto_test_gen_grp.add_argument(
@@ -235,10 +236,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     gen_p.add_argument(
         "target_file",
-        help=(
-            "Repo-relative path of the module to generate tests for "
-            "(e.g. src/myapp/utils.py)"
-        ),
+        help=("Repo-relative path of the module to generate tests for (e.g. src/myapp/utils.py)"),
     )
     gen_p.add_argument(
         "--test-file-path",
@@ -301,13 +299,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     q_sym = query_sub.add_parser("symbol", help="Find a symbol by name")
     q_sym.add_argument("repo")
-    q_sym.add_argument(
-        "query", help="Symbol name (use 'ClassName.method' to scope)"
-    )
+    q_sym.add_argument("query", help="Symbol name (use 'ClassName.method' to scope)")
 
-    q_nbh = query_sub.add_parser(
-        "neighborhood", help="Show imports/importers/siblings for a file"
-    )
+    q_nbh = query_sub.add_parser("neighborhood", help="Show imports/importers/siblings for a file")
     q_nbh.add_argument("repo")
     q_nbh.add_argument("file_path")
 
@@ -323,9 +317,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How many files to return (default 10, max 100)",
     )
 
-    q_hist = query_sub.add_parser(
-        "history", help="Show git log + blame for a file"
-    )
+    q_hist = query_sub.add_parser("history", help="Show git log + blame for a file")
     q_hist.add_argument("repo")
     q_hist.add_argument("file_path")
 
@@ -346,7 +338,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How many results to return (default 10)",
     )
 
-    # ---- auto-test-gen subcommands (Week 10) ----
+    # ---- auto-test-gen subcommands ----
     atg_p = sub.add_parser(
         "auto-test-gen",
         help="Inspect + control the post-reindex auto-test-generation trigger",
@@ -404,9 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "query":
         handler = _HANDLERS.get((args.command, args.query_type))
     elif args.command == "auto-test-gen":
-        handler = _HANDLERS.get(
-            (args.command, args.auto_test_gen_subcommand)
-        )
+        handler = _HANDLERS.get((args.command, args.auto_test_gen_subcommand))
     else:
         handler = _HANDLERS.get(args.command)
 

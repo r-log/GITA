@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -29,30 +30,24 @@ class Base(DeclarativeBase):
 class Repo(Base):
     __tablename__ = "repos"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    github_full_name: Mapped[str | None] = mapped_column(
-        String(255), unique=True, nullable=True
-    )
+    # Unique case-insensitively (see __table_args__): lookups lower() it.
+    github_full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     root_path: Mapped[str] = mapped_column(Text, nullable=False)
     head_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    indexed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    # Per-repo opt-in for the post-reindex auto-test-generation trigger
-    # (Week 9). Defaults to False so no existing repo gets surprise PRs;
+    # Per-repo opt-in for the post-reindex auto-test-generation trigger.
+    # Defaults to False so no existing repo gets surprise PRs;
     # flipped on via ``gita index --auto-test-gen``.
     auto_test_generation: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
-    # Remote default branch (e.g. "main", "master", "develop"). Used by
-    # the auto-test-generation trigger (Week 10) so PRs target the
-    # right base branch instead of a hardcoded "main".
+    # Remote default branch (e.g. "main", "master", "develop"). Only pushes
+    # to it reindex, and auto-generated test PRs target it.
     # Discovered via ``discover_default_branch`` at index time;
     # overridable via ``gita index --default-branch BRANCH``.
     default_branch: Mapped[str] = mapped_column(
@@ -66,13 +61,20 @@ class Repo(Base):
         back_populates="repo", cascade="all, delete-orphan"
     )
 
+    __table_args__ = (
+        Index(
+            "ix_repos_github_full_name_lower",
+            func.lower(github_full_name),
+            unique=True,
+            postgresql_where=github_full_name.isnot(None),
+        ),
+    )
+
 
 class CodeIndex(Base):
     __tablename__ = "code_index"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     repo_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("repos.id", ondelete="CASCADE"),
@@ -95,15 +97,27 @@ class CodeIndex(Base):
         UniqueConstraint("repo_id", "file_path", name="uq_code_index_repo_file"),
         Index("ix_code_index_repo_id", "repo_id"),
         Index("ix_code_index_language", "language"),
+        # Full-text search for concept_view ('simple': no stemming, which
+        # suits identifiers). Queries must use the same expression.
+        Index(
+            "ix_code_index_content_fts",
+            text("to_tsvector('simple', COALESCE(content, ''))"),
+            postgresql_using="gin",
+        ),
+        # Cosine-similarity search over file embeddings.
+        Index(
+            "ix_code_index_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
     )
 
 
 class ImportEdge(Base):
     __tablename__ = "import_edges"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     repo_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("repos.id", ondelete="CASCADE"),
@@ -125,10 +139,11 @@ class ImportEdge(Base):
 class AgentAction(Base):
     """Persistent record of every decision that passes the write gate.
 
-    Primary purpose is automatic dedupe: before executing a Decision, the
-    framework hashes its identifying payload into a ``signature`` and
-    checks whether ``(repo_name, agent, action, signature)`` already has a
-    row. If so, the decision short-circuits with ``Outcome.DEDUPED``.
+    Primary purpose is idempotency: before executing a Decision, the
+    framework computes its identity (``signature``) and reserves
+    ``(repo_name, agent, action, signature, live)``. An existing row
+    short-circuits the decision with ``Outcome.DEDUPED``; see
+    ``gita.agents.dedupe``.
 
     Secondary purpose is audit trail — ``evidence`` carries the reasoning
     chain the agent produced, and ``external_id`` holds the GitHub ID of
@@ -138,9 +153,7 @@ class AgentAction(Base):
 
     __tablename__ = "agent_actions"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     repo_name: Mapped[str] = mapped_column(String(255), nullable=False)
     agent: Mapped[str] = mapped_column(String(64), nullable=False)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -148,9 +161,10 @@ class AgentAction(Base):
     external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    evidence: Mapped[list[str]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    evidence: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    # False for shadow-mode observations (nothing reached GitHub). Dedupe
+    # checks never let a shadow row suppress a live side effect.
+    live: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true", default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -161,6 +175,7 @@ class AgentAction(Base):
             "agent",
             "action",
             "signature",
+            "live",
             name="uq_agent_actions_signature",
         ),
         Index("ix_agent_actions_repo_name", "repo_name"),

@@ -6,6 +6,7 @@ sender filtering, event parsing, and edge cases. No DB or Redis needed.
 The test secret and payloads are synthetic. HMAC signatures are computed
 inline so the tests are self-contained.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -15,7 +16,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from gita.web.webhooks import WebhookEvent, _parse_event, verify_signature
+from gita.web.webhooks import _parse_event, verify_signature
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -72,7 +73,7 @@ def _make_payload(
     """
     payload: dict = {
         "sender": {"login": sender_login, "type": sender_type},
-        "repository": {"full_name": repo_full_name},
+        "repository": {"full_name": repo_full_name, "default_branch": "main"},
     }
     if action is not None:
         payload["action"] = action
@@ -82,7 +83,11 @@ def _make_payload(
             "head": {"sha": "test-sha-abc123"},
         }
     if issue_number is not None:
-        payload["issue"] = {"number": issue_number}
+        payload["issue"] = {
+            "number": issue_number,
+            "user": {"login": "reporter"},
+            "author_association": "NONE",
+        }
     if extra:
         payload.update(extra)
     return payload
@@ -119,26 +124,18 @@ def _post_webhook(
 @pytest.fixture
 def client(monkeypatch):
     """TestClient with GITHUB_WEBHOOK_SECRET set and a fake ARQ pool."""
-    monkeypatch.setattr(
-        "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
-    )
-    from gita.web import cooldown
-    cooldown.reset()
-
+    monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET)
     from gita.web import create_app
 
     app = create_app(use_lifespan=False)
     app.state.arq_pool = _FakeArqPool()
     yield TestClient(app)
-    cooldown.reset()
 
 
 @pytest.fixture
 def client_no_secret(monkeypatch):
     """TestClient with no webhook secret configured."""
-    monkeypatch.setattr(
-        "gita.web.webhooks.settings.github_webhook_secret", None
-    )
+    monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", None)
     from gita.web import create_app
 
     app = create_app(use_lifespan=False)
@@ -161,9 +158,7 @@ class TestVerifySignature:
 
     def test_wrong_prefix(self):
         body = b'{"hello": "world"}'
-        digest = hmac.new(
-            TEST_SECRET.encode(), body, hashlib.sha256
-        ).hexdigest()
+        digest = hmac.new(TEST_SECRET.encode(), body, hashlib.sha256).hexdigest()
         assert verify_signature(body, f"sha1={digest}", TEST_SECRET) is False
 
     def test_empty_body(self):
@@ -257,9 +252,7 @@ class TestSignatureVerification:
 # ---------------------------------------------------------------------------
 class TestBotSenderFilter:
     def test_bot_sender_ignored(self, client):
-        payload = _make_payload(
-            sender_type="Bot", sender_login="gita-agents[bot]"
-        )
+        payload = _make_payload(sender_type="Bot", sender_login="gita-agents[bot]")
         resp = _post_webhook(client, payload)
         assert resp.status_code == 200
         data = resp.json()
@@ -275,9 +268,7 @@ class TestBotSenderFilter:
 
     def test_organization_sender_dispatched(self, client):
         """GitHub Org-owned actions fire with sender.type=Organization."""
-        payload = _make_payload(
-            sender_type="Organization", sender_login="r-log"
-        )
+        payload = _make_payload(sender_type="Organization", sender_login="r-log")
         resp = _post_webhook(client, payload)
         assert resp.status_code == 200
         assert resp.json()["status"] == "dispatched"
@@ -301,19 +292,43 @@ class TestEventTypeParsing:
         assert data["status"] == "dispatched"
         assert data["function"] == "review_pr"
 
-    def test_issues_opened_dispatched(self, client):
+    def test_issues_opened_is_not_a_trigger(self, client):
+        """Opening an issue costs nothing; onboarding needs the label."""
         payload = _make_payload(action="opened", pr_number=None, issue_number=7)
+        resp = _post_webhook(client, payload, event_type="issues")
+        assert resp.json()["status"] == "ignored"
+
+    def test_onboarding_label_applied_by_maintainer_dispatched(self, client):
+        payload = _make_payload(
+            action="labeled",
+            pr_number=None,
+            issue_number=7,
+            extra={"label": {"name": "gita:onboard"}},
+        )
         resp = _post_webhook(client, payload, event_type="issues")
         data = resp.json()
         assert data["status"] == "dispatched"
         assert data["function"] == "onboard_repo"
 
-    def test_push_event_dispatched(self, client):
-        payload = _make_payload(action=None, pr_number=None, extra={"after": "abc123"})
+    def test_push_to_default_branch_dispatched(self, client):
+        payload = _make_payload(
+            action=None,
+            pr_number=None,
+            extra={"ref": "refs/heads/main", "after": "a" * 40},
+        )
         resp = _post_webhook(client, payload, event_type="push")
         data = resp.json()
         assert data["status"] == "dispatched"
         assert data["function"] == "reindex_repo"
+
+    def test_push_to_feature_branch_ignored(self, client):
+        payload = _make_payload(
+            action=None,
+            pr_number=None,
+            extra={"ref": "refs/heads/feature", "after": "a" * 40},
+        )
+        resp = _post_webhook(client, payload, event_type="push")
+        assert resp.json()["status"] == "ignored"
 
     def test_unhandled_event_ignored(self, client):
         """Events not in EVENT_HANDLERS return 200 with 'no handler'."""
@@ -325,11 +340,49 @@ class TestEventTypeParsing:
 
     def test_missing_event_header_returns_400(self, client):
         payload = _make_payload()
-        resp = _post_webhook(
-            client, payload, include_event_header=False
-        )
+        resp = _post_webhook(client, payload, include_event_header=False)
         assert resp.status_code == 400
         assert "missing" in resp.json()["error"].lower()
+
+
+class TestMalformedInput:
+    """Signed but malformed deliveries are client errors, not 500s."""
+
+    def _post_raw(self, client, body: bytes, signature: str | None = None):
+        return client.post(
+            WEBHOOK_URL,
+            content=body,
+            headers={
+                "X-Hub-Signature-256": signature or _sign(body),
+                "X-GitHub-Event": "pull_request",
+                "Content-Type": "application/json",
+            },
+        )
+
+    def test_signed_non_json_body_returns_400(self, client):
+        resp = self._post_raw(client, b"not json at all")
+        assert resp.status_code == 400
+
+    def test_signed_json_array_returns_400(self, client):
+        resp = self._post_raw(client, b"[1, 2, 3]")
+        assert resp.status_code == 400
+
+    def test_non_ascii_signature_returns_401(self, client):
+        body = b"{}"
+        resp = client.post(
+            WEBHOOK_URL,
+            content=body,
+            headers={
+                "X-Hub-Signature-256": b"sha256=\xc3\xa9\xc3\xa9",
+                "X-GitHub-Event": "pull_request",
+            },
+        )
+        assert resp.status_code == 401
+
+    def test_responses_are_valid_json_with_hostile_values(self, client):
+        payload = _make_payload(action='x"y', pr_number=None)
+        resp = _post_webhook(client, payload, event_type='weird"event')
+        assert resp.json()["action"] == 'x"y'
 
 
 # ---------------------------------------------------------------------------
@@ -354,9 +407,7 @@ class TestDeliveryId:
     def test_delivery_id_logged(self, client):
         """Delivery ID should be accepted and parsed (used for tracing)."""
         payload = _make_payload()
-        resp = _post_webhook(
-            client, payload, delivery_id="550e8400-e29b-41d4-a716-446655440000"
-        )
+        resp = _post_webhook(client, payload, delivery_id="550e8400-e29b-41d4-a716-446655440000")
         assert resp.status_code == 200
         assert resp.json()["status"] == "dispatched"
 
@@ -367,11 +418,8 @@ class TestDeliveryId:
 class TestArqPoolIntegration:
     def test_no_pool_returns_503(self, monkeypatch):
         """If the ARQ pool is unavailable, return 503."""
-        monkeypatch.setattr(
-            "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
-        )
-        from gita.web import create_app, cooldown
-        cooldown.reset()
+        monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET)
+        from gita.web import create_app
 
         app = create_app(use_lifespan=False)
         app.state.arq_pool = None  # simulate pool failure
@@ -381,23 +429,11 @@ class TestArqPoolIntegration:
         resp = _post_webhook(no_pool_client, payload)
         assert resp.status_code == 503
         assert "unavailable" in resp.json()["error"]
-        cooldown.reset()
 
     def test_duplicate_job_id_ignored(self, monkeypatch):
-        """Wall 3: second webhook for same PR returns 'job already queued'.
-
-        We set cooldown window to 0 so the cooldown gate doesn't fire
-        first — this isolates the ARQ job ID deduplication behavior.
-        """
-        monkeypatch.setattr(
-            "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
-        )
-        monkeypatch.setattr(
-            "gita.web.webhooks.check_cooldown",
-            lambda repo, **kw: False,  # bypass cooldown
-        )
-        from gita.web import create_app, cooldown
-        cooldown.reset()
+        """A redelivery for the same PR commit returns 'job already queued'."""
+        monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET)
+        from gita.web import create_app
 
         app = create_app(use_lifespan=False)
         app.state.arq_pool = _FakeArqPool()
@@ -413,7 +449,6 @@ class TestArqPoolIntegration:
         data2 = resp2.json()
         assert data2["status"] == "ignored"
         assert data2["reason"] == "job already queued"
-        cooldown.reset()
 
     def test_different_prs_both_dispatch(self, client):
         """Different PR numbers get different job IDs — both dispatch."""
@@ -425,3 +460,20 @@ class TestArqPoolIntegration:
             _make_payload(pr_number=11, repo_full_name="other/repo"),
         )
         assert resp2.json()["status"] == "dispatched"
+
+
+class TestOwnBotOnly:
+    def test_other_bots_reviewed_when_slug_configured(self, client, monkeypatch):
+        monkeypatch.setattr("gita.web.webhooks.settings.github_app_slug", "gita-agents")
+        payload = _make_payload(sender_type="Bot", sender_login="dependabot[bot]")
+        assert _post_webhook(client, payload).json()["status"] == "dispatched"
+
+    def test_own_bot_ignored_when_slug_configured(self, client, monkeypatch):
+        monkeypatch.setattr("gita.web.webhooks.settings.github_app_slug", "gita-agents")
+        payload = _make_payload(sender_type="Bot", sender_login="gita-agents[bot]")
+        assert _post_webhook(client, payload).json()["reason"] == "bot sender"
+
+    def test_all_bots_ignored_without_slug(self, client, monkeypatch):
+        monkeypatch.setattr("gita.web.webhooks.settings.github_app_slug", None)
+        payload = _make_payload(sender_type="Bot", sender_login="dependabot[bot]")
+        assert _post_webhook(client, payload).json()["reason"] == "bot sender"

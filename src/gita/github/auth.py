@@ -5,6 +5,7 @@ JWT, verify structure) without needing a mock HTTP transport. The
 ``GithubClient`` in ``client.py`` handles all the HTTP parts — installation
 lookup, token exchange, API calls.
 """
+
 from __future__ import annotations
 
 import time
@@ -30,14 +31,10 @@ class GithubAppAuth:
     private_key: bytes  # PEM-encoded RSA private key
 
     @classmethod
-    def from_files(
-        cls, app_id: int, private_key_path: str | Path
-    ) -> "GithubAppAuth":
+    def from_files(cls, app_id: int, private_key_path: str | Path) -> GithubAppAuth:
         path = Path(private_key_path)
         if not path.is_file():
-            raise FileNotFoundError(
-                f"GitHub App private key not found at {path}"
-            )
+            raise FileNotFoundError(f"GitHub App private key not found at {path}")
         return cls(app_id=app_id, private_key=path.read_bytes())
 
     def generate_jwt(self, *, now: float | None = None) -> str:

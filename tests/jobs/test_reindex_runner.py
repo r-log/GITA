@@ -4,6 +4,7 @@ Uses the test DB for repo resolution and monkeypatch for git operations.
 The runner creates its own ``SessionLocal`` sessions, so we patch it
 to use the test DB engine instead of the production one.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -20,9 +21,7 @@ from gita.db.models import CodeIndex, Repo
 from gita.indexer.ingest import index_repository
 from gita.jobs.runners import _git_sync
 
-SYNTH_REPO = (
-    Path(__file__).parent.parent / "fixtures" / "synthetic_py"
-).resolve()
+SYNTH_REPO = (Path(__file__).parent.parent / "fixtures" / "synthetic_py").resolve()
 
 
 @pytest_asyncio.fixture
@@ -38,79 +37,104 @@ async def _patch_runner_session(db_session: AsyncSession, monkeypatch):
     async def _fake_session_local():
         yield db_session
 
-    monkeypatch.setattr(
-        "gita.jobs.runners.SessionLocal", _fake_session_local
-    )
+    monkeypatch.setattr("gita.jobs.runners.SessionLocal", _fake_session_local)
 
 
 # ---------------------------------------------------------------------------
-# _git_sync unit tests (mock subprocess)
+# _git_sync against real git repositories
 # ---------------------------------------------------------------------------
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _commit(repo: Path, name: str, content: str) -> str:
+    (repo / name).write_text(content)
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", f"add {name}")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
+    """An upstream repo and a clone of it (the directory GITA indexes)."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    _git(upstream, "init", "-q", "-b", "main")
+    _commit(upstream, "a.py", "x = 1\n")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(upstream), str(clone))
+    return upstream, clone
+
+
 class TestGitSync:
-    def test_success(self, monkeypatch):
-        calls = []
+    def test_checks_out_the_pushed_commit_detached(self, origin_and_clone):
+        upstream, clone = origin_and_clone
+        local_main_before = _git(clone, "rev-parse", "main")
+        new_sha = _commit(upstream, "b.py", "y = 2\n")
 
-        def fake_run(cmd, **kw):
-            calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0)
+        ok, err = _git_sync(clone, new_sha)
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        ok, err = _git_sync(Path("/tmp/repo"), "abc123")
-        assert ok is True
-        assert err == ""
-        assert len(calls) == 2
-        assert "fetch" in calls[0]
-        assert "abc123" in calls[1]
+        assert ok, err
+        assert _git(clone, "rev-parse", "HEAD") == new_sha
+        assert (clone / "b.py").exists()
+        # No branch pointer was moved (reset --hard used to move main).
+        assert _git(clone, "rev-parse", "main") == local_main_before
+        assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
 
-    def test_success_without_sha_uses_origin_head(self, monkeypatch):
-        calls = []
+    def test_refuses_to_discard_uncommitted_work(self, origin_and_clone):
+        upstream, clone = origin_and_clone
+        new_sha = _commit(upstream, "b.py", "y = 2\n")
+        (clone / "a.py").write_text("x = 'my unsaved edit'\n")
 
-        def fake_run(cmd, **kw):
-            calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0)
+        ok, err = _git_sync(clone, new_sha)
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        ok, _ = _git_sync(Path("/tmp/repo"), None)
-        assert ok is True
-        assert "origin/HEAD" in calls[1]
+        assert ok is False
+        assert "uncommitted changes" in err
+        assert (clone / "a.py").read_text() == "x = 'my unsaved edit'\n"
 
-    def test_fetch_failure(self, monkeypatch):
-        def fake_run(cmd, **kw):
-            if "fetch" in cmd:
-                raise subprocess.CalledProcessError(1, cmd, stderr="fatal")
-            return subprocess.CompletedProcess(cmd, 0)
+    def test_untracked_files_do_not_block_or_get_deleted(self, origin_and_clone):
+        upstream, clone = origin_and_clone
+        new_sha = _commit(upstream, "b.py", "y = 2\n")
+        (clone / "notes.txt").write_text("scratch")
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        ok, err = _git_sync(Path("/tmp/repo"), "abc123")
+        ok, err = _git_sync(clone, new_sha)
+
+        assert ok, err
+        assert (clone / "notes.txt").read_text() == "scratch"
+
+    def test_unknown_commit_fails_cleanly(self, origin_and_clone):
+        _, clone = origin_and_clone
+        ok, err = _git_sync(clone, "f" * 40)
+        assert ok is False
+        assert "git checkout failed" in err
+
+    def test_fetch_failure(self, origin_and_clone, tmp_path):
+        _, clone = origin_and_clone
+        _git(clone, "remote", "set-url", "origin", str(tmp_path / "gone"))
+        ok, err = _git_sync(clone, "f" * 40)
         assert ok is False
         assert "git fetch failed" in err
 
-    def test_reset_failure(self, monkeypatch):
-        def fake_run(cmd, **kw):
-            if "reset" in cmd:
-                raise subprocess.CalledProcessError(1, cmd, stderr="fatal")
-            return subprocess.CompletedProcess(cmd, 0)
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        ok, err = _git_sync(Path("/tmp/repo"), "abc123")
-        assert ok is False
-        assert "git reset failed" in err
-
-    def test_timeout(self, monkeypatch):
+    def test_timeout_is_reported(self, monkeypatch):
         def fake_run(cmd, **kw):
             raise subprocess.TimeoutExpired(cmd, 120)
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         ok, err = _git_sync(Path("/tmp/repo"), "abc123")
         assert ok is False
-        assert "git fetch failed" in err
+        assert "timed out" in err
 
 
 # ---------------------------------------------------------------------------
 # run_reindex_job: repo resolution + error paths
 # ---------------------------------------------------------------------------
 class TestReindexRunnerResolution:
-
     @pytest.mark.usefixtures("_patch_runner_session")
     async def test_repo_not_found(self, db_session: AsyncSession):
         """Repo not indexed -> returns error dict without git operations."""
@@ -133,12 +157,8 @@ class TestReindexRunnerResolution:
 
         from gita.jobs.runners import run_reindex_job
 
-        with patch(
-            "gita.jobs.runners._git_sync", return_value=(True, "")
-        ):
-            result = await run_reindex_job(
-                "r-log/synthetic", after_sha="abc123"
-            )
+        with patch("gita.jobs.runners._git_sync", return_value=(True, "")):
+            result = await run_reindex_job("r-log/synthetic", after_sha="abc123")
 
         assert result["status"] == "completed"
         assert result["repo"] == "r-log/synthetic"
@@ -163,7 +183,6 @@ class TestReindexRunnerResolution:
 
 
 class TestReindexRunnerGitFailure:
-
     @pytest.mark.usefixtures("_patch_runner_session")
     async def test_git_sync_failure_returns_error(self, db_session: AsyncSession):
         await index_repository(
@@ -180,9 +199,7 @@ class TestReindexRunnerGitFailure:
             "gita.jobs.runners._git_sync",
             return_value=(False, "git fetch failed: timeout"),
         ):
-            result = await run_reindex_job(
-                "r-log/synthetic", after_sha="abc123"
-            )
+            result = await run_reindex_job("r-log/synthetic", after_sha="abc123")
 
         assert result["status"] == "error"
         assert result["reason"] == "git_sync_failed"
@@ -190,7 +207,6 @@ class TestReindexRunnerGitFailure:
 
 
 class TestReindexRunnerSuccess:
-
     @pytest.mark.usefixtures("_patch_runner_session")
     async def test_completed_summary_shape(self, db_session: AsyncSession):
         await index_repository(
@@ -203,12 +219,8 @@ class TestReindexRunnerSuccess:
 
         from gita.jobs.runners import run_reindex_job
 
-        with patch(
-            "gita.jobs.runners._git_sync", return_value=(True, "")
-        ):
-            result = await run_reindex_job(
-                "r-log/synthetic", after_sha="abc123"
-            )
+        with patch("gita.jobs.runners._git_sync", return_value=(True, "")):
+            result = await run_reindex_job("r-log/synthetic", after_sha="abc123")
 
         assert result["status"] == "completed"
         assert "mode" in result
@@ -230,9 +242,7 @@ class TestReindexRunnerSuccess:
 
         from gita.jobs.runners import run_reindex_job
 
-        with patch(
-            "gita.jobs.runners._git_sync", return_value=(True, "")
-        ):
+        with patch("gita.jobs.runners._git_sync", return_value=(True, "")):
             await run_reindex_job("r-log/synthetic", after_sha="abc123")
 
         rows = (await db_session.execute(select(CodeIndex))).scalars().all()

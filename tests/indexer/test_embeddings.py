@@ -2,6 +2,7 @@
 
 Uses the FakeEmbeddingClient — no OpenAI API calls needed.
 """
+
 from __future__ import annotations
 
 import math
@@ -78,8 +79,6 @@ class TestMakeEmbeddingClient:
     def test_returns_openai_client_when_key_set(self, monkeypatch):
         from gita import config as config_module
 
-        monkeypatch.setattr(
-            config_module.settings, "openai_api_key", "sk-test"
-        )
+        monkeypatch.setattr(config_module.settings, "openai_api_key", "sk-test")
         client = make_embedding_client()
         assert isinstance(client, OpenAIEmbeddingClient)

@@ -1,9 +1,9 @@
 """Minimal GitHub App client.
 
-Week 2 shipped ``comment`` only. Week 3 expands the dispatch to cover the
-write path onboarding needs: ``create_issue``, ``close_issue``,
-``edit_issue``, ``add_label``, ``remove_label``. Every other action still
-raises ``NotImplementedError`` so unknown dispatch shapes fail loud.
+Implements the ``ActionClient`` protocol for the actions in
+``SUPPORTED_ACTIONS``; anything else raises ``NotImplementedError`` so an
+unknown dispatch shape fails loudly. Also provides the read calls agents
+need (PR metadata and files, refs, file contents).
 
 Architecture:
 - ``GithubClient`` is instantiated once per process and reused.
@@ -12,21 +12,24 @@ Architecture:
   ``httpx.MockTransport``.
 - Installation lookup (``(owner, repo) → installation_id``) is cached
   indefinitely because installation assignments rarely change.
-- Installation tokens are cached per installation with a 5-minute safety
+- Installation tokens are scoped to the one repository a call concerns
+  and cached per (installation, repository) with a 5-minute safety
   window before their real expiry.
 - Every HTTP call uses a fresh JWT (cheap to sign, safer than caching).
 """
+
 from __future__ import annotations
 
 import base64
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
+from gita import __version__
 from gita.agents.decisions import Decision
 from gita.github.auth import GithubAppAuth
 
@@ -35,7 +38,23 @@ logger = logging.getLogger(__name__)
 _GITHUB_API = "https://api.github.com"
 _ACCEPT = "application/vnd.github+json"
 _API_VERSION = "2022-11-28"
-_USER_AGENT = "gita/0.1.0"
+_USER_AGENT = f"gita/{__version__}"
+
+# Actions ``GithubClient.execute`` dispatches. Must match the decision
+# gate's thresholds and the dedupe signature shapes (a test enforces it).
+SUPPORTED_ACTIONS: frozenset[str] = frozenset(
+    {
+        "comment",
+        "create_issue",
+        "close_issue",
+        "edit_issue",
+        "add_label",
+        "remove_label",
+        "create_branch",
+        "update_file",
+        "open_pr",
+    }
+)
 
 # Refresh installation tokens this many seconds before their real expiry
 # to avoid racing the clock on a slow API call.
@@ -66,7 +85,7 @@ class GithubClient:
             headers={"User-Agent": _USER_AGENT},
         )
         self._installation_ids: dict[tuple[str, str], int] = {}
-        self._installation_tokens: dict[int, _CachedToken] = {}
+        self._installation_tokens: dict[tuple[int, str | None], _CachedToken] = {}
 
     # -----------------------------------------------------------------
     # Lifecycle
@@ -75,7 +94,7 @@ class GithubClient:
         if self._owns_http:
             await self.http.aclose()
 
-    async def __aenter__(self) -> "GithubClient":
+    async def __aenter__(self) -> GithubClient:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
@@ -96,10 +115,7 @@ class GithubClient:
         action = decision.action
         repo_full_name = decision.target.get("repo")
         if not repo_full_name:
-            raise ValueError(
-                f"{action} decision must have target.repo; "
-                f"got {decision.target=}"
-            )
+            raise ValueError(f"{action} decision must have target.repo; got {decision.target=}")
         owner, repo = str(repo_full_name).split("/", 1)
 
         if action == "comment":
@@ -116,21 +132,17 @@ class GithubClient:
             title = decision.payload.get("title")
             if not title:
                 raise ValueError(
-                    "create_issue decision must have payload.title; "
-                    f"got {decision.payload=}"
+                    f"create_issue decision must have payload.title; got {decision.payload=}"
                 )
             body = decision.payload.get("body") or ""
             labels = list(decision.payload.get("labels") or [])
-            return await self._create_issue(
-                owner, repo, str(title), str(body), labels
-            )
+            return await self._create_issue(owner, repo, str(title), str(body), labels)
 
         if action == "close_issue":
             issue = decision.target.get("issue")
             if issue is None:
                 raise ValueError(
-                    "close_issue decision must have target.issue; "
-                    f"got {decision.target=}"
+                    f"close_issue decision must have target.issue; got {decision.target=}"
                 )
             return await self._close_issue(owner, repo, int(issue))
 
@@ -138,8 +150,7 @@ class GithubClient:
             issue = decision.target.get("issue")
             if issue is None:
                 raise ValueError(
-                    "edit_issue decision must have target.issue; "
-                    f"got {decision.target=}"
+                    f"edit_issue decision must have target.issue; got {decision.target=}"
                 )
             title = decision.payload.get("title")
             body = decision.payload.get("body")
@@ -166,9 +177,7 @@ class GithubClient:
                     "non-empty payload.labels list; "
                     f"got {decision.target=} {decision.payload=}"
                 )
-            return await self._add_labels(
-                owner, repo, int(issue), [str(label) for label in labels]
-            )
+            return await self._add_labels(owner, repo, int(issue), [str(label) for label in labels])
 
         if action == "remove_label":
             issue = decision.target.get("issue")
@@ -179,9 +188,7 @@ class GithubClient:
                     "payload.label; "
                     f"got {decision.target=} {decision.payload=}"
                 )
-            return await self._remove_label(
-                owner, repo, int(issue), str(label)
-            )
+            return await self._remove_label(owner, repo, int(issue), str(label))
 
         if action == "create_branch":
             ref_name = decision.payload.get("ref")
@@ -192,21 +199,14 @@ class GithubClient:
                     "payload.base_sha; "
                     f"got {decision.payload=}"
                 )
-            return await self._create_ref(
-                owner, repo, str(ref_name), str(base_sha)
-            )
+            return await self._create_ref(owner, repo, str(ref_name), str(base_sha))
 
         if action == "update_file":
             path = decision.payload.get("path")
             content = decision.payload.get("content")
             message = decision.payload.get("message")
             branch = decision.payload.get("branch")
-            if (
-                not path
-                or content is None
-                or not message
-                or not branch
-            ):
+            if not path or content is None or not message or not branch:
                 raise ValueError(
                     "update_file decision must have payload.path, "
                     "payload.content, payload.message, payload.branch; "
@@ -245,9 +245,7 @@ class GithubClient:
                 draft=draft,
             )
 
-        raise NotImplementedError(
-            f"GithubClient does not support action {action!r}"
-        )
+        raise NotImplementedError(f"GithubClient does not support action {action!r}")
 
     # -----------------------------------------------------------------
     # Installation resolution + token cache
@@ -274,10 +272,23 @@ class GithubClient:
         return installation_id
 
     async def _get_installation_token(
-        self, installation_id: int, *, now: datetime | None = None
+        self,
+        installation_id: int,
+        *,
+        repo: str | None = None,
+        now: datetime | None = None,
     ) -> str:
-        current = now if now is not None else datetime.now(timezone.utc)
-        cached = self._installation_tokens.get(installation_id)
+        """An installation token, scoped to ``repo`` when given.
+
+        An unscoped installation token works on *every* repository the
+        installation covers. Each API call here concerns one repository,
+        so tokens are requested for just that one: a leaked or misused
+        token can't reach the installation's other repos. Cached per
+        ``(installation, repo)``.
+        """
+        current = now if now is not None else datetime.now(UTC)
+        key = (installation_id, repo)
+        cached = self._installation_tokens.get(key)
         if cached is not None and cached.is_fresh(current):
             return cached.token
 
@@ -289,23 +300,18 @@ class GithubClient:
                 "Accept": _ACCEPT,
                 "X-GitHub-Api-Version": _API_VERSION,
             },
+            json={"repositories": [repo]} if repo else None,
         )
         response.raise_for_status()
         data = response.json()
-        expires_at = datetime.fromisoformat(
-            data["expires_at"].replace("Z", "+00:00")
-        )
+        expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
         token = data["token"]
-        self._installation_tokens[installation_id] = _CachedToken(
-            token=token, expires_at=expires_at
-        )
+        self._installation_tokens[key] = _CachedToken(token=token, expires_at=expires_at)
         return token
 
-    async def _installation_token_for_repo(
-        self, owner: str, repo: str
-    ) -> str:
+    async def _installation_token_for_repo(self, owner: str, repo: str) -> str:
         installation_id = await self._get_installation_id(owner, repo)
-        return await self._get_installation_token(installation_id)
+        return await self._get_installation_token(installation_id, repo=repo)
 
     # -----------------------------------------------------------------
     # Action handlers
@@ -317,9 +323,7 @@ class GithubClient:
             "X-GitHub-Api-Version": _API_VERSION,
         }
 
-    async def _post_comment(
-        self, owner: str, repo: str, issue: int, body: str
-    ) -> dict[str, Any]:
+    async def _post_comment(self, owner: str, repo: str, issue: int, body: str) -> dict[str, Any]:
         token = await self._installation_token_for_repo(owner, repo)
         url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}/comments"
         response = await self.http.post(
@@ -380,9 +384,7 @@ class GithubClient:
             "title": title,
         }
 
-    async def _close_issue(
-        self, owner: str, repo: str, issue: int
-    ) -> dict[str, Any]:
+    async def _close_issue(self, owner: str, repo: str, issue: int) -> dict[str, Any]:
         token = await self._installation_token_for_repo(owner, repo)
         url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}"
         response = await self.http.patch(
@@ -452,9 +454,7 @@ class GithubClient:
         labels: list[str],
     ) -> dict[str, Any]:
         token = await self._installation_token_for_repo(owner, repo)
-        url = (
-            f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}/labels"
-        )
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}/labels"
         response = await self.http.post(
             url,
             headers=self._repo_auth_headers(token),
@@ -462,9 +462,7 @@ class GithubClient:
         )
         response.raise_for_status()
         data = response.json()
-        applied = (
-            [row.get("name") for row in data] if isinstance(data, list) else []
-        )
+        applied = [row.get("name") for row in data] if isinstance(data, list) else []
         logger.info(
             "github_labels_added owner=%s repo=%s issue=%s labels=%s applied=%s",
             owner,
@@ -489,10 +487,7 @@ class GithubClient:
     ) -> dict[str, Any]:
         token = await self._installation_token_for_repo(owner, repo)
         encoded_label = quote(label, safe="")
-        url = (
-            f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}/labels/"
-            f"{encoded_label}"
-        )
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{issue}/labels/{encoded_label}"
         response = await self.http.delete(
             url,
             headers=self._repo_auth_headers(token),
@@ -515,9 +510,8 @@ class GithubClient:
     # -----------------------------------------------------------------
     # Contents API write helpers
     #
-    # Private — dispatched by ``execute()`` in Week 8 Day 2 when the
-    # corresponding action types (``create_branch``, ``update_file``,
-    # ``open_pr``) land in the Decision framework.
+    # Private — dispatched by ``execute()`` for the code-writing actions
+    # (``create_branch``, ``update_file``, ``open_pr``).
     # -----------------------------------------------------------------
     async def _create_ref(
         self,
@@ -575,14 +569,10 @@ class GithubClient:
         """
         token = await self._installation_token_for_repo(owner, repo)
         encoded_path = quote(path, safe="/")
-        url = (
-            f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{encoded_path}"
-        )
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{encoded_path}"
         payload: dict[str, Any] = {
             "message": message,
-            "content": base64.b64encode(content.encode("utf-8")).decode(
-                "ascii"
-            ),
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
             "branch": branch,
         }
         if sha is not None:
@@ -597,8 +587,7 @@ class GithubClient:
         content_data = data.get("content", {}) or {}
         commit_data = data.get("commit", {}) or {}
         logger.info(
-            "github_file_written owner=%s repo=%s path=%s branch=%s "
-            "mode=%s commit=%s",
+            "github_file_written owner=%s repo=%s path=%s branch=%s mode=%s commit=%s",
             owner,
             repo,
             path,
@@ -645,8 +634,7 @@ class GithubClient:
         response.raise_for_status()
         data = response.json()
         logger.info(
-            "github_pr_opened owner=%s repo=%s pr=%s head=%s base=%s "
-            "draft=%s",
+            "github_pr_opened owner=%s repo=%s pr=%s head=%s base=%s draft=%s",
             owner,
             repo,
             data.get("number"),
@@ -667,9 +655,7 @@ class GithubClient:
     # -----------------------------------------------------------------
     # PR reading (not part of ActionClient — called directly by agents)
     # -----------------------------------------------------------------
-    async def get_pr(
-        self, owner: str, repo: str, number: int
-    ) -> "PRInfo":
+    async def get_pr(self, owner: str, repo: str, number: int) -> PRInfo:
         """Fetch PR metadata. Returns a typed dataclass, not raw JSON."""
         token = await self._installation_token_for_repo(owner, repo)
         url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls/{number}"
@@ -694,9 +680,7 @@ class GithubClient:
             html_url=data.get("html_url", ""),
         )
 
-    async def get_pr_files(
-        self, owner: str, repo: str, number: int
-    ) -> list[dict[str, Any]]:
+    async def get_pr_files(self, owner: str, repo: str, number: int) -> list[dict[str, Any]]:
         """Fetch the list of files changed in a PR.
 
         Returns the raw JSON array from GitHub's
@@ -712,8 +696,7 @@ class GithubClient:
         page = 1
         while True:
             url = (
-                f"{_GITHUB_API}/repos/{owner}/{repo}/pulls/{number}/files"
-                f"?per_page=100&page={page}"
+                f"{_GITHUB_API}/repos/{owner}/{repo}/pulls/{number}/files?per_page=100&page={page}"
             )
             response = await self.http.get(
                 url,
@@ -741,9 +724,7 @@ class GithubClient:
     # Contents API read methods (called directly by agents during recipe
     # execution — not part of the ActionClient write path)
     # -----------------------------------------------------------------
-    async def get_ref(
-        self, owner: str, repo: str, ref: str
-    ) -> "RefInfo":
+    async def get_ref(self, owner: str, repo: str, ref: str) -> RefInfo:
         """Fetch a git ref (branch or tag).
 
         ``ref`` is the short ref (e.g. ``"heads/main"``), NOT the fully
@@ -752,9 +733,7 @@ class GithubClient:
         """
         token = await self._installation_token_for_repo(owner, repo)
         encoded_ref = quote(ref, safe="/")
-        url = (
-            f"{_GITHUB_API}/repos/{owner}/{repo}/git/ref/{encoded_ref}"
-        )
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/git/ref/{encoded_ref}"
         response = await self.http.get(
             url,
             headers=self._repo_auth_headers(token),
@@ -774,7 +753,7 @@ class GithubClient:
         path: str,
         *,
         ref: str | None = None,
-    ) -> "FileContents":
+    ) -> FileContents:
         """Fetch a file's contents from the repo.
 
         Returns a ``FileContents`` with base64-decoded UTF-8 content and
@@ -785,9 +764,7 @@ class GithubClient:
         """
         token = await self._installation_token_for_repo(owner, repo)
         encoded_path = quote(path, safe="/")
-        url = (
-            f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{encoded_path}"
-        )
+        url = f"{_GITHUB_API}/repos/{owner}/{repo}/contents/{encoded_path}"
         if ref is not None:
             url += f"?ref={quote(ref, safe='')}"
         response = await self.http.get(
@@ -804,9 +781,7 @@ class GithubClient:
         encoding = data.get("encoding", "base64")
         raw_content = data.get("content", "") or ""
         if encoding == "base64":
-            decoded = base64.b64decode(
-                raw_content.replace("\n", "")
-            ).decode("utf-8")
+            decoded = base64.b64decode(raw_content.replace("\n", "")).decode("utf-8")
         else:
             decoded = raw_content
         return FileContents(

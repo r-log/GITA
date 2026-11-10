@@ -3,18 +3,16 @@
 Two bridges live in ``gita.agents.onboarding``:
 
 1. ``build_onboarding_comment_decision`` — one Decision wrapping the whole
-   OnboardingResult as a single comment. Shipped in Week 2 Day 7 and already
-   covered end-to-end by the first real GitHub post; this file tests the
-   pure function shape only.
+   OnboardingResult as a single comment. This file tests the pure function
+   shape only.
 2. ``build_onboarding_issue_decisions`` — one Decision *per milestone*,
-   creating real issues. This is Week 3 Day 4's new surface — most of this
-   file exists to prove the bridge does the right thing under every
-   OnboardingResult shape the agent can produce.
+   creating real issues. Most of this file proves the bridge does the right
+   thing under every OnboardingResult shape the agent can produce.
 
-Together with Day 2's dedupe integration tests, these are what lets Day 7
-flip ``WRITE_MODE=full`` without holding breath: if the bridge is wrong,
-every downstream test can still be green and we'd still create bad issues.
+These matter before switching to ``WRITE_MODE=full``: if the bridge is
+wrong, every downstream test can be green and bad issues still get created.
 """
+
 from __future__ import annotations
 
 from gita.agents.onboarding import (
@@ -84,9 +82,7 @@ def _milestone(
 class TestEmptyResults:
     def test_no_milestones_returns_empty_list(self):
         result = _result(findings=[_finding()], milestones=[])
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         assert decisions == []
 
     def test_milestone_with_all_invalid_indices_is_skipped(self):
@@ -96,9 +92,7 @@ class TestEmptyResults:
             findings=[_finding()],
             milestones=[_milestone(finding_indices=[99, 100])],
         )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         assert decisions == []
 
     def test_milestone_with_mixed_indices_keeps_valid_ones(self):
@@ -106,9 +100,7 @@ class TestEmptyResults:
             findings=[_finding(), _finding(file="auth.py", line=17)],
             milestones=[_milestone(finding_indices=[0, 99, 1])],
         )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         assert len(decisions) == 1
         # Evidence lists only the two in-range findings (and three prefix lines).
         assert len(decisions[0].evidence) == 3 + 2
@@ -126,19 +118,13 @@ class TestHappyPath:
                 _milestone(title="m2", finding_indices=[1]),
             ],
         )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         assert len(decisions) == 2
         assert [d.payload["title"] for d in decisions] == ["m1", "m2"]
 
     def test_decision_action_is_create_issue(self):
-        result = _result(
-            findings=[_finding()], milestones=[_milestone()]
-        )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        result = _result(findings=[_finding()], milestones=[_milestone()])
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         assert decisions[0].action == "create_issue"
 
     def test_target_uses_target_repo_not_source_repo(self):
@@ -150,7 +136,8 @@ class TestHappyPath:
             repo_name="synthetic_py",  # the source
         )
         decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"  # the target
+            result,
+            target_repo="r-log/amass",  # the target
         )
         assert decisions[0].target["repo"] == "r-log/amass"
         # fallback_issue is absent when none was provided.
@@ -159,12 +146,8 @@ class TestHappyPath:
     def test_target_no_issue_key(self):
         """create_issue is creating the issue, so target.issue must not be
         set — that's the shape GithubClient._create_issue expects."""
-        result = _result(
-            findings=[_finding()], milestones=[_milestone()]
-        )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        result = _result(findings=[_finding()], milestones=[_milestone()])
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         assert "issue" not in decisions[0].target
 
     def test_confidence_inherits_from_milestone(self):
@@ -173,9 +156,7 @@ class TestHappyPath:
             milestones=[_milestone(confidence=0.42)],
             confidence=0.9,  # overall, should NOT be copied
         )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         assert decisions[0].confidence == 0.42
 
     def test_payload_has_title_and_body(self):
@@ -183,26 +164,18 @@ class TestHappyPath:
             findings=[_finding()],
             milestones=[_milestone(title="Harden error handling")],
         )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         assert decisions[0].payload["title"] == "Harden error handling"
         assert "body" in decisions[0].payload
         assert decisions[0].payload["body"]  # non-empty
 
     def test_labels_omitted_by_default(self):
-        result = _result(
-            findings=[_finding()], milestones=[_milestone()]
-        )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        result = _result(findings=[_finding()], milestones=[_milestone()])
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         assert "labels" not in decisions[0].payload
 
     def test_default_labels_plumbed_through(self):
-        result = _result(
-            findings=[_finding()], milestones=[_milestone()]
-        )
+        result = _result(findings=[_finding()], milestones=[_milestone()])
         decisions = build_onboarding_issue_decisions(
             result,
             target_repo="r-log/amass",
@@ -216,9 +189,7 @@ class TestHappyPath:
 # ---------------------------------------------------------------------------
 class TestFallbackCommentTarget:
     def test_fallback_issue_stored_in_target(self):
-        result = _result(
-            findings=[_finding()], milestones=[_milestone()]
-        )
+        result = _result(findings=[_finding()], milestones=[_milestone()])
         decisions = build_onboarding_issue_decisions(
             result,
             target_repo="r-log/amass",
@@ -238,9 +209,7 @@ class TestEvidence:
             milestones=[_milestone(title="m1")],
             confidence=0.92,
         )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         evidence = decisions[0].evidence
         assert any("milestone: m1" in e for e in evidence)
         assert any("0.92" in e for e in evidence)
@@ -254,9 +223,7 @@ class TestEvidence:
             ],
             milestones=[_milestone(finding_indices=[0, 2])],
         )
-        decisions = build_onboarding_issue_decisions(
-            result, target_repo="r-log/amass"
-        )
+        decisions = build_onboarding_issue_decisions(result, target_repo="r-log/amass")
         evidence = decisions[0].evidence
         assert any("app.py:1" in e for e in evidence)
         assert any("db.py:3" in e for e in evidence)
@@ -296,9 +263,7 @@ class TestIssueBodyRenderer:
             _finding(file="db.py", line=2),
         ]
         milestone = _milestone(finding_indices=[0])  # only cites app.py
-        body = _render_issue_body(
-            milestone, findings, "r-log/flask_starter"
-        )
+        body = _render_issue_body(milestone, findings, "r-log/flask_starter")
         assert "app.py:1" in body
         assert "db.py:2" not in body
 
@@ -318,15 +283,13 @@ class TestIssueBodyRenderer:
 
 
 # ---------------------------------------------------------------------------
-# Sanity: the Week 2 comment bridge still works (contract regression)
+# Sanity: the comment bridge still works (contract regression)
 # ---------------------------------------------------------------------------
 class TestCommentBridgeRegression:
     def test_comment_decision_shape_unchanged(self):
-        """The Week 2 comment bridge is still used by Day 7's `--post-to`
-        flow. Make sure Day 4's issue bridge didn't break the shared file."""
-        result = _result(
-            findings=[_finding()], milestones=[_milestone()]
-        )
+        """The comment bridge (used by `--post-to`) shares a module with the
+        issue bridge; make sure one didn't break the other."""
+        result = _result(findings=[_finding()], milestones=[_milestone()])
         decision = build_onboarding_comment_decision(
             result,
             repo_full_name="r-log/amass",
@@ -344,10 +307,7 @@ class TestCommentBridgeRegression:
 class TestDetailsWrapping:
     def test_short_comment_body_is_not_wrapped(self):
         """Below the threshold, no <details> collapse."""
-        findings = [
-            _finding(file=f"f{i}.py", line=i + 1)
-            for i in range(_COLLAPSE_THRESHOLD - 1)
-        ]
+        findings = [_finding(file=f"f{i}.py", line=i + 1) for i in range(_COLLAPSE_THRESHOLD - 1)]
         milestones = [
             _milestone(
                 title=f"m{i}",
@@ -355,22 +315,15 @@ class TestDetailsWrapping:
             )
             for i in range(_COLLAPSE_THRESHOLD - 1)
         ]
-        body = _render_comment_body(
-            _result(findings=findings, milestones=milestones)
-        )
+        body = _render_comment_body(_result(findings=findings, milestones=milestones))
         assert "<details>" not in body
         assert "Findings" in body
         assert "Milestone" in body
 
     def test_long_comment_body_wraps_findings(self):
         """At the threshold, findings collapse into <details>."""
-        findings = [
-            _finding(file=f"f{i}.py", line=i + 1)
-            for i in range(_COLLAPSE_THRESHOLD)
-        ]
-        body = _render_comment_body(
-            _result(findings=findings, milestones=[])
-        )
+        findings = [_finding(file=f"f{i}.py", line=i + 1) for i in range(_COLLAPSE_THRESHOLD)]
+        body = _render_comment_body(_result(findings=findings, milestones=[]))
         assert "<details>" in body
         assert "</details>" in body
         assert "<summary>" in body
@@ -380,28 +333,18 @@ class TestDetailsWrapping:
 
     def test_long_comment_body_wraps_milestones(self):
         milestones = [
-            _milestone(title=f"m{i}", finding_indices=[0])
-            for i in range(_COLLAPSE_THRESHOLD)
+            _milestone(title=f"m{i}", finding_indices=[0]) for i in range(_COLLAPSE_THRESHOLD)
         ]
-        body = _render_comment_body(
-            _result(findings=[_finding()], milestones=milestones)
-        )
+        body = _render_comment_body(_result(findings=[_finding()], milestones=milestones))
         assert body.count("<details>") == 1
         assert f"Milestones ({_COLLAPSE_THRESHOLD})" in body
 
     def test_long_issue_body_wraps_findings_checklist(self):
         """The per-milestone issue body collapses when a single milestone
         cites many findings. Small milestones render inline."""
-        findings = [
-            _finding(file=f"f{i}.py", line=i + 1)
-            for i in range(_COLLAPSE_THRESHOLD)
-        ]
-        milestone = _milestone(
-            finding_indices=list(range(_COLLAPSE_THRESHOLD))
-        )
-        body = _render_issue_body(
-            milestone, findings, "r-log/flask_starter"
-        )
+        findings = [_finding(file=f"f{i}.py", line=i + 1) for i in range(_COLLAPSE_THRESHOLD)]
+        milestone = _milestone(finding_indices=list(range(_COLLAPSE_THRESHOLD)))
+        body = _render_issue_body(milestone, findings, "r-log/flask_starter")
         assert "<details>" in body
         assert "</details>" in body
         # Every finding still appears inside the wrapped block.
@@ -411,25 +354,16 @@ class TestDetailsWrapping:
     def test_short_issue_body_unchanged(self):
         findings = [_finding()]
         milestone = _milestone(finding_indices=[0])
-        body = _render_issue_body(
-            milestone, findings, "r-log/flask_starter"
-        )
+        body = _render_issue_body(milestone, findings, "r-log/flask_starter")
         assert "<details>" not in body
         assert "Findings" in body
 
     def test_collapsed_blocks_have_blank_lines_around_summary(self):
         """Without a blank line after <summary>, GitHub's markdown renderer
-        won't parse the inner content. Day 5 acceptance bar."""
-        findings = [
-            _finding(file=f"f{i}.py", line=i + 1)
-            for i in range(_COLLAPSE_THRESHOLD)
-        ]
-        body = _render_comment_body(
-            _result(findings=findings, milestones=[])
-        )
+        won't parse the inner content."""
+        findings = [_finding(file=f"f{i}.py", line=i + 1) for i in range(_COLLAPSE_THRESHOLD)]
+        body = _render_comment_body(_result(findings=findings, milestones=[]))
         lines = body.split("\n")
-        summary_idx = next(
-            i for i, line in enumerate(lines) if "<summary>" in line
-        )
+        summary_idx = next(i for i, line in enumerate(lines) if "<summary>" in line)
         # The line right after <summary> must be blank.
         assert lines[summary_idx + 1] == ""

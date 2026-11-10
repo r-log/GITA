@@ -3,6 +3,7 @@
 Verifies the two-step lookup: short name first, then case-insensitive
 github_full_name. Webhook-triggered jobs depend on the fallback path.
 """
+
 import pytest
 
 from gita.db.models import Repo
@@ -81,7 +82,6 @@ class TestResolveByGithubFullName:
 
 
 class TestResolveNotFound:
-
     async def test_not_found_raises(self, db_session):
         with pytest.raises(RepoNotFoundError, match="not-a-real-repo"):
             await resolve_repo(db_session, "not-a-real-repo")

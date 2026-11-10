@@ -4,6 +4,7 @@ AMASS isn't a lab fixture — it's a real project that moves. So this
 checklist is deliberately *floor*-based: the agent must surface SOMETHING
 concrete, not boilerplate, but we don't pin specific findings.
 """
+
 from tests.golden_agents.checklist import Checklist
 
 CHECKLIST = Checklist(
@@ -38,7 +39,7 @@ CHECKLIST = Checklist(
         r"set up (?:ci|cd)",
         r"improve code quality",  # classic v1 boilerplate phrase
         r"add (?:more )?documentation",
-        # P6 hallucination guards — Week 3 Day 6 observed the agent
+        # Hallucination guards — the agent was observed
         # falsely flagging decorators.py:170's split-getattr pattern as
         # a "syntax error". The prompt now warns against this, but we
         # keep the checklist tripwire here so any regression on real

@@ -1,18 +1,21 @@
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
 from gita.config import settings
 from gita.db.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# An explicit sqlalchemy.url (tests, scripts) wins over the app setting.
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", settings.database_url)
 
-if config.config_file_name is not None:
+# Programmatic callers (the test bootstrap) keep their own logging setup.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
@@ -37,7 +40,7 @@ async def run_async_migrations() -> None:
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.database_url,
+        url=config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

@@ -9,15 +9,15 @@ and returns an absolute path to the resolved target file, or ``None`` if the
 import points outside the repo (stdlib, npm package, installed package, etc.).
 
 Unresolved imports are NOT an error — we still store them in ``import_edges``
-with ``dst_file=NULL`` so that Week 2+ can improve resolution without a
-reindex.
+with ``dst_file=NULL`` so resolution can improve without a reindex.
 
-**Package-root discovery (Week 2 P1 fix):** real Python projects rarely put
+**Package-root discovery:** real Python projects rarely put
 their package at the repo root. ``src/``-layouts, ``backend/``-layouts, and
 deeply nested apps are normal. ``discover_package_roots`` walks the
 ``__init__.py`` chain to find every "topmost package directory" and treats
 their parents as valid starting points for absolute-import resolution.
 """
+
 from __future__ import annotations
 
 import re
@@ -135,7 +135,7 @@ def _resolve_python_from_import(
     package_roots: list[Path],
 ) -> Path | None:
     # "from MODULE import NAMES..." — module is before " import "
-    body = text[len("from "):]
+    body = text[len("from ") :]
     if " import " not in body:
         return None
     module_part = body.split(" import ", 1)[0].strip()
@@ -156,11 +156,9 @@ def _resolve_python_from_import(
     return _find_python_module_in_roots(module_part, package_roots)
 
 
-def _resolve_python_plain_import(
-    text: str, package_roots: list[Path]
-) -> Path | None:
+def _resolve_python_plain_import(text: str, package_roots: list[Path]) -> Path | None:
     # "import foo" or "import foo.bar" or "import foo as f" or "import a, b"
-    body = text[len("import "):].strip()
+    body = text[len("import ") :].strip()
     # Only look at the first module in a multi-import line
     first = body.split(",", 1)[0].strip()
     first = first.split(" as ", 1)[0].strip()
@@ -169,9 +167,7 @@ def _resolve_python_plain_import(
     return _find_python_module_in_roots(first, package_roots)
 
 
-def _find_python_module_in_roots(
-    module: str, package_roots: list[Path]
-) -> Path | None:
+def _find_python_module_in_roots(module: str, package_roots: list[Path]) -> Path | None:
     """Try resolving a dotted module name against each package root in order."""
     for root in package_roots:
         found = _find_python_module_under(module, root)
@@ -208,9 +204,7 @@ def _find_python_module_under(module: str, base: Path) -> Path | None:
 # ---------------------------------------------------------------------------
 # TypeScript / JavaScript
 # ---------------------------------------------------------------------------
-def resolve_ts_js_import(
-    raw: str, source_file: Path, repo_root: Path
-) -> Path | None:
+def resolve_ts_js_import(raw: str, source_file: Path, repo_root: Path) -> Path | None:
     """Try to resolve a TS/JS import statement to a file inside ``repo_root``.
 
     Handles:
@@ -269,9 +263,7 @@ def resolve_import(
     package_roots: list[Path] | None = None,
 ) -> Path | None:
     if language == "python":
-        return resolve_python_import(
-            raw, source_file, repo_root, package_roots
-        )
+        return resolve_python_import(raw, source_file, repo_root, package_roots)
     if language in ("typescript", "javascript"):
         return resolve_ts_js_import(raw, source_file, repo_root)
     return None

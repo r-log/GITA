@@ -1,8 +1,9 @@
 """Tests for the event dispatch layer.
 
-Exercises ``dispatch_event`` routing, individual handler functions,
-and the ``JobRequest`` shapes they produce. No DB, no Redis, no HTTP.
+Exercises ``dispatch_event`` routing, the handlers, and the job IDs they
+produce. No DB, no Redis, no HTTP.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -11,214 +12,221 @@ from gita.web.dispatch import (
     EVENT_HANDLERS,
     JobRequest,
     dispatch_event,
-    handle_onboarding,
+    handle_onboarding_label,
     handle_pr_review,
     handle_push_reindex,
 )
 
+SHA_A = "a" * 40
+SHA_B = "b" * 40
+
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Payload builders
 # ---------------------------------------------------------------------------
 def _pr_payload(
     *,
     action: str = "opened",
     pr_number: int = 42,
     repo: str = "r-log/AMASS",
-    head_sha: str = "abc123",
+    head_sha: str = SHA_A,
+    draft: bool = False,
 ) -> dict:
     return {
         "action": action,
         "pull_request": {
             "number": pr_number,
             "head": {"sha": head_sha},
+            "draft": draft,
         },
         "repository": {"full_name": repo},
         "sender": {"login": "octocat", "type": "User"},
     }
 
 
-def _issue_payload(
+def _label_payload(
     *,
-    action: str = "opened",
+    label: str = "gita:onboard",
     issue_number: int = 7,
     repo: str = "r-log/AMASS",
+    sender: str = "maintainer",
+    author: str = "reporter",
+    association: str = "NONE",
 ) -> dict:
     return {
-        "action": action,
-        "issue": {"number": issue_number},
+        "action": "labeled",
+        "label": {"name": label},
+        "issue": {
+            "number": issue_number,
+            "user": {"login": author},
+            "author_association": association,
+        },
         "repository": {"full_name": repo},
-        "sender": {"login": "octocat", "type": "User"},
+        "sender": {"login": sender, "type": "User"},
     }
 
 
 def _push_payload(
-    *, repo: str = "r-log/AMASS", after_sha: str = "def456"
+    *,
+    repo: str = "r-log/AMASS",
+    ref: str = "refs/heads/main",
+    default_branch: str = "main",
+    after: str = SHA_A,
+    deleted: bool = False,
 ) -> dict:
     return {
-        "after": after_sha,
-        "repository": {"full_name": repo},
+        "ref": ref,
+        "after": after,
+        "deleted": deleted,
+        "repository": {"full_name": repo, "default_branch": default_branch},
         "sender": {"login": "octocat", "type": "User"},
     }
 
 
 # ---------------------------------------------------------------------------
-# dispatch_event routing
+# Routing
 # ---------------------------------------------------------------------------
 class TestDispatchRouting:
-    async def test_pull_request_opened(self):
-        job = await dispatch_event("pull_request", "opened", _pr_payload())
-        assert job is not None
-        assert job.function_name == "review_pr"
+    @pytest.mark.parametrize("action", ["opened", "synchronize", "reopened", "ready_for_review"])
+    async def test_pull_request_actions(self, action):
+        job = await dispatch_event("pull_request", action, _pr_payload(action=action))
+        assert job is not None and job.function_name == "review_pr"
 
-    async def test_pull_request_synchronize(self):
-        job = await dispatch_event(
-            "pull_request", "synchronize", _pr_payload(action="synchronize")
-        )
-        assert job is not None
-        assert job.function_name == "review_pr"
+    async def test_issue_labeled(self):
+        job = await dispatch_event("issues", "labeled", _label_payload())
+        assert job is not None and job.function_name == "onboard_repo"
 
-    async def test_issues_opened(self):
-        job = await dispatch_event("issues", "opened", _issue_payload())
-        assert job is not None
-        assert job.function_name == "onboard_repo"
+    async def test_issue_opened_is_not_a_trigger(self):
+        payload = _label_payload()
+        payload["action"] = "opened"
+        assert await dispatch_event("issues", "opened", payload) is None
 
-    async def test_push_event(self):
+    async def test_push(self):
         job = await dispatch_event("push", None, _push_payload())
-        assert job is not None
-        assert job.function_name == "reindex_repo"
+        assert job is not None and job.function_name == "reindex_repo"
 
-    async def test_unknown_event_returns_none(self):
-        job = await dispatch_event("star", "created", {})
-        assert job is None
-
-    async def test_unhandled_action_returns_none(self):
-        """pull_request.closed is not in EVENT_HANDLERS."""
-        job = await dispatch_event("pull_request", "closed", _pr_payload())
-        assert job is None
-
-    async def test_issue_comment_not_handled(self):
-        """Wall 1: comment events must NOT be handled (loop prevention)."""
-        job = await dispatch_event("issue_comment", "created", {})
-        assert job is None
-
-    async def test_pr_review_event_not_handled(self):
-        """Wall 1: PR review events must NOT be handled."""
-        job = await dispatch_event("pull_request_review", "submitted", {})
-        assert job is None
+    @pytest.mark.parametrize(
+        ("event", "action"),
+        [
+            ("star", "created"),
+            ("pull_request", "closed"),
+            ("issue_comment", "created"),  # GITA's own comments
+            ("pull_request_review", "submitted"),
+        ],
+    )
+    async def test_unhandled_events(self, event, action):
+        assert await dispatch_event(event, action, {}) is None
 
 
 # ---------------------------------------------------------------------------
-# handle_pr_review
+# PR review
 # ---------------------------------------------------------------------------
 class TestHandlePrReview:
-    async def test_returns_job_request(self):
-        job = await handle_pr_review(_pr_payload(pr_number=99, repo="r-log/AMASS"))
+    async def test_job_request_shape(self):
+        job = await handle_pr_review(_pr_payload())
         assert isinstance(job, JobRequest)
-        assert job.function_name == "review_pr"
-        assert job.kwargs["pr_number"] == 99
-        assert job.kwargs["repo_full_name"] == "r-log/AMASS"
+        assert job.kwargs == {
+            "repo_full_name": "r-log/AMASS",
+            "pr_number": 42,
+            "head_sha": SHA_A,
+        }
+        assert job.repo_full_name == "r-log/amass"
 
-    async def test_job_id_is_deterministic(self):
-        job = await handle_pr_review(_pr_payload(pr_number=42, repo="r-log/AMASS"))
-        assert job is not None
-        assert job.job_id == "review-pr:r-log/amass:42"
+    async def test_job_id_names_the_commit(self):
+        a = await handle_pr_review(_pr_payload(head_sha=SHA_A))
+        b = await handle_pr_review(_pr_payload(head_sha=SHA_B))
+        assert a.job_id == f"review-pr:r-log/amass:42:{SHA_A}"
+        # A new commit on the same PR is new work, not a duplicate.
+        assert a.job_id != b.job_id
 
-    async def test_job_id_lowercased(self):
-        job = await handle_pr_review(_pr_payload(repo="R-Log/AMASS"))
-        assert job is not None
-        assert "r-log/amass" in job.job_id
+    async def test_redelivery_has_identical_id(self):
+        first = await handle_pr_review(_pr_payload())
+        again = await handle_pr_review(_pr_payload())
+        assert first.job_id == again.job_id
 
-    async def test_head_sha_forwarded(self):
-        job = await handle_pr_review(_pr_payload(head_sha="deadbeef"))
-        assert job is not None
-        assert job.kwargs["head_sha"] == "deadbeef"
+    async def test_review_is_debounced(self, monkeypatch):
+        monkeypatch.setattr("gita.web.dispatch.settings.review_debounce_seconds", 20.0)
+        job = await handle_pr_review(_pr_payload())
+        assert job.defer_seconds == 20.0
 
-    async def test_missing_pr_number_returns_none(self):
+    async def test_debounce_can_be_disabled(self, monkeypatch):
+        monkeypatch.setattr("gita.web.dispatch.settings.review_debounce_seconds", 0.0)
+        job = await handle_pr_review(_pr_payload())
+        assert job.defer_seconds is None
+
+    async def test_draft_prs_are_skipped(self):
+        assert await handle_pr_review(_pr_payload(draft=True)) is None
+
+    async def test_missing_fields_return_none(self):
         payload = _pr_payload()
-        payload["pull_request"] = {}
-        job = await handle_pr_review(payload)
-        assert job is None
-
-    async def test_missing_repo_returns_none(self):
+        del payload["pull_request"]["number"]
+        assert await handle_pr_review(payload) is None
         payload = _pr_payload()
-        payload["repository"] = {}
-        job = await handle_pr_review(payload)
-        assert job is None
+        del payload["repository"]
+        assert await handle_pr_review(payload) is None
 
 
 # ---------------------------------------------------------------------------
-# handle_onboarding
+# Onboarding label
 # ---------------------------------------------------------------------------
-class TestHandleOnboarding:
-    async def test_returns_job_request(self):
-        job = await handle_onboarding(_issue_payload(issue_number=7))
-        assert isinstance(job, JobRequest)
-        assert job.function_name == "onboard_repo"
-        assert job.kwargs["issue_number"] == 7
-
-    async def test_job_id_is_deterministic(self):
-        job = await handle_onboarding(_issue_payload(issue_number=7, repo="r-log/AMASS"))
-        assert job is not None
+class TestHandleOnboardingLabel:
+    async def test_maintainer_labels_someone_elses_issue(self):
+        job = await handle_onboarding_label(_label_payload())
         assert job.job_id == "onboard:r-log/amass:7"
+        assert job.kwargs == {"repo_full_name": "r-log/AMASS", "issue_number": 7}
 
-    async def test_missing_issue_returns_none(self):
-        payload = _issue_payload()
-        payload["issue"] = {}
-        job = await handle_onboarding(payload)
-        assert job is None
+    async def test_other_labels_ignored(self):
+        assert await handle_onboarding_label(_label_payload(label="bug")) is None
+
+    async def test_template_applied_label_by_outsider_ignored(self):
+        """Issue templates can apply labels for anyone; that's no signal."""
+        payload = _label_payload(sender="drive-by", author="drive-by", association="NONE")
+        assert await handle_onboarding_label(payload) is None
+
+    @pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
+    async def test_self_applied_by_trusted_author(self, association):
+        payload = _label_payload(sender="dev", author="dev", association=association)
+        assert await handle_onboarding_label(payload) is not None
+
+    async def test_label_name_is_configurable(self, monkeypatch):
+        monkeypatch.setattr("gita.web.dispatch.settings.onboarding_label", "needs-tour")
+        assert await handle_onboarding_label(_label_payload()) is None
+        assert await handle_onboarding_label(_label_payload(label="needs-tour")) is not None
 
 
 # ---------------------------------------------------------------------------
-# handle_push_reindex
+# Push → reindex
 # ---------------------------------------------------------------------------
 class TestHandlePushReindex:
-    async def test_returns_job_request(self):
-        job = await handle_push_reindex(_push_payload(after_sha="abc123"))
-        assert isinstance(job, JobRequest)
-        assert job.function_name == "reindex_repo"
-        assert job.kwargs["after_sha"] == "abc123"
+    async def test_default_branch_push(self):
+        job = await handle_push_reindex(_push_payload())
+        assert job.job_id == f"reindex:r-log/amass:{SHA_A}"
+        assert job.kwargs == {"repo_full_name": "r-log/AMASS", "after_sha": SHA_A}
 
-    async def test_job_id_includes_sha(self):
-        job = await handle_push_reindex(_push_payload(after_sha="abc123"))
-        assert job is not None
-        assert job.job_id == "reindex:r-log/amass:abc123"
+    async def test_respects_non_main_default_branch(self):
+        payload = _push_payload(ref="refs/heads/develop", default_branch="develop")
+        assert await handle_push_reindex(payload) is not None
 
-    async def test_missing_sha_uses_unknown(self):
-        payload = _push_payload()
-        payload.pop("after", None)
-        job = await handle_push_reindex(payload)
-        assert job is not None
-        assert "unknown" in job.job_id
-
-    async def test_missing_repo_returns_none(self):
-        payload = _push_payload()
-        payload["repository"] = {}
-        job = await handle_push_reindex(payload)
-        assert job is None
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            _push_payload(ref="refs/heads/feature-x"),  # feature branch
+            _push_payload(ref="refs/tags/v1.0"),  # tag
+            _push_payload(deleted=True, after="0" * 40),  # branch deletion
+            _push_payload(after="not-a-sha"),
+            _push_payload(default_branch=""),  # can't tell what the default is
+        ],
+    )
+    async def test_everything_else_is_ignored(self, payload):
+        assert await handle_push_reindex(payload) is None
 
 
-# ---------------------------------------------------------------------------
-# EVENT_HANDLERS registry
-# ---------------------------------------------------------------------------
-class TestEventHandlersRegistry:
-    def test_only_expected_events_registered(self):
-        """Verify the allowlist hasn't grown unexpectedly."""
-        expected_keys = {
-            ("pull_request", "opened"),
-            ("pull_request", "synchronize"),
-            ("issues", "opened"),
-            ("push", None),
-        }
-        assert set(EVENT_HANDLERS.keys()) == expected_keys
-
-    def test_no_comment_events_in_registry(self):
-        """Explicit Wall 1 guard — these must NEVER appear."""
-        dangerous = [
-            ("issue_comment", "created"),
-            ("issue_comment", "edited"),
-            ("pull_request_review", "submitted"),
-            ("pull_request_review_comment", "created"),
-        ]
-        for key in dangerous:
-            assert key not in EVENT_HANDLERS, f"{key} must not be in EVENT_HANDLERS"
+def test_registry_is_an_explicit_allowlist():
+    assert set(EVENT_HANDLERS) == {
+        ("pull_request", "opened"),
+        ("pull_request", "synchronize"),
+        ("pull_request", "reopened"),
+        ("pull_request", "ready_for_review"),
+        ("issues", "labeled"),
+        ("push", None),
+    }

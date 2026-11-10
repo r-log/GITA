@@ -1,4 +1,4 @@
-"""Pre-flight gates for the auto-test-generation trigger (Week 9).
+"""Pre-flight gates for the auto-test-generation trigger.
 
 Two purely deterministic checks that run **before** any LLM call,
 GitHub call, or subprocess. The post-reindex auto-trigger applies them
@@ -18,14 +18,15 @@ Stage A is sync (filesystem-only). Stage B is async (DB-only).
 Both return ``PreflightResult``: ``proceed=False`` is terminal —
 the runner enqueues nothing and logs the ``reason``.
 
-**Note on indexing:** test files are deliberately excluded from
-``code_index`` (Week 1 decision in ``walker.py``). A future Week 10+
-could flip ``include_tests=True`` and replace Stage A's filesystem
-walk with an ``ImportEdge`` query — this is recorded in
-NOTES-week9.md as Option B.
+**Note on indexing:** test files are excluded from ``code_index`` by
+default (see ``walker.py``), so Stage A looks at the filesystem. Indexing
+tests (``include_tests=True``) would let Stage A become an
+``ImportEdge`` query instead.
 """
+
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
@@ -51,9 +52,7 @@ _MAX_LINES_FOR_TEST_GEN = 500
 # the test-generator's structural feasibility checks understand. Used
 # as the default scan set for :func:`preview_repo`. The recipe-supported
 # subset (below) is what the auto-trigger actually enqueues.
-SUPPORTED_PREVIEW_LANGUAGES: frozenset[str] = frozenset(
-    {"python", "typescript", "javascript"}
-)
+SUPPORTED_PREVIEW_LANGUAGES: frozenset[str] = frozenset({"python", "typescript", "javascript"})
 
 # Languages the recipe can currently produce verified test files for.
 # :func:`is_feasible` rejects anything outside this set with
@@ -95,9 +94,7 @@ class PreflightResult:
 # ---------------------------------------------------------------------------
 # Stage A — tests-already-exist detection (filesystem)
 # ---------------------------------------------------------------------------
-def has_existing_tests(
-    repo_root: Path, target_file: str
-) -> PreflightResult:
+def has_existing_tests(repo_root: Path, target_file: str) -> PreflightResult:
     """Stage A — return ``proceed=False`` when a test for ``target_file``
     already exists on disk.
 
@@ -141,23 +138,16 @@ def has_existing_tests(
         if sibling.is_file():
             return PreflightResult(
                 proceed=False,
-                reason=(
-                    f"tests_exist:sibling:"
-                    f"{_relpath(sibling, repo_root)}"
-                ),
+                reason=(f"tests_exist:sibling:{_relpath(sibling, repo_root)}"),
             )
 
     # 1b. Walk for the same names anywhere inside a test dir.
-    for hit in _iter_repo_files(
-        repo_root, target_only_names=tuple(sibling_candidates)
-    ):
+    for hit in _iter_repo_files(repo_root, target_only_names=tuple(sibling_candidates)):
         rel_parts = hit.relative_to(repo_root).parts
         if any(part in TEST_DIRS for part in rel_parts):
             return PreflightResult(
                 proceed=False,
-                reason=(
-                    f"tests_exist:in_test_dir:{_relpath(hit, repo_root)}"
-                ),
+                reason=(f"tests_exist:in_test_dir:{_relpath(hit, repo_root)}"),
             )
 
     # ---- Check 2: content grep against import references ----
@@ -165,9 +155,7 @@ def has_existing_tests(
     if patterns:
         for test_file in _iter_test_like_files(repo_root, family):
             try:
-                content = test_file.read_text(
-                    encoding="utf-8", errors="replace"
-                )
+                content = test_file.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
             for pat, label in patterns:
@@ -229,7 +217,7 @@ def _build_import_patterns_for_target(
 ) -> list[tuple[re.Pattern[str], str]]:
     """Dispatch to the right pattern-builder for ``target_file``."""
     if family == "python":
-        names = _derive_importable_names(target_file, repo_root)
+        names = derive_importable_names(target_file, repo_root)
         return _build_import_patterns(names) if names else []
     if family == "jstS":
         return _build_jstS_import_patterns(target_file)
@@ -280,9 +268,7 @@ async def is_feasible(
         )
     ).scalar_one_or_none()
     if row is None:
-        return PreflightResult(
-            proceed=False, reason="infeasible:not_indexed"
-        )
+        return PreflightResult(proceed=False, reason="infeasible:not_indexed")
 
     if row.language not in recipe_languages:
         return PreflightResult(
@@ -293,35 +279,24 @@ async def is_feasible(
     # TypeScript declaration files have no executable code — no point
     # generating tests against type-only signatures.
     if target_file.endswith(".d.ts"):
-        return PreflightResult(
-            proceed=False, reason="infeasible:typescript_declaration"
-        )
+        return PreflightResult(proceed=False, reason="infeasible:typescript_declaration")
 
     if row.line_count > _MAX_LINES_FOR_TEST_GEN:
         return PreflightResult(
             proceed=False,
-            reason=(
-                f"infeasible:too_large:{row.line_count} > "
-                f"{_MAX_LINES_FOR_TEST_GEN}"
-            ),
+            reason=(f"infeasible:too_large:{row.line_count} > {_MAX_LINES_FOR_TEST_GEN}"),
         )
 
     structure = row.structure or {}
     funcs = list(structure.get("functions", []))
     classes = list(structure.get("classes", []))
     if not funcs and not classes:
-        return PreflightResult(
-            proceed=False, reason="infeasible:no_functions_or_classes"
-        )
+        return PreflightResult(proceed=False, reason="infeasible:no_functions_or_classes")
 
     public_funcs = [f for f in funcs if not f.get("name", "").startswith("_")]
-    public_classes = [
-        c for c in classes if not c.get("name", "").startswith("_")
-    ]
+    public_classes = [c for c in classes if not c.get("name", "").startswith("_")]
     if not public_funcs and not public_classes:
-        return PreflightResult(
-            proceed=False, reason="infeasible:no_public_symbols"
-        )
+        return PreflightResult(proceed=False, reason="infeasible:no_public_symbols")
 
     # Entrypoint heuristic — Python-specific. JS/TS has no analog of
     # ``__name__ == "__main__"`` and ``index.{ts,js}`` files routinely
@@ -329,25 +304,17 @@ async def is_feasible(
     if row.language == "python":
         file_basename = PurePosixPath(target_file).name
         if file_basename == "__main__.py":
-            return PreflightResult(
-                proceed=False, reason="infeasible:dunder_main_entrypoint"
-            )
+            return PreflightResult(proceed=False, reason="infeasible:dunder_main_entrypoint")
         if (
             len(public_funcs) == 1
             and public_funcs[0].get("name") == "main"
             and not public_classes
             and '__name__ == "__main__"' in (row.content or "")
         ):
-            return PreflightResult(
-                proceed=False, reason="infeasible:cli_entrypoint"
-            )
+            return PreflightResult(proceed=False, reason="infeasible:cli_entrypoint")
 
-    if await _has_prior_test_gen_attempt(
-        session, repo_full_name, target_file
-    ):
-        return PreflightResult(
-            proceed=False, reason="infeasible:prior_attempt_exists"
-        )
+    if await _has_prior_test_gen_attempt(session, repo_full_name, target_file):
+        return PreflightResult(proceed=False, reason="infeasible:prior_attempt_exists")
 
     return PreflightResult(proceed=True, reason="ok")
 
@@ -363,9 +330,7 @@ def _relpath(p: Path, root: Path) -> str:
         return str(p)
 
 
-def _iter_repo_files(
-    root: Path, *, target_only_names: tuple[str, ...] | None = None
-):
+def _iter_repo_files(root: Path, *, target_only_names: tuple[str, ...] | None = None):
     """Yield Path objects under ``root`` while skipping vendored / build dirs.
 
     ``target_only_names`` short-circuits the basename check before any
@@ -406,9 +371,8 @@ def _iter_test_like_files(root: Path, family: str):
         rel_parts = path.relative_to(root).parts
         in_test_dir = any(part in TEST_DIRS for part in rel_parts)
         if family == "python":
-            named_like_test = (
-                any(path.name.startswith(p) for p in _PY_TEST_PREFIXES)
-                or any(path.name.endswith(s) for s in _PY_TEST_SUFFIXES)
+            named_like_test = any(path.name.startswith(p) for p in _PY_TEST_PREFIXES) or any(
+                path.name.endswith(s) for s in _PY_TEST_SUFFIXES
             )
         else:
             named_like_test = _is_jstS_test_filename(path.name)
@@ -492,12 +456,8 @@ def _build_import_patterns(
     patterns: list[tuple[re.Pattern[str], str]] = []
     for name in importable_names:
         esc = re.escape(name)
-        patterns.append(
-            (re.compile(rf"\bimport\s+{esc}\b"), f"import {name}")
-        )
-        patterns.append(
-            (re.compile(rf"\bfrom\s+{esc}\s+import\b"), f"from {name}")
-        )
+        patterns.append((re.compile(rf"\bimport\s+{esc}\b"), f"import {name}"))
+        patterns.append((re.compile(rf"\bfrom\s+{esc}\s+import\b"), f"from {name}"))
         if "." in name:
             parent, child = name.rsplit(".", 1)
             esc_parent = re.escape(parent)
@@ -516,9 +476,7 @@ def _build_import_patterns(
     return patterns
 
 
-def _derive_importable_names(
-    target_file: str, repo_root: Path
-) -> list[str]:
+def derive_importable_names(target_file: str, repo_root: Path) -> list[str]:
     """Return every importable dotted-module name for ``target_file``.
 
     Reuses the indexer's package-root discovery so the names match what
@@ -553,35 +511,37 @@ def _derive_importable_names(
 async def _has_prior_test_gen_attempt(
     session: AsyncSession, repo_full_name: str, target_file: str
 ) -> bool:
-    """True if any prior ``test_generator`` action mentions ``target_file``.
+    """True if a prior ``test_generator`` action mentions ``target_file``.
 
     The bridge embeds ``"purpose: add tests for `<target_file>`"`` into
-    the ``create_branch`` evidence array (and some other actions), so
-    an exact JSONB ``@>`` containment lookup against that string is a
-    cheap, deterministic way to detect prior attempts — executed,
-    downgraded, or anything else that wrote a row.
-
-    Lookup is case-insensitive on ``repo_name`` to match how the rest
-    of the code stores it (lowered when written by webhook flows).
+    the ``create_branch`` evidence array, so a JSONB ``@>`` containment
+    lookup finds prior attempts. Only attempts in the current write
+    mode's partition count: a shadow run (nothing reached GitHub) must not
+    stop the live trigger from ever firing for that file.
     """
+    from gita.config import settings
+
     repo_lower = repo_full_name.strip().lower()
     evidence_marker = f"purpose: add tests for `{target_file}`"
     stmt = _sql_text(
         "SELECT id FROM agent_actions "
         "WHERE LOWER(repo_name) = :repo "
         "AND agent = 'test_generator' "
+        "AND live = :live "
         "AND evidence @> CAST(:evidence_json AS JSONB) "
         "LIMIT 1"
     ).bindparams(
         repo=repo_lower,
-        evidence_json=f'["{evidence_marker}"]',
+        live=settings.write_mode != "shadow",
+        # json.dumps, not an f-string: paths can contain quotes/backslashes.
+        evidence_json=json.dumps([evidence_marker]),
     )
     result = await session.execute(stmt)
     return result.scalar_one_or_none() is not None
 
 
 # ---------------------------------------------------------------------------
-# Preview (Week 10) — calibration tool for the auto-trigger
+# Preview — calibration tool for the auto-trigger
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class FilePreviewResult:
@@ -595,9 +555,7 @@ class FilePreviewResult:
 
     @property
     def is_candidate(self) -> bool:
-        return self.stage_a.proceed and bool(
-            self.stage_b and self.stage_b.proceed
-        )
+        return self.stage_a.proceed and bool(self.stage_b and self.stage_b.proceed)
 
 
 @dataclass(frozen=True)
@@ -620,11 +578,7 @@ class PreviewSummary:
 
     @property
     def rejected_by_stage_b(self) -> list[FilePreviewResult]:
-        return [
-            f
-            for f in self.files
-            if f.stage_a.proceed and f.stage_b and not f.stage_b.proceed
-        ]
+        return [f for f in self.files if f.stage_a.proceed and f.stage_b and not f.stage_b.proceed]
 
 
 async def preview_repo(

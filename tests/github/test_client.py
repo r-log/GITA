@@ -4,10 +4,12 @@ Everything HTTP-shaped goes through ``httpx.MockTransport``. Zero network
 I/O. The mock captures every request so tests can assert URLs, headers,
 and bodies.
 """
+
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -30,13 +32,11 @@ class RequestCapture:
 
 
 def _iso_in(seconds: int) -> str:
-    ts = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    ts = datetime.now(UTC) + timedelta(seconds=seconds)
     return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _make_transport(
-    handler, capture: RequestCapture
-) -> httpx.MockTransport:
+def _make_transport(handler, capture: RequestCapture) -> httpx.MockTransport:
     def wrapped(request: httpx.Request) -> httpx.Response:
         capture.record(request)
         return handler(request)
@@ -49,9 +49,7 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
     path = request.url.path
     method = request.method
     if path.endswith("/installation"):
-        return httpx.Response(
-            200, json={"id": 999, "app_id": 123456}
-        )
+        return httpx.Response(200, json={"id": 999, "app_id": 123456})
     if path.endswith("/access_tokens"):
         return httpx.Response(
             201,
@@ -93,9 +91,7 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
         )
     # DELETE /repos/o/r/issues/N/labels/<label> — remove_label
     if method == "DELETE" and "/labels/" in path:
-        return httpx.Response(
-            200, json=[{"name": "other"}]
-        )
+        return httpx.Response(200, json=[{"name": "other"}])
     # PATCH /repos/o/r/issues/N — edit_issue or close_issue
     if method == "PATCH" and "/issues/" in path:
         return httpx.Response(
@@ -132,16 +128,12 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                 "ref": "refs/heads/gita/tests/example",
                 "node_id": "REF_kwDO",
                 "url": (
-                    "https://api.github.com/repos/owner/repo/git/refs/"
-                    "heads/gita/tests/example"
+                    "https://api.github.com/repos/owner/repo/git/refs/heads/gita/tests/example"
                 ),
                 "object": {
                     "sha": "abc1234",
                     "type": "commit",
-                    "url": (
-                        "https://api.github.com/repos/owner/repo/git/"
-                        "commits/abc1234"
-                    ),
+                    "url": ("https://api.github.com/repos/owner/repo/git/commits/abc1234"),
                 },
             },
         )
@@ -152,25 +144,17 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
             json={
                 "ref": "refs/heads/main",
                 "node_id": "REF_kwDO",
-                "url": (
-                    "https://api.github.com/repos/owner/repo/git/refs/"
-                    "heads/main"
-                ),
+                "url": ("https://api.github.com/repos/owner/repo/git/refs/heads/main"),
                 "object": {
                     "sha": "def5678",
                     "type": "commit",
-                    "url": (
-                        "https://api.github.com/repos/owner/repo/git/"
-                        "commits/def5678"
-                    ),
+                    "url": ("https://api.github.com/repos/owner/repo/git/commits/def5678"),
                 },
             },
         )
     # GET /repos/o/r/contents/<path> — get_contents
     if method == "GET" and "/contents/" in path:
-        hello_b64 = base64.b64encode(
-            b"hello world\nsecond line\n"
-        ).decode("ascii")
+        hello_b64 = base64.b64encode(b"hello world\nsecond line\n").decode("ascii")
         return httpx.Response(
             200,
             json={
@@ -180,9 +164,7 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                 "size": 24,
                 "encoding": "base64",
                 "content": hello_b64,
-                "html_url": (
-                    "https://github.com/owner/repo/blob/main/src/hello.txt"
-                ),
+                "html_url": ("https://github.com/owner/repo/blob/main/src/hello.txt"),
             },
         )
     # PUT /repos/o/r/contents/<path> — _create_or_update_file
@@ -195,16 +177,11 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                     "path": "src/hello.txt",
                     "sha": "newblob9999",
                     "size": 30,
-                    "html_url": (
-                        "https://github.com/owner/repo/blob/branch/"
-                        "src/hello.txt"
-                    ),
+                    "html_url": ("https://github.com/owner/repo/blob/branch/src/hello.txt"),
                 },
                 "commit": {
                     "sha": "commit9999",
-                    "html_url": (
-                        "https://github.com/owner/repo/commit/commit9999"
-                    ),
+                    "html_url": ("https://github.com/owner/repo/commit/commit9999"),
                 },
             },
         )
@@ -234,8 +211,8 @@ def _default_handler(request: httpx.Request) -> httpx.Response:
                     "patch": (
                         "@@ -40,7 +40,14 @@ def get_user(user_id):\n"
                         " def get_user(user_id):\n"
-                        "-    query = f\"SELECT * FROM users WHERE id={user_id}\"\n"
-                        "+    query = \"SELECT * FROM users WHERE id=?\"\n"
+                        '-    query = f"SELECT * FROM users WHERE id={user_id}"\n'
+                        '+    query = "SELECT * FROM users WHERE id=?"\n'
                         "+    return execute(query, (user_id,))\n"
                     ),
                 },
@@ -270,9 +247,7 @@ def client(test_auth, mock_http) -> GithubClient:
     return GithubClient(auth=test_auth, http=mock_http)
 
 
-def _comment_decision(
-    repo: str = "owner/repo", issue: int = 7, body: str = "hi"
-) -> Decision:
+def _comment_decision(repo: str = "owner/repo", issue: int = 7, body: str = "hi") -> Decision:
     return Decision(
         action="comment",
         target={"repo": repo, "issue": issue},
@@ -299,28 +274,36 @@ class TestInstallationLookup:
     async def test_installation_lookup_is_cached(self, client, capture):
         await client._get_installation_id("owner", "repo")
         await client._get_installation_id("owner", "repo")
-        install_requests = [
-            r for r in capture.requests if r.url.path.endswith("/installation")
-        ]
+        install_requests = [r for r in capture.requests if r.url.path.endswith("/installation")]
         assert len(install_requests) == 1
+
+
+class TestInstallationTokenScope:
+    async def test_repo_calls_request_a_token_for_that_repo_only(self, client, capture):
+        await client._installation_token_for_repo("owner", "repo")
+        token_request = next(r for r in capture.requests if "/access_tokens" in r.url.path)
+        assert json.loads(token_request.content) == {"repositories": ["repo"]}
+
+    async def test_tokens_are_cached_per_repo(self, client, capture):
+        await client._get_installation_token(999, repo="a")
+        await client._get_installation_token(999, repo="a")
+        await client._get_installation_token(999, repo="b")
+        token_requests = [r for r in capture.requests if "/access_tokens" in r.url.path]
+        assert len(token_requests) == 2
 
 
 class TestInstallationTokenCache:
     async def test_fresh_token_comes_from_api(self, client, capture):
         token = await client._get_installation_token(999)
         assert token == "ghs_fake_installation_token"
-        token_requests = [
-            r for r in capture.requests if "/access_tokens" in r.url.path
-        ]
+        token_requests = [r for r in capture.requests if "/access_tokens" in r.url.path]
         assert len(token_requests) == 1
 
     async def test_cached_token_skips_api(self, client, capture):
         """Second call within the freshness window should not hit the API."""
         await client._get_installation_token(999)
         await client._get_installation_token(999)
-        token_requests = [
-            r for r in capture.requests if "/access_tokens" in r.url.path
-        ]
+        token_requests = [r for r in capture.requests if "/access_tokens" in r.url.path]
         assert len(token_requests) == 1
 
     async def test_expired_token_is_refreshed(self, client, capture):
@@ -329,16 +312,14 @@ class TestInstallationTokenCache:
         assert first == "ghs_fake_installation_token"
 
         # Force-expire the cached token
-        client._installation_tokens[999] = _CachedToken(
+        client._installation_tokens[(999, None)] = _CachedToken(
             token="ghs_old",
-            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            expires_at=datetime.now(UTC) - timedelta(seconds=1),
         )
         second = await client._get_installation_token(999)
         # Refreshed from the mock → fresh token value
         assert second == "ghs_fake_installation_token"
-        token_requests = [
-            r for r in capture.requests if "/access_tokens" in r.url.path
-        ]
+        token_requests = [r for r in capture.requests if "/access_tokens" in r.url.path]
         assert len(token_requests) == 2
 
 
@@ -351,9 +332,7 @@ class TestExecuteComment:
         assert result["kind"] == "comment"
         assert result["id"] == 42
 
-        comment_requests = [
-            r for r in capture.requests if "/comments" in r.url.path
-        ]
+        comment_requests = [r for r in capture.requests if "/comments" in r.url.path]
         assert len(comment_requests) == 1
         req = comment_requests[0]
         assert req.method == "POST"
@@ -361,23 +340,17 @@ class TestExecuteComment:
 
     async def test_body_contains_comment_text(self, client, capture):
         await client.execute(_comment_decision(body="hello there"))
-        comment_request = next(
-            r for r in capture.requests if "/comments" in r.url.path
-        )
+        comment_request = next(r for r in capture.requests if "/comments" in r.url.path)
         import json
 
         payload = json.loads(comment_request.content)
         assert payload == {"body": "hello there"}
 
-    async def test_uses_installation_token_not_jwt_for_comment(
-        self, client, capture
-    ):
+    async def test_uses_installation_token_not_jwt_for_comment(self, client, capture):
         """The comment POST should use `token <installation>`, not Bearer JWT.
         Bearer is only used against /app/* endpoints."""
         await client.execute(_comment_decision())
-        comment_request = next(
-            r for r in capture.requests if "/comments" in r.url.path
-        )
+        comment_request = next(r for r in capture.requests if "/comments" in r.url.path)
         auth = comment_request.headers["Authorization"]
         assert auth.startswith("token ")
         assert "ghs_fake_installation_token" in auth
@@ -418,26 +391,20 @@ class TestExecuteCreateIssue:
         result = await client.execute(_create_issue_decision())
         assert result["kind"] == "issue"
         assert result["id"] == 777
-        assert (
-            result["html_url"] == "https://github.com/o/r/issues/777"
-        )
+        assert result["html_url"] == "https://github.com/o/r/issues/777"
 
         create_requests = [
-            r for r in capture.requests
-            if r.method == "POST" and r.url.path.endswith("/issues")
+            r for r in capture.requests if r.method == "POST" and r.url.path.endswith("/issues")
         ]
         assert len(create_requests) == 1
         assert create_requests[0].url.path == "/repos/owner/repo/issues"
 
     async def test_body_has_title_body_and_labels(self, client, capture):
         await client.execute(
-            _create_issue_decision(
-                title="Fix bug", body="long body", labels=["bug", "critical"]
-            )
+            _create_issue_decision(title="Fix bug", body="long body", labels=["bug", "critical"])
         )
         req = next(
-            r for r in capture.requests
-            if r.method == "POST" and r.url.path.endswith("/issues")
+            r for r in capture.requests if r.method == "POST" and r.url.path.endswith("/issues")
         )
         import json
 
@@ -451,8 +418,7 @@ class TestExecuteCreateIssue:
         default-issue-creator flow doesn't accidentally send an empty list."""
         await client.execute(_create_issue_decision(labels=None))
         req = next(
-            r for r in capture.requests
-            if r.method == "POST" and r.url.path.endswith("/issues")
+            r for r in capture.requests if r.method == "POST" and r.url.path.endswith("/issues")
         )
         import json
 
@@ -462,8 +428,7 @@ class TestExecuteCreateIssue:
     async def test_uses_installation_token(self, client, capture):
         await client.execute(_create_issue_decision())
         req = next(
-            r for r in capture.requests
-            if r.method == "POST" and r.url.path.endswith("/issues")
+            r for r in capture.requests if r.method == "POST" and r.url.path.endswith("/issues")
         )
         assert req.headers["Authorization"].startswith("token ")
 
@@ -482,9 +447,7 @@ class TestExecuteCreateIssue:
 # execute(close_issue)
 # ---------------------------------------------------------------------------
 class TestExecuteCloseIssue:
-    async def test_patches_correct_url_with_state_closed(
-        self, client, capture
-    ):
+    async def test_patches_correct_url_with_state_closed(self, client, capture):
         decision = Decision(
             action="close_issue",
             target={"repo": "owner/repo", "issue": 7},
@@ -496,8 +459,7 @@ class TestExecuteCloseIssue:
         assert result["state"] == "closed"
 
         patch_requests = [
-            r for r in capture.requests
-            if r.method == "PATCH" and "/issues/" in r.url.path
+            r for r in capture.requests if r.method == "PATCH" and "/issues/" in r.url.path
         ]
         assert len(patch_requests) == 1
         req = patch_requests[0]
@@ -534,10 +496,7 @@ class TestExecuteEditIssue:
         result = await client.execute(decision)
         assert result["kind"] == "edit_issue"
 
-        req = next(
-            r for r in capture.requests
-            if r.method == "PATCH" and "/issues/" in r.url.path
-        )
+        req = next(r for r in capture.requests if r.method == "PATCH" and "/issues/" in r.url.path)
         assert req.url.path == "/repos/owner/repo/issues/7"
 
         import json
@@ -545,9 +504,7 @@ class TestExecuteEditIssue:
         payload = json.loads(req.content)
         assert payload == {"title": "New title", "body": "New body"}
 
-    async def test_partial_edit_sends_only_provided_fields(
-        self, client, capture
-    ):
+    async def test_partial_edit_sends_only_provided_fields(self, client, capture):
         """Editing just the body shouldn't clobber the title with empty str."""
         decision = Decision(
             action="edit_issue",
@@ -556,10 +513,7 @@ class TestExecuteEditIssue:
             confidence=0.9,
         )
         await client.execute(decision)
-        req = next(
-            r for r in capture.requests
-            if r.method == "PATCH" and "/issues/" in r.url.path
-        )
+        req = next(r for r in capture.requests if r.method == "PATCH" and "/issues/" in r.url.path)
         import json
 
         payload = json.loads(req.content)
@@ -593,8 +547,7 @@ class TestExecuteAddLabel:
         assert result["labels"] == ["bug", "critical"]
 
         req = next(
-            r for r in capture.requests
-            if r.method == "POST" and r.url.path.endswith("/labels")
+            r for r in capture.requests if r.method == "POST" and r.url.path.endswith("/labels")
         )
         assert req.url.path == "/repos/owner/repo/issues/7/labels"
 
@@ -630,17 +583,11 @@ class TestExecuteRemoveLabel:
         assert result["kind"] == "remove_label"
         assert result["label"] == "wont fix"
 
-        req = next(
-            r for r in capture.requests
-            if r.method == "DELETE" and "/labels/" in r.url.path
-        )
+        req = next(r for r in capture.requests if r.method == "DELETE" and "/labels/" in r.url.path)
         # The wire-level path must carry the percent-encoded label.
         # httpx decodes `.path` back to a readable form but preserves the
         # encoded bytes in `raw_path`.
-        assert (
-            req.url.raw_path
-            == b"/repos/owner/repo/issues/7/labels/wont%20fix"
-        )
+        assert req.url.raw_path == b"/repos/owner/repo/issues/7/labels/wont%20fix"
         assert req.headers["Authorization"].startswith("token ")
 
     async def test_missing_label_raises(self, client):
@@ -696,9 +643,7 @@ class TestHttpErrors:
     async def test_installation_404_raises(self, test_auth):
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path.endswith("/installation"):
-                return httpx.Response(
-                    404, json={"message": "Not Found"}
-                )
+                return httpx.Response(404, json={"message": "Not Found"})
             return httpx.Response(200, json={})
 
         http = httpx.AsyncClient(
@@ -721,9 +666,7 @@ class TestHttpErrors:
                         "expires_at": _iso_in(3600),
                     },
                 )
-            return httpx.Response(
-                500, json={"message": "Internal Server Error"}
-            )
+            return httpx.Response(500, json={"message": "Internal Server Error"})
 
         http = httpx.AsyncClient(
             transport=httpx.MockTransport(handler),
@@ -755,8 +698,7 @@ class TestGetPr:
     async def test_hits_correct_url(self, client, capture):
         await client.get_pr("owner", "repo", 10)
         pr_requests = [
-            r for r in capture.requests
-            if "/pulls/" in r.url.path and "/files" not in r.url.path
+            r for r in capture.requests if "/pulls/" in r.url.path and "/files" not in r.url.path
         ]
         assert len(pr_requests) == 1
         assert pr_requests[0].url.path == "/repos/owner/repo/pulls/10"
@@ -765,8 +707,7 @@ class TestGetPr:
     async def test_uses_installation_token(self, client, capture):
         await client.get_pr("owner", "repo", 10)
         pr_req = next(
-            r for r in capture.requests
-            if "/pulls/" in r.url.path and "/files" not in r.url.path
+            r for r in capture.requests if "/pulls/" in r.url.path and "/files" not in r.url.path
         )
         assert pr_req.headers["Authorization"].startswith("token ")
 
@@ -781,9 +722,7 @@ class TestGetPrFiles:
 
     async def test_hits_correct_url_with_pagination(self, client, capture):
         await client.get_pr_files("owner", "repo", 10)
-        file_requests = [
-            r for r in capture.requests if "/files" in r.url.path
-        ]
+        file_requests = [r for r in capture.requests if "/files" in r.url.path]
         assert len(file_requests) == 1
         assert "/pulls/10/files" in file_requests[0].url.path
 
@@ -794,7 +733,7 @@ class TestGetPrFiles:
 
 
 # ---------------------------------------------------------------------------
-# Contents API — write helpers (Week 8 Day 1)
+# Contents API — write helpers
 # ---------------------------------------------------------------------------
 class TestCreateRef:
     async def test_posts_to_git_refs_endpoint(self, client, capture):
@@ -806,21 +745,15 @@ class TestCreateRef:
         assert result["sha"] == "abc1234"
         assert result["repo"] == "owner/repo"
 
-        ref_requests = [
-            r for r in capture.requests if r.url.path.endswith("/git/refs")
-        ]
+        ref_requests = [r for r in capture.requests if r.url.path.endswith("/git/refs")]
         assert len(ref_requests) == 1
         assert ref_requests[0].method == "POST"
 
     async def test_payload_has_ref_and_sha(self, client, capture):
         import json
 
-        await client._create_ref(
-            "owner", "repo", "refs/heads/feature", "deadbeef"
-        )
-        req = next(
-            r for r in capture.requests if r.url.path.endswith("/git/refs")
-        )
+        await client._create_ref("owner", "repo", "refs/heads/feature", "deadbeef")
+        req = next(r for r in capture.requests if r.url.path.endswith("/git/refs"))
         payload = json.loads(req.content)
         assert payload == {
             "ref": "refs/heads/feature",
@@ -868,15 +801,9 @@ class TestCreateOrUpdateFile:
             "hello world\n",
             "branch",
         )
-        req = next(
-            r
-            for r in capture.requests
-            if r.method == "PUT" and "/contents/" in r.url.path
-        )
+        req = next(r for r in capture.requests if r.method == "PUT" and "/contents/" in r.url.path)
         payload = json.loads(req.content)
-        assert payload["content"] == base64.b64encode(
-            b"hello world\n"
-        ).decode("ascii")
+        assert payload["content"] == base64.b64encode(b"hello world\n").decode("ascii")
         assert payload["branch"] == "branch"
         assert payload["message"] == "msg"
         assert "sha" not in payload
@@ -893,11 +820,7 @@ class TestCreateOrUpdateFile:
             "branch",
             sha="oldblobsha",
         )
-        req = next(
-            r
-            for r in capture.requests
-            if r.method == "PUT" and "/contents/" in r.url.path
-        )
+        req = next(r for r in capture.requests if r.method == "PUT" and "/contents/" in r.url.path)
         payload = json.loads(req.content)
         assert payload["sha"] == "oldblobsha"
 
@@ -930,9 +853,7 @@ class TestCreatePull:
             "main",
             draft=True,
         )
-        req = next(
-            r for r in capture.requests if r.url.path.endswith("/pulls")
-        )
+        req = next(r for r in capture.requests if r.url.path.endswith("/pulls"))
         payload = json.loads(req.content)
         assert payload["draft"] is True
         assert payload["head"] == "head-branch"
@@ -941,18 +862,14 @@ class TestCreatePull:
     async def test_default_is_not_draft(self, client, capture):
         import json
 
-        await client._create_pull(
-            "owner", "repo", "t", "b", "head", "main"
-        )
-        req = next(
-            r for r in capture.requests if r.url.path.endswith("/pulls")
-        )
+        await client._create_pull("owner", "repo", "t", "b", "head", "main")
+        req = next(r for r in capture.requests if r.url.path.endswith("/pulls"))
         payload = json.loads(req.content)
         assert "draft" not in payload
 
 
 # ---------------------------------------------------------------------------
-# Contents API — read methods (Week 8 Day 1)
+# Contents API — read methods
 # ---------------------------------------------------------------------------
 class TestGetRef:
     async def test_returns_typed_ref_info(self, client, capture):
@@ -962,22 +879,14 @@ class TestGetRef:
         assert ref_info.ref == "refs/heads/main"
 
     async def test_path_preserves_slashes_in_ref(self, client, capture):
-        await client.get_ref(
-            "owner", "repo", "heads/gita/tests/example"
-        )
-        ref_request = next(
-            r for r in capture.requests if "/git/ref/" in r.url.path
-        )
-        assert ref_request.url.path.endswith(
-            "/git/ref/heads/gita/tests/example"
-        )
+        await client.get_ref("owner", "repo", "heads/gita/tests/example")
+        ref_request = next(r for r in capture.requests if "/git/ref/" in r.url.path)
+        assert ref_request.url.path.endswith("/git/ref/heads/gita/tests/example")
 
 
 class TestGetContents:
     async def test_returns_decoded_content(self, client, capture):
-        contents = await client.get_contents(
-            "owner", "repo", "src/hello.txt"
-        )
+        contents = await client.get_contents("owner", "repo", "src/hello.txt")
         assert isinstance(contents, FileContents)
         assert contents.content == "hello world\nsecond line\n"
         assert contents.sha == "blob1234"
@@ -991,13 +900,9 @@ class TestGetContents:
             ref="gita/tests/example",
         )
         contents_request = next(
-            r
-            for r in capture.requests
-            if r.method == "GET" and "/contents/" in r.url.path
+            r for r in capture.requests if r.method == "GET" and "/contents/" in r.url.path
         )
-        assert "ref=gita%2Ftests%2Fexample" in str(
-            contents_request.url.query
-        )
+        assert "ref=gita%2Ftests%2Fexample" in str(contents_request.url.query)
 
     async def test_directory_response_raises(self, test_auth, capture):
         """GitHub returns a JSON array for directory paths — reject loud."""
@@ -1013,9 +918,7 @@ class TestGetContents:
                         "expires_at": _iso_in(3600),
                     },
                 )
-            return httpx.Response(
-                200, json=[{"name": "a.py"}, {"name": "b.py"}]
-            )
+            return httpx.Response(200, json=[{"name": "a.py"}, {"name": "b.py"}])
 
         http = httpx.AsyncClient(
             transport=_make_transport(dir_handler, capture),
@@ -1027,7 +930,7 @@ class TestGetContents:
 
 
 # ---------------------------------------------------------------------------
-# execute(create_branch / update_file / open_pr)  —  Week 8 Day 2 dispatch
+# execute(create_branch / update_file / open_pr) dispatch
 # ---------------------------------------------------------------------------
 def _create_branch_decision(
     repo: str = "owner/repo",
@@ -1096,9 +999,7 @@ class TestExecuteCreateBranch:
         result = await client.execute(_create_branch_decision())
         assert result["kind"] == "create_branch"
         assert result["ref"] == "refs/heads/gita/tests/example"
-        ref_requests = [
-            r for r in capture.requests if r.url.path.endswith("/git/refs")
-        ]
+        ref_requests = [r for r in capture.requests if r.url.path.endswith("/git/refs")]
         assert len(ref_requests) == 1
         assert ref_requests[0].method == "POST"
 
@@ -1106,13 +1007,9 @@ class TestExecuteCreateBranch:
         import json
 
         await client.execute(
-            _create_branch_decision(
-                ref="refs/heads/gita/tests/bar", base_sha="deadbeef"
-            )
+            _create_branch_decision(ref="refs/heads/gita/tests/bar", base_sha="deadbeef")
         )
-        req = next(
-            r for r in capture.requests if r.url.path.endswith("/git/refs")
-        )
+        req = next(r for r in capture.requests if r.url.path.endswith("/git/refs"))
         assert json.loads(req.content) == {
             "ref": "refs/heads/gita/tests/bar",
             "sha": "deadbeef",
@@ -1145,33 +1042,21 @@ class TestExecuteUpdateFile:
         assert result["kind"] == "create_file"
         assert result["path"] == "src/hello.txt"  # from mock fixture
         content_requests = [
-            r
-            for r in capture.requests
-            if r.method == "PUT" and "/contents/" in r.url.path
+            r for r in capture.requests if r.method == "PUT" and "/contents/" in r.url.path
         ]
         assert len(content_requests) == 1
 
     async def test_updates_when_sha_given(self, client, capture):
-        result = await client.execute(
-            _update_file_decision(sha="oldblobsha")
-        )
+        result = await client.execute(_update_file_decision(sha="oldblobsha"))
         assert result["kind"] == "update_file"
 
     async def test_payload_content_is_base64(self, client, capture):
         import json
 
-        await client.execute(
-            _update_file_decision(content="hello world\n")
-        )
-        req = next(
-            r
-            for r in capture.requests
-            if r.method == "PUT" and "/contents/" in r.url.path
-        )
+        await client.execute(_update_file_decision(content="hello world\n"))
+        req = next(r for r in capture.requests if r.method == "PUT" and "/contents/" in r.url.path)
         payload = json.loads(req.content)
-        assert payload["content"] == base64.b64encode(
-            b"hello world\n"
-        ).decode("ascii")
+        assert payload["content"] == base64.b64encode(b"hello world\n").decode("ascii")
         assert payload["message"] == "gita: add generated tests"
         assert payload["branch"] == "gita/tests/foo"
 
@@ -1192,9 +1077,7 @@ class TestExecuteUpdateFile:
     async def test_empty_content_is_valid(self, client, capture):
         """An empty file body is a valid write — don't trip the payload
         guard on ``content == ''`` (only None should raise)."""
-        result = await client.execute(
-            _update_file_decision(content="")
-        )
+        result = await client.execute(_update_file_decision(content=""))
         assert result["kind"] == "create_file"
 
 
@@ -1205,9 +1088,7 @@ class TestExecuteOpenPr:
         assert result["number"] == 42
         assert result["state"] == "open"
         pulls_requests = [
-            r
-            for r in capture.requests
-            if r.method == "POST" and r.url.path.endswith("/pulls")
+            r for r in capture.requests if r.method == "POST" and r.url.path.endswith("/pulls")
         ]
         assert len(pulls_requests) == 1
 
@@ -1216,9 +1097,7 @@ class TestExecuteOpenPr:
 
         await client.execute(_open_pr_decision(draft=True))
         req = next(
-            r
-            for r in capture.requests
-            if r.method == "POST" and r.url.path.endswith("/pulls")
+            r for r in capture.requests if r.method == "POST" and r.url.path.endswith("/pulls")
         )
         payload = json.loads(req.content)
         assert payload["draft"] is True

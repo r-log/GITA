@@ -11,6 +11,7 @@ Given a file path, return:
 using the neighborhood to orient itself. This keeps payloads bounded and
 follows the "views are navigation, symbol_view returns code" pattern.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -78,21 +79,16 @@ async def neighborhood_view(
     # Normalize forward slashes so callers can pass Windows-style paths
     file_path = file_path.replace("\\", "/")
 
-    stmt = select(CodeIndex).where(
-        CodeIndex.repo_id == repo.id, CodeIndex.file_path == file_path
-    )
+    stmt = select(CodeIndex).where(CodeIndex.repo_id == repo.id, CodeIndex.file_path == file_path)
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
-        raise FileNotFoundError(
-            f"file not indexed in {repo_name!r}: {file_path!r}"
-        )
+        raise FileNotFoundError(f"file not indexed in {repo_name!r}: {file_path!r}")
 
     file_info = _row_to_file_info(row)
 
     # Imports from this file
-    imports_stmt = (
-        select(ImportEdge)
-        .where(ImportEdge.repo_id == repo.id, ImportEdge.src_file == file_path)
+    imports_stmt = select(ImportEdge).where(
+        ImportEdge.repo_id == repo.id, ImportEdge.src_file == file_path
     )
     out_edges = (await session.execute(imports_stmt)).scalars().all()
 
@@ -106,15 +102,11 @@ async def neighborhood_view(
             .where(CodeIndex.repo_id == repo.id)
             .where(CodeIndex.file_path.in_(resolved_out_paths[:MAX_IMPORTS]))
         )
-        imports = [
-            _row_to_file_info(r)
-            for r in (await session.execute(stmt)).scalars().all()
-        ]
+        imports = [_row_to_file_info(r) for r in (await session.execute(stmt)).scalars().all()]
 
     # Imports into this file (reverse dependencies)
-    importers_stmt = (
-        select(ImportEdge)
-        .where(ImportEdge.repo_id == repo.id, ImportEdge.dst_file == file_path)
+    importers_stmt = select(ImportEdge).where(
+        ImportEdge.repo_id == repo.id, ImportEdge.dst_file == file_path
     )
     in_edges = (await session.execute(importers_stmt)).scalars().all()
     importer_paths = [e.src_file for e in in_edges][:MAX_IMPORTED_BY]
@@ -126,10 +118,7 @@ async def neighborhood_view(
             .where(CodeIndex.repo_id == repo.id)
             .where(CodeIndex.file_path.in_(importer_paths))
         )
-        imported_by = [
-            _row_to_file_info(r)
-            for r in (await session.execute(stmt)).scalars().all()
-        ]
+        imported_by = [_row_to_file_info(r) for r in (await session.execute(stmt)).scalars().all()]
 
     # Sibling files in the same directory
     parent = PurePosixPath(file_path).parent
@@ -143,9 +132,7 @@ async def neighborhood_view(
     siblings: list[FileInfo] = []
     for r in all_rows:
         r_parent = str(PurePosixPath(r.file_path).parent)
-        if r_parent == "." and parent_str == "":
-            siblings.append(_row_to_file_info(r))
-        elif r_parent == parent_str:
+        if r_parent == "." and parent_str == "" or r_parent == parent_str:
             siblings.append(_row_to_file_info(r))
         if len(siblings) >= MAX_SIBLINGS:
             break

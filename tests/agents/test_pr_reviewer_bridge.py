@@ -3,6 +3,7 @@
 Pure tests — no DB, no LLM, no GitHub. The bridge takes a PRReviewResult
 and produces a Decision; these tests verify the shape.
 """
+
 from __future__ import annotations
 
 from gita.agents.pr_reviewer.bridge import (
@@ -24,8 +25,12 @@ def _finding(
     fix_sketch: str = "Use parameterized query",
 ) -> Finding:
     return Finding(
-        file=file, line=line, severity=severity, kind=kind,
-        description=description, fix_sketch=fix_sketch,
+        file=file,
+        line=line,
+        severity=severity,
+        kind=kind,
+        description=description,
+        fix_sketch=fix_sketch,
     )
 
 
@@ -60,9 +65,7 @@ class TestBuildDecision:
 
     def test_target_uses_pr_number_as_issue(self):
         """GitHub treats PR comments as issue comments — same endpoint."""
-        decision = build_pr_review_decision(
-            _result(), repo_full_name="r-log/amass", pr_number=42
-        )
+        decision = build_pr_review_decision(_result(), repo_full_name="r-log/amass", pr_number=42)
         assert decision.target == {"repo": "r-log/amass", "issue": 42}
 
     def test_confidence_inherits_from_result(self):
@@ -85,10 +88,12 @@ class TestBuildDecision:
 
     def test_evidence_includes_top_findings(self):
         decision = build_pr_review_decision(
-            _result(findings=[
-                _finding(file="a.py", line=1),
-                _finding(file="b.py", line=2),
-            ]),
+            _result(
+                findings=[
+                    _finding(file="a.py", line=1),
+                    _finding(file="b.py", line=2),
+                ]
+            ),
             repo_full_name="r-log/amass",
             pr_number=42,
         )
@@ -123,17 +128,19 @@ class TestRenderReviewBody:
         assert "Approved" in body
 
     def test_body_has_summary_in_blockquote(self):
-        body = _render_review_body(_result(
-            summary="Found a SQL injection."
-        ))
+        body = _render_review_body(_result(summary="Found a SQL injection."))
         assert "> Found a SQL injection." in body
 
     def test_body_has_findings_grouped_by_file(self):
-        body = _render_review_body(_result(findings=[
-            _finding(file="src/db.py", line=42),
-            _finding(file="src/db.py", line=50, description="another issue"),
-            _finding(file="src/auth.py", line=10),
-        ]))
+        body = _render_review_body(
+            _result(
+                findings=[
+                    _finding(file="src/db.py", line=42),
+                    _finding(file="src/db.py", line=50, description="another issue"),
+                    _finding(file="src/auth.py", line=10),
+                ]
+            )
+        )
         assert "`src/db.py`" in body
         assert "`src/auth.py`" in body
         assert "SQL injection" in body
@@ -158,9 +165,14 @@ class TestRenderReviewBody:
         assert "No issues found" in body
 
     def test_finding_count_in_header(self):
-        body = _render_review_body(_result(findings=[
-            _finding(), _finding(file="b.py"),
-        ]))
+        body = _render_review_body(
+            _result(
+                findings=[
+                    _finding(),
+                    _finding(file="b.py"),
+                ]
+            )
+        )
         assert "2 findings" in body
 
     def test_single_finding_no_plural(self):
@@ -168,10 +180,7 @@ class TestRenderReviewBody:
         assert "1 finding" in body
 
     def test_many_findings_collapsed(self):
-        findings = [
-            _finding(file=f"f{i}.py", line=i + 1)
-            for i in range(7)
-        ]
+        findings = [_finding(file=f"f{i}.py", line=i + 1) for i in range(7)]
         body = _render_review_body(_result(findings=findings))
         assert "<details>" in body
         assert "</details>" in body
@@ -181,3 +190,44 @@ class TestRenderReviewBody:
         findings = [_finding(), _finding(file="other.py", line=5)]
         body = _render_review_body(_result(findings=findings))
         assert "<details>" not in body
+
+
+# ---------------------------------------------------------------------------
+# Model-written text is neutralised before posting
+# ---------------------------------------------------------------------------
+class TestRenderedOutputSafety:
+    def test_mentions_html_and_images_are_defused(self):
+        evil = _finding(
+            description="Ping @org/everyone <img src=x onerror=1> ![px](https://t.example/p.gif)",
+            fix_sketch="cc @maintainer",
+        )
+        body = _render_review_body(_result(findings=[evil], summary="@admin approved"))
+        assert "@org/everyone" not in body
+        assert "@maintainer" not in body
+        assert "@admin" not in body
+        assert "<img" not in body
+        assert "![px]" not in body
+        # Still readable: the words survive, only parsing is defused.
+        assert "everyone" in body and "maintainer" in body
+
+    def test_multiline_text_cannot_escape_the_blockquote(self):
+        evil = _finding(description="real issue\n\n## ✅ Approved by security team")
+        body = _render_review_body(_result(findings=[evil]))
+        heading_lines = [ln for ln in body.splitlines() if ln.startswith("## ")]
+        assert heading_lines == ["## \U0001f50d PR Review — #42"]
+
+
+class TestCoverageNotes:
+    def test_unreviewed_and_dropped_are_stated(self):
+        result = _result(findings=[], verdict="comment")
+        result.unreviewed_files = ["assets/logo.png", "src/huge.py"]
+        result.dropped_findings = 3
+        body = _render_review_body(result)
+        assert "Not reviewed (2 files)" in body
+        assert "`assets/logo.png`" in body
+        assert "3 findings discarded" in body
+
+    def test_full_coverage_has_no_notes(self):
+        body = _render_review_body(_result(findings=[], verdict="approve"))
+        assert "Not reviewed" not in body
+        assert "discarded" not in body

@@ -5,16 +5,18 @@ Revises:
 Create Date: 2026-04-11 22:00:00.000000
 
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
+
 revision: str = "0001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -65,12 +67,8 @@ def upgrade() -> None:
         sa.Column("language", sa.String(length=32), nullable=False),
         sa.ForeignKeyConstraint(["repo_id"], ["repos.id"], ondelete="CASCADE"),
     )
-    op.create_index(
-        "ix_import_edges_repo_src", "import_edges", ["repo_id", "src_file"]
-    )
-    op.create_index(
-        "ix_import_edges_repo_dst", "import_edges", ["repo_id", "dst_file"]
-    )
+    op.create_index("ix_import_edges_repo_src", "import_edges", ["repo_id", "src_file"])
+    op.create_index("ix_import_edges_repo_dst", "import_edges", ["repo_id", "dst_file"])
 
 
 def downgrade() -> None:

@@ -25,6 +25,7 @@ terms don't appear in the file, ``ts_headline`` falls back to the
 first fragment of the content without highlights — acceptable for CLI
 output and explicit that the match is vibes-based.
 """
+
 from __future__ import annotations
 
 import logging
@@ -46,7 +47,7 @@ _HEADLINE_OPTS = "StartSel=**, StopSel=**, MaxFragments=3, MaxWords=30, MinWords
 # Symbol-name boost: files where a function/class name matches the query
 # get an additive rank boost. This promotes files that DEFINE a concept
 # over files that merely mention it in a comment.
-_SYMBOL_BOOST = 0.3   # per matching symbol
+_SYMBOL_BOOST = 0.3  # per matching symbol
 _MAX_SYMBOL_BOOST = 1.0  # cap so one file with 10 matching symbols doesn't dominate
 
 # Hybrid scoring weights. FTS tends to give confident high scores for
@@ -108,9 +109,7 @@ def _symbols_matching_query(
     return matching
 
 
-async def _repo_has_embeddings(
-    session: AsyncSession, repo_id: Any
-) -> bool:
+async def _repo_has_embeddings(session: AsyncSession, repo_id: Any) -> bool:
     """Fast existence check — is semantic search usable for this repo?"""
     stmt = (
         select(func.count())
@@ -215,7 +214,9 @@ async def _semantic_candidates(
         .limit(candidate_limit)
     )
     rows = [dict(r._mapping) for r in (await session.execute(stmt)).all()]
-    return [r for r in rows if r["distance"] is not None and r["distance"] <= _SEMANTIC_DISTANCE_MAX]
+    return [
+        r for r in rows if r["distance"] is not None and r["distance"] <= _SEMANTIC_DISTANCE_MAX
+    ]
 
 
 def _normalize_fts_ranks(rows: list[dict[str, Any]]) -> None:
@@ -256,9 +257,7 @@ async def concept_view(
     candidate_limit = max(limit * _CANDIDATE_MULTIPLIER, limit)
 
     # --- FTS side (always runs) ---
-    fts_rows, fts_total = await _fts_candidates(
-        session, repo.id, query, candidate_limit
-    )
+    fts_rows, fts_total = await _fts_candidates(session, repo.id, query, candidate_limit)
     _normalize_fts_ranks(fts_rows)
 
     # --- Semantic side (optional) ---
@@ -327,14 +326,9 @@ async def concept_view(
         all_symbols = build_symbol_summary(row.get("structure") or {})
         matching_syms = _symbols_matching_query(all_symbols, query_terms)
 
-        symbol_boost = min(
-            len(matching_syms) * _SYMBOL_BOOST, _MAX_SYMBOL_BOOST
-        )
+        symbol_boost = min(len(matching_syms) * _SYMBOL_BOOST, _MAX_SYMBOL_BOOST)
         if use_hybrid:
-            combined = (
-                _W_FTS * row["fts_rank_normalized"]
-                + _W_VECTOR * row["vector_score"]
-            )
+            combined = _W_FTS * row["fts_rank_normalized"] + _W_VECTOR * row["vector_score"]
         else:
             # FTS-only: preserve legacy behavior — use raw ts_rank_cd.
             combined = row["fts_rank"]

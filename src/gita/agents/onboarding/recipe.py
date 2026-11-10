@@ -10,6 +10,7 @@ The recipe is deterministic code with LLM judgment at pre-defined forks:
 
 No free-form tool loop. The LLM is confined to judgment, not navigation.
 """
+
 from __future__ import annotations
 
 import logging
@@ -88,17 +89,10 @@ def _render_load_bearing_for_prompt(
         lines.append(header)
         shown = ranked.symbol_summary[:12]
         for brief in shown:
-            parent = (
-                f" in {brief.parent_class}" if brief.parent_class else ""
-            )
-            lines.append(
-                f"    line {brief.line:>4}  {brief.kind:<16} "
-                f"{brief.name}{parent}"
-            )
+            parent = f" in {brief.parent_class}" if brief.parent_class else ""
+            lines.append(f"    line {brief.line:>4}  {brief.kind:<16} {brief.name}{parent}")
         if len(ranked.symbol_summary) > len(shown):
-            lines.append(
-                f"    ... and {len(ranked.symbol_summary) - len(shown)} more"
-            )
+            lines.append(f"    ... and {len(ranked.symbol_summary) - len(shown)} more")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -106,9 +100,7 @@ def _render_load_bearing_for_prompt(
 def _render_file_bodies_for_prompt(bodies: list[_FileBody]) -> str:
     chunks: list[str] = []
     for body in bodies:
-        chunks.append(
-            f"=== {body.file_path} ({body.language}, {body.line_count} lines) ==="
-        )
+        chunks.append(f"=== {body.file_path} ({body.language}, {body.line_count} lines) ===")
         chunks.append(_prepend_line_numbers(body.content, body.line_count))
         if body.truncated:
             chunks.append("... [file truncated to keep the prompt bounded]")
@@ -136,10 +128,7 @@ async def _fetch_file_bodies(
         .where(CodeIndex.repo_id == repo_id)
         .where(CodeIndex.file_path.in_(file_paths))
     )
-    rows = {
-        row.file_path: row
-        for row in (await session.execute(stmt)).scalars().all()
-    }
+    rows = {row.file_path: row for row in (await session.execute(stmt)).scalars().all()}
     bodies: list[_FileBody] = []
     for path in file_paths:  # preserve pick order
         row = rows.get(path)
@@ -195,13 +184,9 @@ def _convert_milestones(
 ) -> list[Milestone]:
     out: list[Milestone] = []
     for llm_m in llm_milestones:
-        valid_indices = [
-            i for i in llm_m.finding_indices if 0 <= i < n_findings
-        ]
+        valid_indices = [i for i in llm_m.finding_indices if 0 <= i < n_findings]
         if not valid_indices:
-            logger.warning(
-                "dropping_milestone_no_valid_findings title=%s", llm_m.title
-            )
+            logger.warning("dropping_milestone_no_valid_findings title=%s", llm_m.title)
             continue
         out.append(
             Milestone(
@@ -217,9 +202,7 @@ def _convert_milestones(
 def _render_findings_for_grouping(findings: list[Finding]) -> str:
     lines = [f"Findings ({len(findings)}):", ""]
     for i, f in enumerate(findings):
-        lines.append(
-            f"[{i}] {f.severity:<8} {f.kind:<10} {f.file}:{f.line}"
-        )
+        lines.append(f"[{i}] {f.severity:<8} {f.kind:<10} {f.file}:{f.line}")
         lines.append(f"    {f.description}")
         if f.fix_sketch:
             lines.append(f"    fix: {f.fix_sketch}")
@@ -227,9 +210,7 @@ def _render_findings_for_grouping(findings: list[Finding]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _overall_confidence(
-    findings: list[Finding], milestones: list[Milestone]
-) -> float:
+def _overall_confidence(findings: list[Finding], milestones: list[Milestone]) -> float:
     if not milestones:
         return 0.5 if findings else 0.3
     avg = sum(m.confidence for m in milestones) / len(milestones)
@@ -255,13 +236,9 @@ async def run_onboarding(
     repo = await resolve_repo(session, repo_name)
 
     # Stage 0: load load-bearing files deterministically
-    load_bearing = await load_bearing_view(
-        session, repo_name, limit=load_bearing_limit
-    )
+    load_bearing = await load_bearing_view(session, repo_name, limit=load_bearing_limit)
     if not load_bearing.files:
-        raise OnboardingError(
-            f"repo {repo_name!r} has no indexed files — run `gita index` first"
-        )
+        raise OnboardingError(f"repo {repo_name!r} has no indexed files — run `gita index` first")
 
     ranked_for_prompt = [
         _RankedFileForPrompt(
@@ -305,9 +282,7 @@ async def run_onboarding(
 
     if not valid_picks:
         valid_picks = list(range(min(3, len(load_bearing.files))))
-        logger.warning(
-            "onboarding_fallback_picks repo=%s reason=empty_or_invalid", repo_name
-        )
+        logger.warning("onboarding_fallback_picks repo=%s reason=empty_or_invalid", repo_name)
 
     picked_paths = [load_bearing.files[i].file_path for i in valid_picks]
 
@@ -338,9 +313,7 @@ async def run_onboarding(
     # The LLM's output is untrusted; the guardrails are walls, not rules.
     original_finding_count = len(findings)
     if findings:
-        findings, dropped = await verify_findings(
-            session, repo.id, findings
-        )
+        findings, dropped = await verify_findings(session, repo.id, findings)
         if dropped:
             logger.info(
                 "onboarding_guardrails repo=%s dropped=%d kept=%d reasons=%s",
@@ -362,9 +335,7 @@ async def run_onboarding(
             max_tokens=_GROUPING_MAX_TOKENS,
         )
         assert isinstance(group_response.parsed, MilestonesResponse)
-        milestones = _convert_milestones(
-            group_response.parsed.milestones, len(findings)
-        )
+        milestones = _convert_milestones(group_response.parsed.milestones, len(findings))
 
     # Blend the LLM's milestone-based confidence with a structural penalty
     # based on how many findings survived the guardrails.

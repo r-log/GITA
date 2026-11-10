@@ -8,6 +8,7 @@ The detection shells out to ``git diff --name-status`` — same approach as
 ``_read_head_sha`` in ``ingest.py``. The parser is pure (no I/O) so it
 can be tested without a real git repo.
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,75 +35,73 @@ _STATUS_MAP: dict[str, str] = {
     "D": "deleted",
     "R": "renamed",
     "T": "modified",  # type change → treat as modified
-    "C": "added",     # copied → treat as added
+    "C": "added",  # copied → treat as added
 }
 
 
-def parse_name_status(output: str) -> list[FileChange]:
-    """Parse the output of ``git diff --name-status``.
-
-    Each line is ``<status>[score]\\t<path>`` or for renames/copies
-    ``<status>[score]\\t<old_path>\\t<new_path>``.
-
-    Returns a list of ``FileChange`` in the order they appear.
-    Unknown status codes are logged and skipped.
-    """
+def _records_to_changes(records: list[list[str]]) -> list[FileChange]:
+    """Turn ``[status, path, (new_path)]`` records into FileChanges."""
     changes: list[FileChange] = []
-    for line in output.strip().splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        if len(parts) < 2:
-            logger.warning("diff_parse_skip line=%r", line)
-            continue
-
-        raw_status = parts[0].strip()
-        # Status may have a score suffix for renames: "R100", "R085"
-        status_letter = raw_status[0] if raw_status else ""
+    for record in records:
+        raw_status = record[0].strip() if record else ""
+        status_letter = raw_status[:1]
         status = _STATUS_MAP.get(status_letter)
-
-        if status is None:
-            logger.warning(
-                "diff_unknown_status status=%r line=%r", raw_status, line
-            )
+        if status is None or len(record) < 2:
+            logger.warning("diff_unknown_status record=%r", record)
             continue
-
-        if status == "renamed" and len(parts) >= 3:
-            old_path = parts[1].strip().replace("\\", "/")
-            new_path = parts[2].strip().replace("\\", "/")
-            # A rename produces two changes: delete the old, add the new.
+        paths = [p.replace("\\", "/") for p in record[1:]]
+        if status == "renamed" and len(paths) >= 2:
+            # A rename is a delete of the old path plus an add of the new.
+            changes.append(FileChange(relative_path=paths[0], status="deleted"))
             changes.append(
-                FileChange(
-                    relative_path=old_path,
-                    status="deleted",
-                    previous_path=None,
-                )
+                FileChange(relative_path=paths[1], status="added", previous_path=paths[0])
             )
-            changes.append(
-                FileChange(
-                    relative_path=new_path,
-                    status="added",
-                    previous_path=old_path,
-                )
-            )
-        elif status_letter == "C" and len(parts) >= 3:
-            # Copy: the destination is a new file; source is unchanged.
-            new_path = parts[2].strip().replace("\\", "/")
-            changes.append(
-                FileChange(relative_path=new_path, status="added")
-            )
+        elif status_letter == "C" and len(paths) >= 2:
+            # Copy: the destination is new; the source is unchanged.
+            changes.append(FileChange(relative_path=paths[1], status="added"))
         else:
-            file_path = parts[1].strip().replace("\\", "/")
-            changes.append(
-                FileChange(relative_path=file_path, status=status)
-            )
-
+            changes.append(FileChange(relative_path=paths[0], status=status))
     return changes
 
 
-def detect_changes(
-    root: Path, old_sha: str
-) -> list[FileChange] | None:
+def parse_name_status(output: str) -> list[FileChange]:
+    """Parse human-readable ``git diff --name-status`` output.
+
+    Each line is ``<status>[score]\\t<path>`` or, for renames/copies,
+    ``<status>[score]\\t<old_path>\\t<new_path>``. Paths with unusual
+    characters arrive C-quoted in this format; ``detect_changes`` uses
+    ``-z`` output (``parse_name_status_z``) for that reason.
+    """
+    records = [
+        [part.strip() for part in line.split("\t")]
+        for line in output.strip().splitlines()
+        if line.strip()
+    ]
+    return _records_to_changes(records)
+
+
+def parse_name_status_z(output: str) -> list[FileChange]:
+    """Parse ``git diff --name-status -z`` output.
+
+    Fields are NUL-terminated and paths are verbatim (no quoting), so
+    non-ASCII and otherwise unusual file names survive. Renames and
+    copies carry two paths after the status.
+    """
+    tokens = output.split("\0")
+    records: list[list[str]] = []
+    i = 0
+    while i < len(tokens):
+        status = tokens[i]
+        if not status:
+            i += 1
+            continue
+        width = 2 if status[:1] in ("R", "C") else 1
+        records.append([status, *tokens[i + 1 : i + 1 + width]])
+        i += 1 + width
+    return _records_to_changes(records)
+
+
+def detect_changes(root: Path, old_sha: str) -> list[FileChange] | None:
     """Detect changed files between ``old_sha`` and HEAD.
 
     Returns:
@@ -113,11 +112,19 @@ def detect_changes(
     try:
         result = subprocess.run(
             [
-                "git", "-C", str(root),
-                "diff", "--name-status", old_sha, "HEAD",
+                "git",
+                "-C",
+                str(root),
+                "diff",
+                "--name-status",
+                "-z",
+                old_sha,
+                "HEAD",
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
             timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -133,7 +140,29 @@ def detect_changes(
         )
         return None
 
-    return parse_name_status(result.stdout)
+    return parse_name_status_z(result.stdout)
+
+
+def tracked_files(root: Path) -> list[str] | None:
+    """Paths tracked by git at HEAD's index (``git ls-files -z``).
+
+    ``None`` when ``root`` isn't a git work tree; callers then walk the
+    filesystem instead.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return [p for p in result.stdout.split("\0") if p]
 
 
 def read_head_sha(root: Path) -> str | None:

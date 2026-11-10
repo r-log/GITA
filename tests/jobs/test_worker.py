@@ -5,6 +5,7 @@ Split into two groups:
 2. **Redis integration tests** — enqueue/dequeue against real Redis
    from docker-compose. Skipped if Redis is unavailable.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -83,8 +84,10 @@ class TestWorkerSettings:
 def _redis_available_sync() -> bool:
     """Quick synchronous check if Redis is reachable via raw TCP."""
     import socket
-    from gita.worker import _parse_redis_url
+
     from gita.config import settings
+    from gita.worker import _parse_redis_url
+
     rs = _parse_redis_url(settings.redis_url)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(2)
@@ -109,7 +112,9 @@ class TestRedisIntegration:
     @pytest.fixture
     async def pool(self):
         from arq import create_pool
+
         from gita.config import settings
+
         # Use settings.redis_url (127.0.0.1) not WorkerSettings.redis_settings
         # which may have been built with stale module-level defaults.
         rs = _parse_redis_url(settings.redis_url)
@@ -170,6 +175,7 @@ class TestRedisIntegration:
     async def test_startup_hook_creates_engine(self):
         """Startup hook creates a DB engine and sets initialized flag."""
         from gita.worker import startup
+
         ctx: dict = {}
         await startup(ctx)
         assert ctx["initialized"] is True
@@ -179,7 +185,8 @@ class TestRedisIntegration:
 
     async def test_shutdown_hook_disposes_engine(self):
         """Shutdown hook disposes the engine created by startup."""
-        from gita.worker import startup, shutdown
+        from gita.worker import shutdown, startup
+
         ctx: dict = {}
         await startup(ctx)
         assert ctx.get("engine") is not None
@@ -190,5 +197,6 @@ class TestRedisIntegration:
     async def test_shutdown_without_engine(self):
         """Shutdown is safe when no engine was created."""
         from gita.worker import shutdown
+
         ctx: dict = {}
         await shutdown(ctx)  # should not raise

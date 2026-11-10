@@ -131,9 +131,7 @@ class TestDecoratorHeavy:
 
     def test_service_methods(self):
         s = _parse_fixture("decorator_heavy.py")
-        service_methods = {
-            f.name for f in s.functions if f.parent_class == "Service"
-        }
+        service_methods = {f.name for f in s.functions if f.parent_class == "Service"}
         assert service_methods == {"static_method", "class_method", "name"}
 
     def test_service_methods_are_methods(self):

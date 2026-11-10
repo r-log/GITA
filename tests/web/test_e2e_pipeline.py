@@ -8,6 +8,7 @@ test DB.
 
 External services (GitHub API, LLM) are mocked.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -24,11 +25,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.indexer.ingest import index_repository
 
-SYNTH_REPO = (
-    Path(__file__).parent.parent / "fixtures" / "synthetic_py"
-).resolve()
+SYNTH_REPO = (Path(__file__).parent.parent / "fixtures" / "synthetic_py").resolve()
 
 TEST_SECRET = "e2e-pipeline-test-secret"
+SHA_A, SHA_B, SHA_C = "a" * 40, "b" * 40, "c" * 40
+REPO = {"full_name": "r-log/synthetic", "default_branch": "main"}
+USER = {"login": "octocat", "type": "User"}
 WEBHOOK_URL = "/api/webhooks/github"
 
 
@@ -59,7 +61,7 @@ def _sign(body: bytes) -> str:
     return f"sha256={digest}"
 
 
-def _post(client, payload, *, event_type="push"):
+def _post(client, payload, *, event_type="push", delivery="e2e-test-001"):
     body = json.dumps(payload).encode()
     return client.post(
         WEBHOOK_URL,
@@ -67,10 +69,37 @@ def _post(client, payload, *, event_type="push"):
         headers={
             "X-Hub-Signature-256": _sign(body),
             "X-GitHub-Event": event_type,
-            "X-GitHub-Delivery": "e2e-test-001",
+            "X-GitHub-Delivery": delivery,
             "Content-Type": "application/json",
         },
     )
+
+
+def _push(ref: str, after: str, *, deleted: bool = False) -> dict:
+    return {"ref": ref, "after": after, "deleted": deleted, "repository": REPO, "sender": USER}
+
+
+def _pr(action: str, number: int, head_sha: str) -> dict:
+    return {
+        "action": action,
+        "pull_request": {"number": number, "head": {"sha": head_sha}, "draft": False},
+        "repository": REPO,
+        "sender": USER,
+    }
+
+
+def _issue_labeled(number: int, *, sender: str, author: str, association: str) -> dict:
+    return {
+        "action": "labeled",
+        "label": {"name": "gita:onboard"},
+        "issue": {
+            "number": number,
+            "user": {"login": author},
+            "author_association": association,
+        },
+        "repository": REPO,
+        "sender": {"login": sender, "type": "User"},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -79,17 +108,13 @@ def _post(client, payload, *, event_type="push"):
 @pytest.fixture
 def webhook_client(monkeypatch):
     """FastAPI TestClient with fake ARQ pool and known secret."""
-    monkeypatch.setattr(
-        "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
-    )
-    from gita.web import cooldown, create_app
+    monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET)
+    from gita.web import create_app
 
-    cooldown.reset()
     app = create_app(use_lifespan=False)
     pool = _FakeArqPool()
     app.state.arq_pool = pool
     yield TestClient(app), pool
-    cooldown.reset()
 
 
 @pytest_asyncio.fixture
@@ -114,29 +139,75 @@ async def _patch_runner_session(db_session: AsyncSession, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# A realistic delivery log, end to end through the HTTP layer
+# ---------------------------------------------------------------------------
+class TestRealisticDeliverySequence:
+    """What GitHub actually sends during an ordinary afternoon.
+
+    Each step is (event, payload, expected outcome). The previous design
+    dropped the review in step 2 (per-repo cooldown after the push in
+    step 1), the review in step 4 (job ID without SHA still held by the
+    first review's result), reindexed feature branches, and ran
+    onboarding for every opened issue.
+    """
+
+    def test_exactly_the_right_jobs_are_enqueued(self, webhook_client):
+        client, pool = webhook_client
+        steps = [
+            # Developer pushes a branch and opens a PR straight away.
+            ("push", _push("refs/heads/feature", SHA_A), "ignored"),
+            ("pull_request", _pr("opened", 7, SHA_A), "dispatched"),
+            # Pushes a fix: GitHub sends push + synchronize together.
+            ("push", _push("refs/heads/feature", SHA_B), "ignored"),
+            ("pull_request", _pr("synchronize", 7, SHA_B), "dispatched"),
+            # GitHub redelivers the synchronize.
+            ("pull_request", _pr("synchronize", 7, SHA_B), "ignored"),
+            # PR is merged: push to the default branch, then branch deleted.
+            ("push", _push("refs/heads/main", SHA_C), "dispatched"),
+            ("push", _push("refs/heads/feature", "0" * 40, deleted=True), "ignored"),
+            ("push", _push("refs/tags/v1.0", SHA_C), "ignored"),
+            # Someone opens an issue whose template applies the label.
+            (
+                "issues",
+                _issue_labeled(3, sender="drive-by", author="drive-by", association="NONE"),
+                "ignored",
+            ),
+            # A maintainer asks for onboarding on that issue.
+            (
+                "issues",
+                _issue_labeled(3, sender="maintainer", author="drive-by", association="NONE"),
+                "dispatched",
+            ),
+        ]
+        for i, (event, payload, expected) in enumerate(steps):
+            resp = _post(client, payload, event_type=event, delivery=f"d-{i}")
+            assert resp.status_code == 200, (i, resp.text)
+            assert resp.json()["status"] == expected, (i, event, resp.json())
+
+        assert list(pool.jobs) == [
+            f"review-pr:r-log/synthetic:7:{SHA_A}",
+            f"review-pr:r-log/synthetic:7:{SHA_B}",
+            f"reindex:r-log/synthetic:{SHA_C}",
+            "onboard:r-log/synthetic:3",
+        ]
+        # Reviews are deferred so the stale one can see it's superseded.
+        review = pool.jobs[f"review-pr:r-log/synthetic:7:{SHA_B}"]
+        assert review["_defer_by"] > 0
+        assert review["head_sha"] == SHA_B
+
+
+# ---------------------------------------------------------------------------
 # Push -> Reindex pipeline
 # ---------------------------------------------------------------------------
 class TestPushReindexPipeline:
-
     def test_push_webhook_enqueues_reindex(self, webhook_client):
         client, pool = webhook_client
-        payload = {
-            "repository": {"full_name": "r-log/synthetic"},
-            "after": "abc123",
-            "sender": {"login": "octocat", "type": "User"},
-        }
-        resp = _post(client, payload, event_type="push")
+        resp = _post(client, _push("refs/heads/main", SHA_A), event_type="push")
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "dispatched"
-        assert data["function"] == "reindex_repo"
-
-        # Verify job was enqueued with correct params
-        assert len(pool.jobs) == 1
-        job = list(pool.jobs.values())[0]
-        assert job["function"] == "reindex_repo"
+        assert resp.json()["function"] == "reindex_repo"
+        job = pool.jobs[f"reindex:r-log/synthetic:{SHA_A}"]
         assert job["repo_full_name"] == "r-log/synthetic"
-        assert job["after_sha"] == "abc123"
+        assert job["after_sha"] == SHA_A
 
     @pytest.mark.usefixtures("indexed_repo", "_patch_runner_session")
     async def test_reindex_runner_updates_db(self, db_session: AsyncSession):
@@ -144,9 +215,7 @@ class TestPushReindexPipeline:
         from gita.jobs.runners import run_reindex_job
 
         with patch("gita.jobs.runners._git_sync", return_value=(True, "")):
-            result = await run_reindex_job(
-                "r-log/synthetic", after_sha="abc123"
-            )
+            result = await run_reindex_job("r-log/synthetic", after_sha=SHA_A)
         assert result["status"] == "completed"
         assert result["mode"] in ("full", "incremental", "noop")
 
@@ -155,106 +224,42 @@ class TestPushReindexPipeline:
 # PR -> Review pipeline
 # ---------------------------------------------------------------------------
 class TestPrReviewPipeline:
-
     def test_pr_webhook_enqueues_review(self, webhook_client):
         client, pool = webhook_client
-        payload = {
-            "action": "opened",
-            "pull_request": {"number": 42, "head": {"sha": "pr-sha-123"}},
-            "repository": {"full_name": "r-log/synthetic"},
-            "sender": {"login": "octocat", "type": "User"},
-        }
-        resp = _post(client, payload, event_type="pull_request")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "dispatched"
-        assert data["function"] == "review_pr"
-
-        job = list(pool.jobs.values())[0]
+        resp = _post(client, _pr("opened", 42, SHA_A), event_type="pull_request")
+        assert resp.json()["status"] == "dispatched"
+        job = pool.jobs[f"review-pr:r-log/synthetic:42:{SHA_A}"]
         assert job["repo_full_name"] == "r-log/synthetic"
         assert job["pr_number"] == 42
-        assert job["head_sha"] == "pr-sha-123"
+        assert job["head_sha"] == SHA_A
 
     @pytest.mark.usefixtures("indexed_repo", "_patch_runner_session")
-    async def test_pr_review_resolves_indexed_repo(
-        self, db_session: AsyncSession, monkeypatch
-    ):
-        """When repo is indexed, PR review passes resolution and fails later
-        (at credential check, not repo lookup)."""
+    async def test_pr_review_resolves_indexed_repo(self, db_session: AsyncSession, monkeypatch):
+        """Resolution succeeds, so the job fails later at the credential check."""
         from gita.jobs.runners import run_pr_review_job
 
-        # Clear credentials so we hit the RuntimeError after resolution
         monkeypatch.setattr("gita.jobs.runners.settings.openrouter_api_key", "")
-
-        # The RuntimeError at line ~120 proves resolution succeeded — it
-        # didn't return {"reason": "repo_not_indexed"} at line ~102.
         with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
             await run_pr_review_job("r-log/synthetic", 42)
-
-
-# ---------------------------------------------------------------------------
-# Issue -> Onboard pipeline
-# ---------------------------------------------------------------------------
-class TestIssueOnboardPipeline:
-
-    def test_issue_webhook_enqueues_onboard(self, webhook_client):
-        client, pool = webhook_client
-        payload = {
-            "action": "opened",
-            "issue": {"number": 7},
-            "repository": {"full_name": "r-log/synthetic"},
-            "sender": {"login": "octocat", "type": "User"},
-        }
-        resp = _post(client, payload, event_type="issues")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "dispatched"
-        assert data["function"] == "onboard_repo"
-
-        job = list(pool.jobs.values())[0]
-        assert job["repo_full_name"] == "r-log/synthetic"
-        assert job["issue_number"] == 7
 
 
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
 class TestPipelineErrorPaths:
-
     @pytest.mark.usefixtures("_patch_runner_session")
     async def test_unindexed_repo_returns_error(self, db_session: AsyncSession):
         """Push for an unindexed repo -> runner returns error dict."""
         from gita.jobs.runners import run_reindex_job
 
-        result = await run_reindex_job("r-log/nonexistent", after_sha="abc")
+        result = await run_reindex_job("r-log/nonexistent", after_sha=SHA_A)
         assert result["status"] == "error"
         assert result["reason"] == "repo_not_indexed"
 
-    def test_cooldown_blocks_duplicate_push(self, webhook_client):
-        client, pool = webhook_client
-        payload = {
-            "repository": {"full_name": "r-log/synthetic"},
-            "after": "abc123",
-            "sender": {"login": "octocat", "type": "User"},
-        }
-
-        # First push — dispatched
-        resp1 = _post(client, payload, event_type="push")
-        assert resp1.json()["status"] == "dispatched"
-
-        # Second push (same repo, within cooldown) — blocked
-        resp2 = _post(client, payload, event_type="push")
-        assert resp2.json()["status"] == "ignored"
-        assert resp2.json()["reason"] == "cooldown"
-
     def test_bot_sender_blocked(self, webhook_client):
         client, pool = webhook_client
-        payload = {
-            "action": "opened",
-            "pull_request": {"number": 1, "head": {"sha": "x"}},
-            "repository": {"full_name": "r-log/synthetic"},
-            "sender": {"login": "gita-agents[bot]", "type": "Bot"},
-        }
+        payload = _pr("opened", 1, SHA_A)
+        payload["sender"] = {"login": "gita-agents[bot]", "type": "Bot"}
         resp = _post(client, payload, event_type="pull_request")
         assert resp.json()["status"] == "ignored"
         assert resp.json()["reason"] == "bot sender"

@@ -9,19 +9,62 @@ objects whose ``function_name`` matches the function names exported here.
 Every job gets a deterministic ID so ARQ rejects duplicate enqueues.
 The pattern is ``{function}:{repo}:{discriminator}``:
 
-- ``review-pr:r-log/amass:42``  — one review per PR number
-- ``onboard:r-log/amass:7``     — one onboard per issue number
-- ``reindex:r-log/amass:abc123`` — one re-index per push SHA
+- ``review-pr:r-log/amass:42:<head sha>`` — one review per PR commit
+- ``onboard:r-log/amass:7``                — one onboard per issue
+- ``reindex:r-log/amass:<sha>``            — one re-index per default-branch push
+
+See ``gita.web.dispatch`` for why each ID has the shape it has.
 
 The actual agent logic lives in ``gita.jobs.runners``. These functions
 are thin ARQ wrappers that delegate to the runners.
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+import httpx
+from arq import Retry
+
+from gita.llm.client import LLMTransientError
+
 logger = logging.getLogger(__name__)
+
+# Backoff between job attempts for transient failures: 30 s, then 60 s.
+_RETRY_BASE_SECONDS = 30
+_MAX_TRIES = 3  # keep in sync with WorkerSettings.max_tries
+
+
+def is_transient(exc: BaseException) -> bool:
+    """Failures worth retrying the whole job for: provider/GitHub outages."""
+    if isinstance(exc, LLMTransientError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 429 or status >= 500
+    return isinstance(exc, httpx.TimeoutException | httpx.TransportError)
+
+
+async def _with_retry(
+    ctx: dict[str, Any], run: Callable[[], Awaitable[dict[str, Any]]]
+) -> dict[str, Any]:
+    """Run a job body; turn transient failures into ``arq.Retry``.
+
+    ARQ only retries a job that raises ``Retry`` (``max_tries`` doesn't
+    apply to ordinary exceptions), so without this a single 502 from the
+    LLM provider or GitHub loses the review for good.
+    """
+    try:
+        return await run()
+    except Exception as exc:
+        job_try = int(ctx.get("job_try", 1))
+        if is_transient(exc) and job_try < _MAX_TRIES:
+            defer = _RETRY_BASE_SECONDS * 2 ** (job_try - 1)
+            logger.warning("job_retry try=%d defer=%ds reason=%r", job_try, defer, exc)
+            raise Retry(defer=defer) from exc
+        raise
 
 
 async def review_pr(
@@ -40,8 +83,8 @@ async def review_pr(
     )
     from gita.jobs.runners import run_pr_review_job
 
-    return await run_pr_review_job(
-        repo_full_name, pr_number, head_sha=head_sha
+    return await _with_retry(
+        ctx, lambda: run_pr_review_job(repo_full_name, pr_number, head_sha=head_sha)
     )
 
 
@@ -59,7 +102,7 @@ async def onboard_repo(
     )
     from gita.jobs.runners import run_onboarding_job
 
-    return await run_onboarding_job(repo_full_name, issue_number)
+    return await _with_retry(ctx, lambda: run_onboarding_job(repo_full_name, issue_number))
 
 
 async def reindex_repo(
@@ -82,8 +125,9 @@ async def reindex_repo(
     )
     from gita.jobs.runners import run_reindex_job
 
-    return await run_reindex_job(
-        repo_full_name, after_sha=after_sha, redis=ctx.get("redis")
+    return await _with_retry(
+        ctx,
+        lambda: run_reindex_job(repo_full_name, after_sha=after_sha, redis=ctx.get("redis")),
     )
 
 
@@ -93,7 +137,7 @@ async def generate_tests(
     repo_full_name: str,
     target_file: str,
     target_repo: str | None = None,
-    base_branch: str = "main",
+    base_branch: str | None = None,
     base_sha: str | None = None,
     fallback_issue: int | None = None,
     test_file_path: str | None = None,
@@ -122,6 +166,8 @@ async def generate_tests(
         test_file_path=test_file_path,
         model=model,
         redis=ctx.get("redis"),
+        # Webhook-triggered: the code under test is unreviewed.
+        require_isolation=True,
     )
 
 

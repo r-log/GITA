@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests alembic
+      - run: ruff format --check src tests alembic
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: github_assistant
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: github_assistant
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U github_assistant"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      DATABASE_URL: postgresql+asyncpg://github_assistant:password@localhost:5432/github_assistant
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      # Lets the Docker sandbox integration tests run instead of skipping.
+      - name: Build test sandbox image
+        run: docker build -f docker/sandbox.Dockerfile -t gita-sandbox:latest docker/
+      - name: Tests (schema built by the real migrations)
+        run: pytest -q -p no:cacheprovider
+      - name: Migrations match the models
+        run: |
+          alembic upgrade head
+          alembic check
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build application image
+        run: docker build -t gita:ci .
