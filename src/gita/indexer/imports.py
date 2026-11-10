@@ -11,6 +11,14 @@ import points outside the repo (stdlib, npm package, installed package, etc.).
 Unresolved imports are NOT an error — we still store them in ``import_edges``
 with ``dst_file=NULL`` so resolution can improve without a reindex.
 
+**C/C++ includes** have no import path to follow: the build system's
+``-I`` directories decide. Without the build, ``#include "Player.h"`` is
+resolved like a compiler would with every source directory on the include
+path: next to the including file first, then any repo file whose path ends
+with the included path, preferring the one nearest the includer. Two
+equally near candidates leave the include unresolved rather than guessed.
+**C# ``using``** names a namespace, which spans files: stored, unresolved.
+
 **Package-root discovery:** real Python projects rarely put
 their package at the repo root. ``src/``-layouts, ``backend/``-layouts, and
 deeply nested apps are normal. ``discover_package_roots`` walks the
@@ -21,9 +29,11 @@ their parents as valid starting points for absolute-import resolution.
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
 
-from gita.indexer.walker import SKIP_DIRS, TEST_DIRS
+from gita.indexer.walker import C_FAMILY, SKIP_DIRS, TEST_DIRS
 
 _PACKAGE_EXCLUDE_DIRS: frozenset[str] = SKIP_DIRS | TEST_DIRS
 
@@ -253,17 +263,115 @@ def resolve_ts_js_import(raw: str, source_file: Path, repo_root: Path) -> Path |
 
 
 # ---------------------------------------------------------------------------
+# C / C++
+# ---------------------------------------------------------------------------
+_INCLUDE_RE = re.compile(r"""#\s*include\s*([<"])([^>"]+)[>"]""")
+
+
+def build_header_index(relative_paths: Iterable[str]) -> dict[str, list[str]]:
+    """File name -> repo-relative paths of the C/C++ files with that name."""
+    index: dict[str, list[str]] = {}
+    for rel in relative_paths:
+        index.setdefault(PurePosixPath(rel).name, []).append(rel)
+    for paths in index.values():
+        paths.sort()
+    return index
+
+
+def _shared_dirs(a: tuple[str, ...], b: tuple[str, ...]) -> int:
+    n = 0
+    for x, y in zip(a, b, strict=False):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def resolve_c_include(
+    raw: str,
+    source_file: Path,
+    repo_root: Path,
+    headers: Mapping[str, list[str]],
+) -> Path | None:
+    """Resolve ``#include "x/y.h"`` or ``#include <x/y.h>`` to a repo file.
+
+    Quoted includes try the including file's directory first, as compilers
+    do. Then any indexed file whose path ends with the included path
+    (``a/b/x/y.h``) is a candidate, as if every source directory were on
+    the include path; the one sharing the most directories with the
+    including file wins. A tie returns None: a wrong edge is worse than a
+    missing one. System headers (``<map>``) match nothing and return None.
+    """
+    match = _INCLUDE_RE.search(raw)
+    if match is None:
+        return None
+    quote, spec = match.group(1), match.group(2).strip().replace("\\", "/")
+    root = repo_root.resolve()
+    if quote == '"':
+        local = (source_file.parent / spec).resolve()
+        try:
+            local.relative_to(root)
+        except ValueError:
+            local = None
+        if local is not None and local.is_file():
+            return local
+
+    spec_path = PurePosixPath(spec)
+    candidates = [
+        rel
+        for rel in headers.get(spec_path.name, [])
+        if rel == spec or rel.endswith("/" + spec.lstrip("./"))
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return root / candidates[0]
+    try:
+        src_dirs = source_file.resolve().relative_to(root).parent.parts
+    except ValueError:
+        src_dirs = ()
+    ranked = sorted(
+        candidates, key=lambda rel: (-_shared_dirs(PurePosixPath(rel).parent.parts, src_dirs), rel)
+    )
+    best, runner_up = ranked[0], ranked[1]
+    if _shared_dirs(PurePosixPath(best).parent.parts, src_dirs) == _shared_dirs(
+        PurePosixPath(runner_up).parent.parts, src_dirs
+    ):
+        return None
+    return root / best
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ImportContext:
+    """Repo-wide facts import resolution needs, computed once per index run."""
+
+    package_roots: list[Path]
+    headers: Mapping[str, list[str]] = field(default_factory=dict)
+
+
+def build_import_context(repo_root: Path, files: Iterable[tuple[str, str]]) -> ImportContext:
+    """``files`` is ``(relative_path, language)`` for every indexed file."""
+    return ImportContext(
+        package_roots=discover_package_roots(repo_root),
+        headers=build_header_index(rel for rel, lang in files if lang in C_FAMILY),
+    )
+
+
 def resolve_import(
     raw: str,
     source_file: Path,
     repo_root: Path,
     language: str,
     package_roots: list[Path] | None = None,
+    headers: Mapping[str, list[str]] | None = None,
 ) -> Path | None:
     if language == "python":
         return resolve_python_import(raw, source_file, repo_root, package_roots)
-    if language in ("typescript", "javascript"):
+    if language in ("typescript", "tsx", "javascript"):
         return resolve_ts_js_import(raw, source_file, repo_root)
-    return None
+    if language in C_FAMILY:
+        return resolve_c_include(raw, source_file, repo_root, headers or {})
+    return None  # csharp: `using` names a namespace, not a file

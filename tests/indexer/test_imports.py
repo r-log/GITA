@@ -7,6 +7,7 @@ to match against.
 from pathlib import Path
 
 from gita.indexer.imports import (
+    build_header_index,
     discover_package_roots,
     resolve_import,
     resolve_python_import,
@@ -347,3 +348,58 @@ class TestPythonImportsWithPackageRoots:
         package_roots = discover_package_roots(tmp_path)
         resolved = resolve_python_import("import myutil", src, tmp_path, package_roots)
         assert resolved == (tmp_path / "myutil.py").resolve()
+
+
+# ---------------------------------------------------------------------------
+# C / C++ includes
+# ---------------------------------------------------------------------------
+class TestCInclude:
+    FILES = (
+        "src/game/entities/player/Player.h",
+        "src/game/entities/player/Player.cpp",
+        "src/game/entities/Unit.h",
+        "src/game/Common.h",
+        "src/shared/Common.h",
+        "src/game/a/Log.h",
+        "src/game/b/Log.h",
+    )
+
+    def _repo(self, tmp_path):
+        for rel in self.FILES:
+            _touch(tmp_path, rel)
+        return tmp_path / "src/game/entities/player/Player.cpp", build_header_index(self.FILES)
+
+    def _resolve(self, tmp_path, raw):
+        src, headers = self._repo(tmp_path)
+        found = resolve_import(raw, src, tmp_path, "cpp", headers=headers)
+        return found.relative_to(tmp_path).as_posix() if found else None
+
+    def test_next_to_the_includer(self, tmp_path):
+        assert self._resolve(tmp_path, '#include "Player.h"') == "src/game/entities/player/Player.h"
+
+    def test_relative_path(self, tmp_path):
+        assert self._resolve(tmp_path, '#include "../Unit.h"') == "src/game/entities/Unit.h"
+
+    def test_found_by_name_as_if_on_the_include_path(self, tmp_path):
+        assert self._resolve(tmp_path, '#include "Unit.h"') == "src/game/entities/Unit.h"
+        assert self._resolve(tmp_path, '#include "entities/Unit.h"') == "src/game/entities/Unit.h"
+
+    def test_nearest_candidate_wins(self, tmp_path):
+        # src/game/Common.h shares src/game with the includer; src/shared doesn't
+        assert self._resolve(tmp_path, '#include "Common.h"') == "src/game/Common.h"
+
+    def test_equally_near_candidates_stay_unresolved(self, tmp_path):
+        assert self._resolve(tmp_path, '#include "Log.h"') is None
+
+    def test_system_headers_unresolved(self, tmp_path):
+        assert self._resolve(tmp_path, "#include <map>") is None
+
+    def test_angle_include_of_a_project_header(self, tmp_path):
+        assert self._resolve(tmp_path, "#include <entities/Unit.h>") == "src/game/entities/Unit.h"
+
+    def test_cannot_escape_the_repo(self, tmp_path):
+        assert self._resolve(tmp_path, '#include "../../../../../../etc/passwd"') is None
+
+    def test_csharp_usings_stay_unresolved(self, tmp_path):
+        src = _touch(tmp_path, "Shop/Order.cs")
+        assert resolve_import("using Shop.Payments;", src, tmp_path, "csharp") is None

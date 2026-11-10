@@ -142,3 +142,34 @@ class TestDiscoveredFields:
         _touch(tmp_path, "a.py", content="hello\n")
         (f,) = list(iter_files(tmp_path))
         assert f.size == len(b"hello\n")
+
+
+class TestNativeLanguages:
+    def test_c_cpp_csharp_and_tsx_extensions(self, tmp_path):
+        for rel in ("a.c", "b.h", "c.cpp", "d.hpp", "e.cc", "f.inl", "g.cs", "h.tsx", "I.CPP"):
+            _touch(tmp_path, rel)
+        langs = {f.relative_path: f.language for f in iter_files(tmp_path)}
+        assert langs == {
+            "a.c": "c",
+            "b.h": "cpp",
+            "c.cpp": "cpp",
+            "d.hpp": "cpp",
+            "e.cc": "cpp",
+            "f.inl": "cpp",
+            "g.cs": "csharp",
+            "h.tsx": "tsx",
+            "I.CPP": "cpp",
+        }
+
+    def test_vendored_and_generated_code_skipped(self, tmp_path):
+        for rel in (
+            "dep/zlib/zlib.h",
+            "third_party/x.cc",
+            "external/y.cpp",
+            "obj/Debug/App.AssemblyInfo.cs",
+            "src/msg.pb.h",
+            "src/Form1.Designer.cs",
+            "src/real.cpp",
+        ):
+            _touch(tmp_path, rel)
+        assert _collect(tmp_path) == {"src/real.cpp"}

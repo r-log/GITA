@@ -27,8 +27,10 @@ once it has run and passed in a sandbox.
   without tests, generates a pytest file, **runs it in an isolated
   container**, and opens a PR only if the tests pass.
 - **Indexing** — full or incremental (git-diff driven) indexing of Python,
-  TypeScript and JavaScript into Postgres: symbols, signatures,
-  docstrings, an import graph, full-text search and optional embeddings.
+  TypeScript/TSX, JavaScript, C, C++ and C# into Postgres: symbols,
+  signatures, docstrings, an import/include graph, full-text search and
+  optional embeddings. A 2,100-file C++ game server indexes in about 11 s,
+  with 99.9% of its project `#include`s resolved without the build system.
 
 ## How a PR review works
 
@@ -201,9 +203,12 @@ build.
   comments.
 - **Token permissions** are scoped to one repository but not narrowed per
   action (see SECURITY.md).
-- **Indexing:** `.tsx` files are not indexed, and some TypeScript forms
-  (abstract classes, anonymous default exports, `require()`) are not
-  captured. Files with parse errors are indexed with partial structure.
+- **Indexing:** some TypeScript forms (abstract classes, anonymous default
+  exports, `require()`) are not captured. C/C++ `#include`s are resolved
+  by path, not from the build's include directories, and macros aren't
+  expanded; C# `using` directives are recorded but not resolved (a
+  namespace spans files). Files with parse errors are indexed with
+  partial structure.
 - **Test generation** targets Python only, and the sandbox image must
   contain the target repository's dependencies.
 - **The model provider** is OpenRouter through a small HTTP client

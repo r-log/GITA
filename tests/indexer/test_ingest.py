@@ -240,3 +240,43 @@ class TestReindex:
         # Still only one repo row
         repos = (await db_session.execute(select(Repo))).scalars().all()
         assert len(repos) == 1
+
+
+CPP_REPO = (Path(__file__).parent.parent / "fixtures" / "cpp").resolve()
+
+
+class TestIngestCpp:
+    async def test_symbols_and_resolved_includes(self, db_session):
+        result = await index_repository(db_session, "cpp", CPP_REPO)
+        await db_session.commit()
+
+        rows = {r.file_path: r for r in (await db_session.execute(select(CodeIndex))).scalars()}
+        assert set(rows) == {
+            "src/game/Common.h",
+            "src/game/Player.cpp",
+            "src/game/Player.h",
+            "src/net/Session.h",
+            "src/net/checksum.c",
+            "src/shared/Common.h",
+        }  # dep/ is vendored
+        assert rows["src/net/checksum.c"].language == "c"
+        methods = {
+            f["name"]
+            for f in rows["src/game/Player.cpp"].structure["functions"]
+            if f["parent_class"] == "Player"
+        }
+        assert methods == {"~Player", "Update", "GetSession"}
+
+        edges = {
+            (e.src_file, e.raw_import): e.dst_file
+            for e in (await db_session.execute(select(ImportEdge))).scalars()
+        }
+        assert edges[("src/game/Player.cpp", '#include "Player.h"')] == "src/game/Player.h"
+        # Nearest Common.h to src/game/Player.h is src/game/Common.h ...
+        assert edges[("src/game/Player.h", '#include "Common.h"')] == "src/game/Common.h"
+        # ... and include paths reach across directories, like -I would
+        assert edges[("src/game/Player.h", '#include "net/Session.h"')] == "src/net/Session.h"
+        assert edges[("src/net/checksum.c", '#include "Session.h"')] == "src/net/Session.h"
+        assert edges[("src/game/Player.h", "#include <vector>")] is None  # system header
+        assert edges[("src/game/Player.cpp", '#include "zlib.h"')] is None  # vendored
+        assert result.edges_resolved >= 5

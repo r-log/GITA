@@ -20,29 +20,71 @@ _PARSER_CACHE: dict[str, Parser] = {}
 _BROKEN_LANGUAGES: set[str] = set()
 
 
+def _python():
+    import tree_sitter_python as module
+
+    return module.language()
+
+
+def _javascript():
+    import tree_sitter_javascript as module
+
+    return module.language()
+
+
+def _typescript():
+    import tree_sitter_typescript as module
+
+    return module.language_typescript()
+
+
+def _tsx():
+    import tree_sitter_typescript as module
+
+    return module.language_tsx()
+
+
+def _c():
+    import tree_sitter_c as module
+
+    return module.language()
+
+
+def _cpp():
+    import tree_sitter_cpp as module
+
+    return module.language()
+
+
+def _csharp():
+    import tree_sitter_c_sharp as module
+
+    return module.language()
+
+
+# Language name -> loader of its grammar. Imports are deferred so a broken
+# or missing grammar package only disables its own language.
+_GRAMMARS = {
+    "python": _python,
+    "javascript": _javascript,
+    "typescript": _typescript,
+    "tsx": _tsx,
+    "c": _c,
+    "cpp": _cpp,
+    "csharp": _csharp,
+}
+
+
 def _build_language(name: str) -> Language | None:
+    loader = _GRAMMARS.get(name)
+    if loader is None:
+        logger.warning("tree_sitter_language_unknown language=%s", name)
+        return None
     try:
-        if name == "python":
-            import tree_sitter_python as module
-
-            return Language(module.language())
-        if name == "javascript":
-            import tree_sitter_javascript as module
-
-            return Language(module.language())
-        if name == "typescript":
-            import tree_sitter_typescript as module
-
-            return Language(module.language_typescript())
-        if name == "tsx":
-            import tree_sitter_typescript as module
-
-            return Language(module.language_tsx())
+        return Language(loader())
     except Exception as exc:
         logger.warning("tree_sitter_language_load_failed language=%s error=%s", name, exc)
         return None
-    logger.warning("tree_sitter_language_unknown language=%s", name)
-    return None
 
 
 def get_language(name: str) -> Language | None:
@@ -72,4 +114,4 @@ def load_parser(name: str) -> Parser | None:
 
 
 def supported_languages() -> tuple[str, ...]:
-    return ("python", "javascript", "typescript", "tsx")
+    return tuple(_GRAMMARS)
