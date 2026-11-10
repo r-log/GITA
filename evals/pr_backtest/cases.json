@@ -20,6 +20,9 @@
       {
        "file": "src/realmd/Auth/Srp6.cpp",
        "lines": [
+        117,
+        118,
+        119,
         122,
         125,
         127,
@@ -33,7 +36,9 @@
        "file": "src/realmd/Auth/Srp6.h",
        "lines": [
         79,
-        80
+        80,
+        83,
+        84
        ]
       }
      ]
@@ -53,11 +58,14 @@
      "fix_title": "[Proto] Review fixes for the second stream: announce inside the promotion, and refuse anything but the handshake",
      "fix_base": "4f341776503734a80b10282bd0eb139590be9a2a",
      "fix_head": "776ffa9aadb5e71dc7f1ca0bade07a897425fd28",
-     "share": 0.77,
+     "share": 0.64,
      "truth": [
       {
        "file": "src/proto/ClientConnection.cpp",
        "lines": [
+        75,
+        403,
+        404,
         409,
         410,
         411,
@@ -97,11 +105,14 @@
      "fix_title": "[Game] The monthly quest reset lands on local midnight in every zone",
      "fix_base": "9993321608a8fb694ece381a1ee18f646a60ced8",
      "fix_head": "a0f47de51e642186028e4ced833fcecf935c6244",
-     "share": 1.0,
+     "share": 0.64,
      "truth": [
       {
        "file": "src/game/WorldHandlers/World.cpp",
        "lines": [
+        1770,
+        1772,
+        1773,
         1785
        ]
       },
@@ -109,7 +120,8 @@
        "file": "src/game/WorldHandlers/World.h",
        "lines": [
         838,
-        839
+        839,
+        841
        ]
       }
      ]
@@ -129,11 +141,13 @@
      "fix_title": "[Entities] A pet action on a charmed creature or a mind-controlled player sets no pet state, and a controlled player is not asked a creature's movement",
      "fix_base": "f97a42f881dd3b7c97bb77c623f6b39cd3a4d71b",
      "fix_head": "cb50cb992ac29b1c8989d6d4afc06968b490800c",
-     "share": 1.0,
+     "share": 0.94,
      "truth": [
       {
        "file": "src/game/session/handlers/entities/PetHandlers.cpp",
        "lines": [
+        79,
+        80,
         88,
         91,
         114,
@@ -144,6 +158,8 @@
         127,
         133,
         134,
+        136,
+        137,
         138,
         152,
         171,
@@ -280,7 +296,9 @@
         93,
         94,
         95,
-        96
+        96,
+        104,
+        105
        ]
       },
       {
@@ -308,7 +326,7 @@
      "fix_title": "[Creatures] The creature query reply holds the female name, the second type-flags word and the required expansion the client reads",
      "fix_base": "5b812127ef4cb284897b3548b19fb71526bc97a1",
      "fix_head": "8eccbbcdf0d7c210d659a35564541ce1403dc789",
-     "share": 0.97,
+     "share": 0.59,
      "truth": [
       {
        "file": "src/game/session/handlers/entities/QueryHandlers.cpp",
@@ -357,11 +375,12 @@
      "fix_title": "[GameObjects] The gameobject query reply holds the 32 data words, the scale, the quest items and the required level the client reads",
      "fix_base": "0f266ceac5df65963c57be3ab04c514ecf2b53f3",
      "fix_head": "9fd9df47582ddc13ab2fd179cd5baab0fd1ce9eb",
-     "share": 0.89,
+     "share": 0.86,
      "truth": [
       {
        "file": "src/game/session/handlers/entities/QueryHandlers.cpp",
        "lines": [
+        39,
         153,
         157,
         177,
@@ -398,11 +417,12 @@
      "fix_title": "[Quests] Auto-accept quests go into the log when their details are shown",
      "fix_base": "4adf7116e8ca9c26dfbcc9ffd1a3ff788c3792f5",
      "fix_head": "929a183215febd538bd5bd3d9dd1ed190ce7b8bd",
-     "share": 1.0,
+     "share": 0.89,
      "truth": [
       {
        "file": "src/game/session/handlers/entities/QuestHandlers.cpp",
        "lines": [
+        44,
         189,
         190,
         191,
@@ -437,7 +457,11 @@
         220,
         221,
         222,
-        262
+        262,
+        331,
+        332,
+        606,
+        607
        ]
       }
      ]
@@ -528,7 +552,7 @@
      "fix_title": "[spells] Test the line of sight disable flag where a cast or a creature's target pick asks for it",
      "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
      "fix_head": "c87cd5d788592eadbd33f5d9ba00950e00569056",
-     "share": 1.0,
+     "share": 0.91,
      "truth": [
       {
        "file": "src/game/spells/pipeline/SpellCheckTarget.cpp",
@@ -555,43 +579,6 @@
    ]
   },
   {
-   "id": "pr668",
-   "pr": 668,
-   "title": "[Entities] A player's menus are entities and send through gossip notices the session installs",
-   "base": "e5e43f2ad02a452306a6e5fad0f191d300fbc88f",
-   "head": "4af71e94e1cbbd5d78df611f60897de1ca685fd1",
-   "bugs": [
-    {
-     "id": "fix755",
-     "fix_pr": 755,
-     "fix_title": "[Quests] The quest packets carry the full flags, the minimap target mark, the reputation mask and the reputation overrides",
-     "fix_base": "0f266ceac5df65963c57be3ab04c514ecf2b53f3",
-     "fix_head": "149756b6928077f3da6196cbfb3d0cb283b64cc1",
-     "share": 0.68,
-     "truth": [
-      {
-       "file": "src/game/session/packets/quests/QuestGiverPackets.cpp",
-       "lines": [
-        213,
-        225,
-        227,
-        229,
-        375,
-        384,
-        427,
-        429,
-        431,
-        641,
-        653,
-        655,
-        657
-       ]
-      }
-     ]
-    }
-   ]
-  },
-  {
    "id": "pr691",
    "pr": 691,
    "title": "[pvp] Tell clients the battleground and map chat through their notices",
@@ -604,7 +591,7 @@
      "fix_title": "[pvp] Send the battleground herald's two-text yells as monster yells",
      "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
      "fix_head": "ca9e10172a685d86ab9979a0a434899d5c274ce4",
-     "share": 1.0,
+     "share": 0.87,
      "truth": [
       {
        "file": "src/game/BattleGround/BattleGround.cpp",
@@ -641,6 +628,7 @@
         190,
         191,
         195,
+        202,
         867
        ]
       },
@@ -648,6 +636,39 @@
        "file": "src/game/session/packets/pvp/BattleGroundPackets.h",
        "lines": [
         65
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr726",
+   "pr": 726,
+   "title": "[data] Hold the game object spawns and the cell guids in data/ stores",
+   "base": "49282501f58e8f2c091442a40fc9c7f01a9fa37e",
+   "head": "43e6171f2e7154005d4583fc03218a9908c4ba04",
+   "bugs": [
+    {
+     "id": "fix734",
+     "fix_pr": 734,
+     "fix_title": "[data] Drop a deleted creature spawn from its map's active list",
+     "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
+     "fix_head": "0a2c67d11c2266f3e702e97a8711689785a8837b",
+     "share": 0.57,
+     "truth": [
+      {
+       "file": "src/game/data/CellObjectGuidStore.cpp",
+       "lines": [
+        47
+       ]
+      },
+      {
+       "file": "src/game/data/CellObjectGuidStore.h",
+       "lines": [
+        37,
+        48,
+        49
        ]
       }
      ]

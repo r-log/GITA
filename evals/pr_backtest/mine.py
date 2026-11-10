@@ -9,7 +9,9 @@ For every merged PR whose branch is ``fix/...``:
    attribute to the fix everything that merged to main while its branch
    was open.)
 2. Blame each C/C++ line the fix modified or removed, at the fix's merge
-   base, and map the blamed commit to the PR that merged it (SZZ).
+   base, and map the blamed commit to the PR that merged it (SZZ). Where
+   the fix only inserts code, the lines on either side of the insertion
+   are blamed instead: the defect is the code that was missing there.
 3. If at least half of the fix's product-code lines (outside tests) come
    from one earlier PR, that PR introduced the defect: a case.
 4. Ground truth is where those lines sat in the introducing PR's head, so
@@ -94,17 +96,19 @@ def _blamed_lines(repo: Path, fix: dict, owner: dict[str, int]) -> list[dict]:
             continue
         start, count = int(hunk[1]), int(hunk[2] if hunk[2] is not None else 1)
         if count == 0:
-            continue
-        porcelain = _git(
-            repo,
-            "blame",
-            "--porcelain",
-            "-L",
-            f"{start},{start + count - 1}",
-            fix["base"],
-            "--",
-            path,
-        )
+            # A pure insertion after line `start` changes no line, but the
+            # defect is where the code was missing: blame its neighbours.
+            first, last = max(start, 1), start + 1
+        else:
+            first, last = start, start + count - 1
+        try:
+            porcelain = _git(
+                repo, "blame", "--porcelain", "-L", f"{first},{last}", fix["base"], "--", path
+            )
+        except subprocess.CalledProcessError:  # the line after is past the end of the file
+            porcelain = _git(
+                repo, "blame", "--porcelain", "-L", f"{first},{first}", fix["base"], "--", path
+            )
         for commit, final in re.findall(r"^([0-9a-f]{40}) \d+ (\d+)", porcelain, re.M):
             out.append({"file": path, "line": int(final), "pr": owner.get(commit)})
     return out

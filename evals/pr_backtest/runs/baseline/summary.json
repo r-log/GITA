@@ -1,0 +1,39 @@
+{
+  "variant": "indexed",
+  "reviews": 1,
+  "errors": 0,
+  "located": {
+    "all": 1.0,
+    "code": 1.0,
+    "repo": null,
+    "domain": null,
+    "chance_all": 0.191,
+    "chance_code": 0.191
+  },
+  "located_n": {
+    "all": 1,
+    "code": 1,
+    "repo": 0,
+    "domain": 0
+  },
+  "caught_adjudicated": {
+    "all": {
+      "caught": 0,
+      "pending": 1,
+      "of": 1
+    },
+    "code": {
+      "caught": 0,
+      "pending": 1,
+      "of": 1
+    }
+  },
+  "mean_findings": 2.0,
+  "request_changes": 0.0,
+  "cost_usd_total": 0.3845,
+  "failed_cost_usd": 0,
+  "mean_prompt_chars": 21634.0,
+  "models": [
+    "anthropic/claude-fable-5.2"
+  ]
+}

@@ -1,0 +1,13 @@
+# Whether a finding that LOCATES a defect (cites a line the fix later
+# changed, within the tolerance) actually DESCRIBES that defect. Written by
+# reading the finding against the fix, after the run. `finding` is the
+# index in the row's meta.findings_detail.
+
+[[adjudication]]
+variant = "indexed"
+case = "pr206"
+rep = 0
+bug = "fix208"
+finding = 1
+describes = true
+note = "Says localTm keeps the tm_isdst of `now` when passed to mktime, so the reset misses local midnight across a DST change: the defect fix #208 repaired (it set tm_isdst = -1). Rated low."

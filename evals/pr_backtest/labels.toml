@@ -4,6 +4,7 @@
 #
 # visible  "code"    a careful reviewer could see it in the PR: the diff, the
 #                    files it touches, and the declarations it calls
+#          "repo"    needs code the PR doesn't show, elsewhere in the repository
 #          "domain"  needs knowledge the repository doesn't hold (the game
 #                    client's packet layouts, its crypto quirks, game rules)
 #          "none"    not a product defect: excluded from scoring
@@ -104,15 +105,16 @@ origin = "introduced"
 note = "IsDisabledFor(DISABLE_TYPE_SPELL, id, SPELL_ATTR_EX2_IGNORE_LOS) passes a spell attribute where a disable flag belongs; seeing it needs IsDisabledFor's declaration (another file)."
 
 [[label]]
-case = "pr668"
-bug = "fix755"
-visible = "domain"
-origin = "moved"
-note = "Quest packets send zeros for the reputation mask, minimap mark and overrides: client packet format."
-
-[[label]]
 case = "pr691"
 bug = "fix735"
 visible = "domain"
 origin = "introduced"
 note = "Battleground two-text yells need the monster-yell packet layout: client packet format."
+
+# Added when insertion points were blamed too (after the first pilot review).
+[[label]]
+case = "pr726"
+bug = "fix734"
+visible = "repo"
+origin = "moved"
+note = "A deleted creature spawn stays in its map's active list: the PR moved the list into a store with no removal, but the deletion path that should remove it (ObjectMgr) isn't in the diff."

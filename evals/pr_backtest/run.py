@@ -74,7 +74,7 @@ class Bug:
     id: str
     fix_pr: int
     fix_title: str
-    visible: str  # "code" | "domain"
+    visible: str  # "code" | "repo" | "domain"
     origin: str
     note: str
     truth: dict[str, set[int]]  # path -> lines in the PR's head the fix changed
@@ -361,14 +361,7 @@ async def run_case(
         "status": "ok",
         "stop_reason": ",".join(str(c.finish_reason) for c in llm.calls),
         "grade": graded["metrics"],
-        "explanation": {
-            "found": "\n".join(
-                f"{'LOCATED' if b['located'] else 'missed '} {b['bug']} ({b['visible']})"
-                + (f" by findings {b['hits']}" if b["hits"] else "")
-                + ("" if b["in_review"] else " [defect's file not reviewed]")
-                for b in graded["per_bug"]
-            )
-        },
+        "explanation": {"found": _explain(graded["per_bug"])},
         "model": models[0] if len(models) == 1 else ",".join(models),
         "usage": {"input_tokens": usage["input_tokens"], "output_tokens": usage["output_tokens"]},
         "in_tokens": usage["input_tokens"],
@@ -394,6 +387,37 @@ async def run_case(
     return Outcome(row=row, trace=trace)
 
 
+def regrade(out: Path, clone: Path) -> None:
+    """Re-score stored reviews against the current cases and labels; no model calls."""
+    path = out / "results.jsonl"
+    rows = _read_jsonl(path)
+    by_id = {c.id: c for c in load_cases()}
+    files_by_case: dict[str, list[dict]] = {}
+    for row in rows:
+        case = by_id.get(row["prompt_id"])
+        if case is None:
+            raise SystemExit(f"{row['prompt_id']} is no longer a case; move its rows aside first")
+        if case.id not in files_by_case:
+            files_by_case[case.id] = pr_files(clone, case.base, case.head)[0]
+        files = files_by_case[case.id]
+        reviewed = {f["filename"] for f in files} - set(row["meta"]["unreviewed_files"])
+        graded = grade(case, row["meta"]["findings_detail"], files, reviewed)
+        row["grade"] = graded["metrics"]
+        row["meta"]["per_bug"] = graded["per_bug"]
+        row["explanation"] = {"found": _explain(graded["per_bug"])}
+    path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+    print(f"regraded {len(rows)} rows in {out}")
+
+
+def _explain(per_bug: list[dict]) -> str:
+    return "\n".join(
+        f"{'LOCATED' if b['located'] else 'missed '} {b['bug']} ({b['visible']})"
+        + (f" by findings {b['hits']}" if b["hits"] else "")
+        + ("" if b["in_review"] else " [defect's file not reviewed]")
+        for b in per_bug
+    )
+
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
@@ -411,7 +435,7 @@ def summarize(variant_dir: Path, variant: str) -> dict:
     rows = [r for r in _read_jsonl(variant_dir / "results.jsonl") if r.get("status") == "ok"]
     adjudicated = _adjudications()
     tally: dict[str, list[float]] = {
-        k: [] for k in ("all", "code", "domain", "chance_all", "chance_code")
+        k: [] for k in ("all", "code", "repo", "domain", "chance_all", "chance_code")
     }
     caught = {"all": [0, 0, 0], "code": [0, 0, 0]}  # caught, pending, total
     for r in rows:
@@ -439,6 +463,7 @@ def summarize(variant_dir: Path, variant: str) -> dict:
         return round(sum(xs) / len(xs), 3) if xs else None
 
     costs = [r["cost_usd"] for r in rows if r.get("cost_usd") is not None]
+    failed = _read_jsonl(variant_dir / "errors.jsonl")
     summary = {
         "variant": VARIANTS[variant],
         "reviews": len(rows),
@@ -451,6 +476,8 @@ def summarize(variant_dir: Path, variant: str) -> dict:
         "mean_findings": mean([r["grade"]["findings"] for r in rows]),
         "request_changes": mean([float(r["meta"]["verdict"] == "request_changes") for r in rows]),
         "cost_usd_total": round(sum(costs), 4) if costs else None,
+        # Billed calls whose output couldn't be used (truncated, refused).
+        "failed_cost_usd": round(sum(e["usage"].get("cost_usd") or 0 for e in failed), 4),
         "mean_prompt_chars": mean([r["meta"]["prompt_chars"] for r in rows]),
         "models": sorted({r["model"] for r in rows}),
     }
@@ -474,10 +501,15 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fake", choices=("null", "oracle"))
     parser.add_argument("--runs-dir", type=Path, default=RUNS_DIR)
     parser.add_argument("--summarize", action="store_true", help="only re-summarize stored rows")
+    parser.add_argument(
+        "--regrade", action="store_true", help="re-score stored rows (no model calls)"
+    )
     args = parser.parse_args(argv)
 
     out = args.runs_dir / (f"_checks/{args.fake}-{args.variant}" if args.fake else args.variant)
-    if args.summarize:
+    if args.regrade:
+        regrade(out, args.clone.resolve())
+    if args.summarize or args.regrade:
         summarize(out, args.variant)
         return 0
     cases = load_cases({c for c in args.cases.split(",") if c} or None)
