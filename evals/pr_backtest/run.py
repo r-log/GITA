@@ -375,6 +375,8 @@ async def run_case(
             "dropped_by_guardrails": result.dropped_findings,
             "unreviewed_files": result.unreviewed_files,
             "prompt_chars": sum(len(c.system) + len(c.user) for c in llm.calls[:1]),
+            # Per call, as the provider reported it (reasoning tokens included).
+            "usage_calls": [c.usage for c in llm.calls],
             "per_bug": graded["per_bug"],
             "findings_detail": findings,
         },
