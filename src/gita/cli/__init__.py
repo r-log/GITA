@@ -56,7 +56,7 @@ from gita.cli.commands import (  # noqa: E402
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gita",
-        description="GitHub Assistant v2 — local repo indexer and query layer",
+        description="GITA — GitHub assistant: index repositories, review PRs, onboard contributors, generate tests",
     )
     parser.add_argument(
         "--version",
