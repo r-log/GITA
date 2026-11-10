@@ -25,6 +25,7 @@ Trust boundaries:
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,7 +40,7 @@ from gita.agents.types import Finding, PRReviewResult
 from gita.github.client import PRInfo
 from gita.llm.client import LLMClient
 from gita.views._common import resolve_repo
-from gita.views.diff_context import FileContext, diff_context_view
+from gita.views.diff_context import FileContext, diff_context_view, file_role
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 # Room for a full findings list on a large PR (and any reasoning the model
 # does first). Billing is per generated token, not per token allowed.
-_REVIEW_MAX_TOKENS = 16_000
+_REVIEW_MAX_TOKENS = 32_000
 _SUMMARY_MAX_TOKENS = 1024
 _MAX_FILES_PER_REVIEW = 20
 _FILE_CONTEXT_CAP_CHARS = 8_000
@@ -58,8 +59,6 @@ _PROMPT_BUDGET_CHARS = 140_000
 # it is not shown in part: half a diff invites confident findings about the
 # half that's missing.
 _FILE_BLOCK_CAP_CHARS = int(_PROMPT_BUDGET_CHARS * 0.4)
-_DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
-_TEST_DIRS = frozenset({"tests", "test", "spec", "specs", "__tests__"})
 
 _BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 
@@ -110,6 +109,53 @@ def _numbered_windows(content: str, windows: list[tuple[int, int]]) -> str:
     return "\n".join(out)
 
 
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _patch_marks(patch: str) -> tuple[set[int], dict[int, list[str]]]:
+    """Head lines a patch adds, and its removed lines keyed by the head line
+    they stood before (one past the end for removals at the end of the file)."""
+    added: set[int] = set()
+    removed: dict[int, list[str]] = {}
+    new = 1
+    for row in patch.split("\n"):
+        header = _HUNK.match(row)
+        if header:
+            start, count = int(header.group(1)), header.group(2)
+            # "+9,0": nothing added; the removed lines stood after line 9.
+            new = start + 1 if count == "0" else max(start, 1)
+        elif row.startswith("+"):
+            added.add(new)
+            new += 1
+        elif row.startswith("-"):
+            removed.setdefault(new, []).append(row[1:])
+        elif not row.startswith("\\"):
+            new += 1
+    return added, removed
+
+
+def _changes_in_context(content: str, windows: list[tuple[int, int]], patch: str) -> str:
+    """The head windows with each change marked in place: ``+`` on an added
+    line, and removed lines (which have no number any more) where they were.
+    Every changed line appears once; the diff isn't repeated beside it."""
+    added, removed = _patch_marks(patch)
+    lines = content.split("\n")
+    total = len(lines) - (1 if lines and lines[-1] == "" else 0)
+    out: list[str] = []
+    for i, (start, end) in enumerate(windows):
+        if i > 0 or start > 1:
+            out.append("   ...")
+        last = min(end, total)
+        for n in range(start, last + 1):
+            out.extend(f"     - {old}" for old in removed.get(n, []))
+            out.append(f"{n:>5}{'+' if n in added else ':'} {lines[n - 1]}")
+        if last == total:
+            out.extend(f"     - {old}" for old in removed.get(total + 1, []))
+    if windows and windows[-1][1] < total:
+        out.append("   ...")
+    return "\n".join(out)
+
+
 def _review_priority(ctx: FileContext) -> tuple[int, int, str]:
     """Order in which files get the prompt budget: code a finding can cite first.
 
@@ -119,23 +165,12 @@ def _review_priority(ctx: FileContext) -> tuple[int, int, str]:
     can cite) last. Within a tier, the most added lines first.
     """
     hunk = ctx.diff_hunk
-    path = ctx.file_path.lower()
-    parts = path.split("/")
-    name = parts[-1]
     if hunk.additions == 0:
         tier = 4
-    elif path.endswith(_DOC_SUFFIXES):
-        tier = 3
-    elif (
-        any(p in _TEST_DIRS for p in parts[:-1])
-        or name.startswith("test_")
-        or (name.rsplit(".", 1)[0].endswith(("_test", "test", ".spec", ".test")))
-    ):
-        tier = 2
-    elif ctx.language is not None:
-        tier = 0
     else:
-        tier = 1
+        tier = {"source": 0, "other": 1, "test": 2, "doc": 3}[
+            file_role(ctx.file_path, ctx.language)
+        ]
     return (tier, -hunk.additions, ctx.file_path)
 
 
@@ -146,10 +181,12 @@ def _render_file_block(ctx: FileContext) -> str:
     if hunk.status == "removed":
         # No line of a deleted file can be cited: say it's gone, spend nothing.
         return f"{header}\n(file deleted; its {hunk.deletions} lines are not shown)"
-    # A new file's diff is the file itself: show it once, numbered.
-    new_file = hunk.status == "added" and ctx.head_content is not None
+    # With the head content, every change is shown once, in place, in the
+    # numbered file (a new file is all additions). Without it, the raw diff.
+    has_head = ctx.head_content is not None and bool(ctx.context_windows)
+    new_file = hunk.status == "added" and has_head
     lines: list[str] = [header]
-    if not new_file:
+    if not has_head:
         lines += ["", "DIFF:", hunk.patch or ""]
 
     if ctx.symbols_near_changes:
@@ -167,17 +204,21 @@ def _render_file_block(ctx: FileContext) -> str:
         if len(ctx.imported_by) > 5:
             lines.append(f"  ... and {len(ctx.imported_by) - 5} more")
 
-    if ctx.head_content is not None and ctx.context_windows:
+    if has_head:
         lines.append("")
         whole = ctx.context_windows == [(1, ctx.head_line_count)]
         if new_file:
-            title = f"NEW FILE ({ctx.head_line_count} lines, all added)"
+            lines.append(f"NEW FILE ({ctx.head_line_count} lines, all added):")
+            lines.append(_numbered_windows(ctx.head_content, ctx.context_windows))
         else:
-            title = f"FILE AFTER THIS PR ({ctx.head_line_count} lines" + (
-                ")" if whole else ", windows around the changes)"
+            span = "" if whole else ", windows around the changes"
+            lines.append(
+                f"CHANGES IN CONTEXT (file after this PR, {ctx.head_line_count} lines{span}; "
+                "`+` added line, `-` removed line):"
             )
-        lines.append(title + ":")
-        lines.append(_numbered_windows(ctx.head_content, ctx.context_windows))
+            lines.append(
+                _changes_in_context(ctx.head_content, ctx.context_windows, hunk.patch or "")
+            )
     elif ctx.base_content:
         base = ctx.base_content[:_FILE_CONTEXT_CAP_CHARS]
         lines.append("")

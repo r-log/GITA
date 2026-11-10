@@ -594,3 +594,53 @@ class TestPromptBudget:
         big = self._ctx("src/big.py", "modified", 9000, patch_chars=_FILE_BLOCK_CAP_CHARS)
         prompt = build_review_prompt(_pr_info(), [big], nonce="n")
         assert prompt.unreviewed_paths == ["src/big.py"] and "xxxx" not in prompt.text
+
+
+class TestChangesInContext:
+    """Each changed line is shown once, numbered, where it is."""
+
+    def test_added_and_removed_lines_marked_in_place(self):
+        from gita.agents.pr_reviewer.recipe import _changes_in_context
+
+        head = "a\nb\nNEW\nc\nd\n"
+        patch = "@@ -1,5 +1,5 @@\n a\n b\n+NEW\n c\n-OLD\n d"
+        out = _changes_in_context(head, [(1, 5)], patch).splitlines()
+        assert out == ["    1: a", "    2: b", "    3+ NEW", "    4: c", "     - OLD", "    5: d"]
+
+    def test_pure_deletion_and_end_of_file(self):
+        from gita.agents.pr_reviewer.recipe import _changes_in_context
+
+        mid = _changes_in_context("a\nb\nc\n", [(1, 3)], "@@ -3,1 +2,0 @@\n-gone")
+        assert mid.splitlines() == ["    1: a", "    2: b", "     - gone", "    3: c"]
+        end = _changes_in_context("a\nb\n", [(1, 2)], "@@ -1,3 +1,2 @@\n a\n b\n-gone")
+        assert end.splitlines()[-1] == "     - gone"
+
+    def test_modified_file_shows_no_separate_diff(self):
+        from gita.agents.pr_reviewer.recipe import _render_file_block
+
+        ctx = TestPromptBudget._ctx("src/a.py", "modified", 1, head="x = 1\ny = 2\n")
+        block = _render_file_block(ctx)
+        assert "CHANGES IN CONTEXT" in block and "DIFF:" not in block
+
+    def test_raw_diff_when_the_file_content_is_unknown(self):
+        from gita.agents.pr_reviewer.recipe import _render_file_block
+
+        block = _render_file_block(TestPromptBudget._ctx("src/a.py", "modified", 1))
+        assert "DIFF:" in block
+
+
+class TestContextByRole:
+    def test_tests_and_docs_get_windows_not_whole_files(self):
+        from gita.agents.pr_reviewer.diff_parser import ChangedLineRange
+        from gita.views.diff_context import _CONTEXT_BY_ROLE, context_windows, file_role
+
+        change = [ChangedLineRange(start=100, count=1)]
+        assert file_role("src/tests/PlayerTest.cpp", "cpp") == "test"
+        assert file_role("design/architecture.md", None) == "doc"
+        assert file_role("src/game/Player.cpp", "cpp") == "source"
+        whole, radius = _CONTEXT_BY_ROLE["test"]
+        assert context_windows(250, change, whole_max=whole, radius=radius) == [(90, 110)]
+        whole, radius = _CONTEXT_BY_ROLE["doc"]
+        assert context_windows(250, change, whole_max=whole, radius=radius) == [(97, 103)]
+        whole, radius = _CONTEXT_BY_ROLE["source"]
+        assert context_windows(250, change, whole_max=whole, radius=radius) == [(1, 250)]
