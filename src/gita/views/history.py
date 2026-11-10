@@ -5,6 +5,7 @@ Shells out to local git. The repo must have a working tree at
 return an empty result instead of raising — agents can still call the view
 without having to pre-check.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -108,18 +109,14 @@ def _history_sync(root: Path, file_path: str) -> HistoryResult:
     if log_proc.returncode == 0 and log_proc.stdout:
         result.recent_commits = _parse_log(log_proc.stdout)
 
-    blame_proc = _run_git(
-        ["blame", "--line-porcelain", "--", file_path], cwd=root
-    )
+    blame_proc = _run_git(["blame", "--line-porcelain", "--", file_path], cwd=root)
     if blame_proc is not None and blame_proc.returncode == 0 and blame_proc.stdout:
         result.blame_summary = _parse_blame(blame_proc.stdout)
 
     return result
 
 
-async def history_view(
-    session: AsyncSession, repo_name: str, file_path: str
-) -> HistoryResult:
+async def history_view(session: AsyncSession, repo_name: str, file_path: str) -> HistoryResult:
     """Return git log + blame summary for ``file_path`` in the named repo."""
     repo = await resolve_repo(session, repo_name)
     file_path = file_path.replace("\\", "/")

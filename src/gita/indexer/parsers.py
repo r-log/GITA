@@ -4,6 +4,7 @@ Each supported language has an extractor that walks a Tree-sitter parse tree
 and emits functions, classes, and imports with accurate 1-indexed start/end
 line numbers. The public entry point is ``parse_file``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,10 +28,10 @@ class Symbol:
     name: str
     kind: str  # "function" | "method" | "async_function" | "async_method" | "class"
     start_line: int  # 1-indexed
-    end_line: int    # 1-indexed, inclusive
+    end_line: int  # 1-indexed, inclusive
     parent_class: str | None = None
-    signature: str | None = None    # e.g. "def foo(x: int, y: str) -> bool"
-    docstring: str | None = None    # first line, capped at _DOCSTRING_CAP chars
+    signature: str | None = None  # e.g. "def foo(x: int, y: str) -> bool"
+    docstring: str | None = None  # first line, capped at _DOCSTRING_CAP chars
     decorators: list[str] = field(default_factory=list)  # e.g. ["@property"]
 
 
@@ -89,9 +90,7 @@ def _nodes_from_captures(captures, name: str) -> list:
     return [node for node, cap_name in captures if cap_name == name]
 
 
-def _find_enclosing_class_name(
-    node, source: bytes, class_node_type: str
-) -> str | None:
+def _find_enclosing_class_name(node, source: bytes, class_node_type: str) -> str | None:
     """Walk up the AST to find the nearest enclosing class node and return its name."""
     current = node.parent
     while current is not None:
@@ -187,9 +186,7 @@ def _extract_python(source: bytes, tree) -> FileStructure:
         if name_node is None:
             continue
         name = _node_text(name_node, source)
-        parent_class = _find_enclosing_class_name(
-            func_node, source, "class_definition"
-        )
+        parent_class = _find_enclosing_class_name(func_node, source, "class_definition")
         is_async = _is_async_function(func_node)
         if parent_class is not None:
             kind = "async_method" if is_async else "method"
@@ -332,9 +329,7 @@ def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
                 kind=kind,
                 start_line=func_node.start_point[0] + 1,
                 end_line=func_node.end_point[0] + 1,
-                signature=_extract_ts_js_signature(
-                    func_node, source, is_async=is_async
-                ),
+                signature=_extract_ts_js_signature(func_node, source, is_async=is_async),
                 docstring=_extract_jsdoc(func_node, source),
             )
         )
@@ -374,9 +369,7 @@ def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
         name_node = method_node.child_by_field_name("name")
         if name_node is None:
             continue
-        parent = _find_enclosing_class_name(
-            method_node, source, "class_declaration"
-        )
+        parent = _find_enclosing_class_name(method_node, source, "class_declaration")
         is_async = _is_async_function(method_node)
         kind = "async_method" if is_async else "method"
         name = _node_text(name_node, source)
@@ -404,9 +397,7 @@ def _extract_ts_js(source: bytes, tree, language: str) -> FileStructure:
         kind = "async_function" if is_async else "function"
         name = _node_text(name_node, source)
         # Arrow function signature: parameters are on the value (arrow_function) node
-        sig = _extract_ts_js_signature(
-            value_node, source, name=name, is_async=is_async
-        )
+        sig = _extract_ts_js_signature(value_node, source, name=name, is_async=is_async)
         # JSDoc for arrow: comment sibling is before the lexical_declaration parent
         parent_decl = decl_node.parent  # lexical_declaration (const/let/var)
         docstring = _extract_jsdoc(parent_decl, source) if parent_decl else None

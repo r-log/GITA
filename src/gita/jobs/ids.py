@@ -5,6 +5,7 @@ is still stored (``keep_result``). An ID must therefore name exactly one
 unit of work: too coarse and legitimate work is dropped; too fine and
 redeliveries run twice. See ``gita.web.dispatch`` for the full rationale.
 """
+
 from __future__ import annotations
 
 

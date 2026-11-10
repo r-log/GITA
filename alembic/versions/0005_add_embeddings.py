@@ -5,6 +5,7 @@ Revises: 0004
 Create Date: 2026-04-21 00:00:00.000000
 
 """
+
 from collections.abc import Sequence
 
 from alembic import op
@@ -21,9 +22,7 @@ def upgrade() -> None:
 
     # Add embedding column — 1536 dimensions (OpenAI text-embedding-3-small).
     # Nullable: files indexed before embeddings are enabled will have NULL.
-    op.execute(
-        "ALTER TABLE code_index ADD COLUMN embedding vector(1536)"
-    )
+    op.execute("ALTER TABLE code_index ADD COLUMN embedding vector(1536)")
 
     # HNSW index for cosine similarity search.
     # HNSW is preferred over IVFFlat for small-to-medium repos (<10K files)

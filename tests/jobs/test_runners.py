@@ -4,6 +4,7 @@ The check runs before any LLM call and uses the same identity the review
 Decision carries (``pr-review:{pr}:{head_sha}``), in the partition of the
 current write mode.
 """
+
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,6 +87,10 @@ class TestReviewIdentity:
     def test_same_commit_different_wording_is_the_same_review(self):
         from gita.agents.dedupe import compute_signature
 
-        a = build_pr_review_decision(_review(summary="Looks fine."), "r-log/AMASS", 42, head_sha=SHA_A)
-        b = build_pr_review_decision(_review(summary="All good."), "r-log/AMASS", 42, head_sha=SHA_A)
+        a = build_pr_review_decision(
+            _review(summary="Looks fine."), "r-log/AMASS", 42, head_sha=SHA_A
+        )
+        b = build_pr_review_decision(
+            _review(summary="All good."), "r-log/AMASS", 42, head_sha=SHA_A
+        )
         assert compute_signature(a) == compute_signature(b)

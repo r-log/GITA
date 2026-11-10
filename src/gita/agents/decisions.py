@@ -33,6 +33,7 @@ identity is reserved in ``agent_actions`` *before* the side effect, so
 concurrent runs can't both execute it, and released if the side effect
 fails, so retries can.
 """
+
 from __future__ import annotations
 
 import logging
@@ -106,8 +107,8 @@ class Decision:
     """
 
     action: str
-    target: dict[str, Any]           # e.g. {"repo": "owner/name", "issue": 42}
-    payload: dict[str, Any]          # action-specific body/title/label/etc.
+    target: dict[str, Any]  # e.g. {"repo": "owner/name", "issue": 42}
+    payload: dict[str, Any]  # action-specific body/title/label/etc.
     evidence: list[str] = field(default_factory=list)
     confidence: float = 0.0
     # Names the intended side effect, e.g. "pr-review:42:<head sha>".
@@ -118,9 +119,7 @@ class Decision:
         if not self.action:
             raise ValueError("Decision.action cannot be empty")
         if not 0.0 <= self.confidence <= 1.0:
-            raise ValueError(
-                f"Decision.confidence must be in [0.0, 1.0], got {self.confidence}"
-            )
+            raise ValueError(f"Decision.confidence must be in [0.0, 1.0], got {self.confidence}")
 
 
 @dataclass
@@ -154,9 +153,7 @@ class ActionClient(Protocol):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def get_threshold(
-    action: str, thresholds: dict[str, float] | None = None
-) -> float:
+def get_threshold(action: str, thresholds: dict[str, float] | None = None) -> float:
     """Look up the threshold for an action. Raises KeyError on unknown actions.
 
     Unknown actions intentionally raise instead of defaulting — if an agent
@@ -302,7 +299,7 @@ class _Plan:
     """What the gates decided to send to the client, before dedupe."""
 
     to_execute: Decision | None  # None = held (nothing to do)
-    outcome: Outcome             # outcome if the side effect lands
+    outcome: Outcome  # outcome if the side effect lands
     reason: str | None = None
 
 
@@ -502,9 +499,7 @@ async def execute_decision(
     try:
         side_effect = await client.execute(plan.to_execute)
     except Exception as exc:  # noqa: BLE001 — the framework reports, never raises
-        logger.warning(
-            "decision_execution_failed action=%s error=%s", plan.to_execute.action, exc
-        )
+        logger.warning("decision_execution_failed action=%s error=%s", plan.to_execute.action, exc)
         if row is not None:
             await session.delete(row)  # type: ignore[union-attr]
             await session.flush()  # type: ignore[union-attr]

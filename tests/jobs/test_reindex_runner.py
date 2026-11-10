@@ -4,6 +4,7 @@ Uses the test DB for repo resolution and monkeypatch for git operations.
 The runner creates its own ``SessionLocal`` sessions, so we patch it
 to use the test DB engine instead of the production one.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -20,9 +21,7 @@ from gita.db.models import CodeIndex, Repo
 from gita.indexer.ingest import index_repository
 from gita.jobs.runners import _git_sync
 
-SYNTH_REPO = (
-    Path(__file__).parent.parent / "fixtures" / "synthetic_py"
-).resolve()
+SYNTH_REPO = (Path(__file__).parent.parent / "fixtures" / "synthetic_py").resolve()
 
 
 @pytest_asyncio.fixture
@@ -38,9 +37,7 @@ async def _patch_runner_session(db_session: AsyncSession, monkeypatch):
     async def _fake_session_local():
         yield db_session
 
-    monkeypatch.setattr(
-        "gita.jobs.runners.SessionLocal", _fake_session_local
-    )
+    monkeypatch.setattr("gita.jobs.runners.SessionLocal", _fake_session_local)
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +135,6 @@ class TestGitSync:
 # run_reindex_job: repo resolution + error paths
 # ---------------------------------------------------------------------------
 class TestReindexRunnerResolution:
-
     @pytest.mark.usefixtures("_patch_runner_session")
     async def test_repo_not_found(self, db_session: AsyncSession):
         """Repo not indexed -> returns error dict without git operations."""
@@ -161,12 +157,8 @@ class TestReindexRunnerResolution:
 
         from gita.jobs.runners import run_reindex_job
 
-        with patch(
-            "gita.jobs.runners._git_sync", return_value=(True, "")
-        ):
-            result = await run_reindex_job(
-                "r-log/synthetic", after_sha="abc123"
-            )
+        with patch("gita.jobs.runners._git_sync", return_value=(True, "")):
+            result = await run_reindex_job("r-log/synthetic", after_sha="abc123")
 
         assert result["status"] == "completed"
         assert result["repo"] == "r-log/synthetic"
@@ -191,7 +183,6 @@ class TestReindexRunnerResolution:
 
 
 class TestReindexRunnerGitFailure:
-
     @pytest.mark.usefixtures("_patch_runner_session")
     async def test_git_sync_failure_returns_error(self, db_session: AsyncSession):
         await index_repository(
@@ -208,9 +199,7 @@ class TestReindexRunnerGitFailure:
             "gita.jobs.runners._git_sync",
             return_value=(False, "git fetch failed: timeout"),
         ):
-            result = await run_reindex_job(
-                "r-log/synthetic", after_sha="abc123"
-            )
+            result = await run_reindex_job("r-log/synthetic", after_sha="abc123")
 
         assert result["status"] == "error"
         assert result["reason"] == "git_sync_failed"
@@ -218,7 +207,6 @@ class TestReindexRunnerGitFailure:
 
 
 class TestReindexRunnerSuccess:
-
     @pytest.mark.usefixtures("_patch_runner_session")
     async def test_completed_summary_shape(self, db_session: AsyncSession):
         await index_repository(
@@ -231,12 +219,8 @@ class TestReindexRunnerSuccess:
 
         from gita.jobs.runners import run_reindex_job
 
-        with patch(
-            "gita.jobs.runners._git_sync", return_value=(True, "")
-        ):
-            result = await run_reindex_job(
-                "r-log/synthetic", after_sha="abc123"
-            )
+        with patch("gita.jobs.runners._git_sync", return_value=(True, "")):
+            result = await run_reindex_job("r-log/synthetic", after_sha="abc123")
 
         assert result["status"] == "completed"
         assert "mode" in result
@@ -258,9 +242,7 @@ class TestReindexRunnerSuccess:
 
         from gita.jobs.runners import run_reindex_job
 
-        with patch(
-            "gita.jobs.runners._git_sync", return_value=(True, "")
-        ):
+        with patch("gita.jobs.runners._git_sync", return_value=(True, "")):
             await run_reindex_job("r-log/synthetic", after_sha="abc123")
 
         rows = (await db_session.execute(select(CodeIndex))).scalars().all()

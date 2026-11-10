@@ -6,6 +6,7 @@ delegate to runners that need external services — those are tested in
 ``test_runners.py``. ``reindex_repo`` is tested in
 ``test_reindex_runner.py``.
 """
+
 from __future__ import annotations
 
 import pytest

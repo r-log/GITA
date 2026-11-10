@@ -3,6 +3,7 @@
 No DB or Redis needed — the app is created with ``use_lifespan=False``
 and the ARQ pool state is set directly on ``app.state``.
 """
+
 from __future__ import annotations
 
 from fastapi.testclient import TestClient

@@ -9,6 +9,7 @@ Two modes:
   ``git diff``, delete/re-parse only those files, and re-build their
   import edges. Much faster for repos with 80+ files where only 3 changed.
 """
+
 from __future__ import annotations
 
 import logging
@@ -89,12 +90,8 @@ async def _get_or_create_repo(
 
 
 async def _clear_repo_rows(session: AsyncSession, repo_id) -> None:
-    await session.execute(
-        delete(ImportEdge).where(ImportEdge.repo_id == repo_id)
-    )
-    await session.execute(
-        delete(CodeIndex).where(CodeIndex.repo_id == repo_id)
-    )
+    await session.execute(delete(ImportEdge).where(ImportEdge.repo_id == repo_id))
+    await session.execute(delete(CodeIndex).where(CodeIndex.repo_id == repo_id))
     await session.flush()
 
 
@@ -113,9 +110,7 @@ def _parse_and_build_row(
     try:
         content = abs_path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError) as exc:
-        logger.warning(
-            "file_read_failed path=%s error=%s", relative_path, exc
-        )
+        logger.warning("file_read_failed path=%s error=%s", relative_path, exc)
         return None
 
     structure = parse_file(abs_path, content, language)
@@ -211,9 +206,7 @@ def _build_edges(
             dst_file: str | None = None
             if resolved is not None:
                 try:
-                    dst_file = str(
-                        resolved.resolve().relative_to(root_path)
-                    ).replace("\\", "/")
+                    dst_file = str(resolved.resolve().relative_to(root_path)).replace("\\", "/")
                     edges_resolved += 1
                 except ValueError:
                     dst_file = None
@@ -268,9 +261,7 @@ async def _full_index(
 
     files_embedded = await _attach_embeddings(code_rows, embedding_client)
 
-    edge_rows, edges_resolved = _build_edges(
-        repo.id, root_path, code_rows, package_roots
-    )
+    edge_rows, edges_resolved = _build_edges(repo.id, root_path, code_rows, package_roots)
     session.add_all(edge_rows)
 
     repo.head_sha = head_sha
@@ -323,9 +314,7 @@ async def _incremental_index(
             files_deleted += 1
             continue
 
-        language = indexable_language(
-            root_path, change.relative_path, include_tests=include_tests
-        )
+        language = indexable_language(root_path, change.relative_path, include_tests=include_tests)
         if language is None:
             continue
 
@@ -362,9 +351,7 @@ async def _incremental_index(
         .scalars()
         .all()
     )
-    edge_rows, edges_resolved = _build_edges(
-        repo.id, root_path, all_rows, package_roots
-    )
+    edge_rows, edges_resolved = _build_edges(repo.id, root_path, all_rows, package_roots)
     session.add_all(edge_rows)
 
     repo.head_sha = head_sha
@@ -437,9 +424,7 @@ async def index_repository(
     if not root_path.is_dir():
         raise ValueError(f"root_path is not a directory: {root_path}")
 
-    resolved_default_branch = default_branch or discover_default_branch(
-        root_path
-    )
+    resolved_default_branch = default_branch or discover_default_branch(root_path)
     repo = await _get_or_create_repo(
         session,
         repo_name,
@@ -456,9 +441,7 @@ async def index_repository(
     if not use_full and head_sha is not None:
         if repo.head_sha == head_sha:
             # Nothing changed since last index.
-            logger.info(
-                "index_noop repo=%s head_sha=%s", repo_name, head_sha
-            )
+            logger.info("index_noop repo=%s head_sha=%s", repo_name, head_sha)
             repo.indexed_at = datetime.now(UTC)
             await session.flush()
             return IngestResult(

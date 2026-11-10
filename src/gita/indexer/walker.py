@@ -12,6 +12,7 @@ under ``root`` that survives the filter. Filter rules:
 - Tests/specs are excluded by default in Week 1 — that's a Week 1 decision per
   the plan; flip ``include_tests`` if you need them.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterator

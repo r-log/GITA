@@ -4,6 +4,7 @@ Neither ``arq`` nor ``uvicorn`` configures the root logger, so without
 this every ``logger.info`` in GITA — shadow-mode decisions, guardrail
 drops, dedupe hits, token usage — is silently discarded.
 """
+
 from __future__ import annotations
 
 import logging

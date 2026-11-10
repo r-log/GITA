@@ -11,6 +11,7 @@ Layers:
 
 Docker-backed isolation is covered in ``test_test_generator_sandbox.py``.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -278,9 +279,7 @@ class TestRunTestGeneration:
         assert len(fake.calls) == 1
         assert fake.calls[0]["schema"] == "GeneratedTestResponse"
 
-    async def test_prompt_carries_source_and_import_path(
-        self, indexed_synth_py, synth_repo
-    ):
+    async def test_prompt_carries_source_and_import_path(self, indexed_synth_py, synth_repo):
         session, repo_name = indexed_synth_py
         fake = FakeLLMClient(responses=[_fake_response()])
 
@@ -297,9 +296,7 @@ class TestRunTestGeneration:
     ):
         """The model said 0.99; the tests fail; the 0.9 write gate stays shut."""
         session, repo_name = indexed_synth_py
-        fake = FakeLLMClient(
-            responses=[_fake_response(content=_FAILING, confidence=0.99)]
-        )
+        fake = FakeLLMClient(responses=[_fake_response(content=_FAILING, confidence=0.99)])
 
         result = await _run(session, repo_name, synth_repo, fake)
 
@@ -339,9 +336,7 @@ class TestRunTestGeneration:
         assert result.test_file_path == "backend/tests/unit/test_utils.py"
         assert _snapshot(synth_repo) == before
 
-    async def test_non_test_path_rejected_before_llm_call(
-        self, indexed_synth_py, synth_repo
-    ):
+    async def test_non_test_path_rejected_before_llm_call(self, indexed_synth_py, synth_repo):
         """A path that would overwrite source code never reaches the LLM."""
         session, repo_name = indexed_synth_py
         fake = FakeLLMClient(responses=[_fake_response()])

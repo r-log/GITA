@@ -1,6 +1,7 @@
 """history_view tests — build a real tiny git repo in tmp_path, index it,
 then exercise the view against it.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -137,9 +138,7 @@ class TestHistoryErrors:
         with pytest.raises(RepoNotFoundError):
             await history_view(db_session, "no-such-repo", "file.py")
 
-    async def test_missing_root_path_returns_empty(
-        self, tmp_path, db_session, tmp_git_repo
-    ):
+    async def test_missing_root_path_returns_empty(self, tmp_path, db_session, tmp_git_repo):
         """If the indexed repo's root_path has disappeared, return an empty
         result with git_available=False rather than crashing."""
         session, repo_name, file_path = tmp_git_repo

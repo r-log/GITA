@@ -34,6 +34,7 @@ Tests run as ``python -I -B -c <bootstrap>``. Isolated mode ignores
 repository file named ``pytest.py`` or ``json.py`` cannot shadow the
 real tool or the standard library and fake a passing run.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -73,9 +74,7 @@ _BOOTSTRAP = (
     "raise SystemExit(pytest.main(sys.argv[2:]))\n"
 )
 
-_SUMMARY_COUNT_RE = re.compile(
-    r"(\d+) (passed|failed|errors?|skipped|xfailed|xpassed)"
-)
+_SUMMARY_COUNT_RE = re.compile(r"(\d+) (passed|failed|errors?|skipped|xfailed|xpassed)")
 
 
 class SandboxUnavailableError(RuntimeError):
@@ -147,16 +146,11 @@ def validate_test_file_path(path: str) -> str:
     if pure.is_absolute() or re.match(r"^[A-Za-z]:", path):
         raise InvalidTestPathError(f"test file path must be relative: {path!r}")
     if any(part in ("..", "") for part in pure.parts):
-        raise InvalidTestPathError(
-            f"test file path must not contain '..': {path!r}"
-        )
+        raise InvalidTestPathError(f"test file path must not contain '..': {path!r}")
     name = pure.name
-    if pure.suffix != ".py" or not (
-        name.startswith("test_") or name.endswith("_test.py")
-    ):
+    if pure.suffix != ".py" or not (name.startswith("test_") or name.endswith("_test.py")):
         raise InvalidTestPathError(
-            "test file path must name a pytest file "
-            f"(test_*.py or *_test.py): {path!r}"
+            f"test file path must name a pytest file (test_*.py or *_test.py): {path!r}"
         )
     return str(pure)
 
@@ -220,9 +214,7 @@ def _make_world_readable(root: Path) -> None:
 
 
 @contextmanager
-def prepare_workspace(
-    repo_root: Path, test_relpath: str, test_content: str
-) -> Iterator[Workspace]:
+def prepare_workspace(repo_root: Path, test_relpath: str, test_content: str) -> Iterator[Workspace]:
     """Copy ``repo_root`` into a temp dir and write the test file there.
 
     The real working tree is never touched. Symlinks are copied as
@@ -233,9 +225,7 @@ def prepare_workspace(
     with tempfile.TemporaryDirectory(prefix="gita-sandbox-") as parent:
         root = Path(parent) / "ws"
         repo_copy = root / "repo"
-        shutil.copytree(
-            repo_root, repo_copy, symlinks=True, ignore=_copy_ignore
-        )
+        shutil.copytree(repo_root, repo_copy, symlinks=True, ignore=_copy_ignore)
         test_path = repo_copy / test_relpath
         test_path.parent.mkdir(parents=True, exist_ok=True)
         # A committed symlink (``tests -> /etc``) must not redirect the
@@ -302,10 +292,7 @@ class Sandbox(Protocol):
     #: True only for backends that are a real security boundary.
     is_isolated: bool
 
-    async def run_pytest(
-        self, workspace: Workspace, *, timeout: float
-    ) -> SandboxRun:
-        ...
+    async def run_pytest(self, workspace: Workspace, *, timeout: float) -> SandboxRun: ...
 
 
 def _posix_preexec(cpu_seconds: int) -> None:  # pragma: no cover - child side
@@ -349,12 +336,8 @@ class LocalSandbox:
                 env[key] = os.environ[key]
         return env
 
-    async def run_pytest(
-        self, workspace: Workspace, *, timeout: float
-    ) -> SandboxRun:
-        import_roots = [
-            str((workspace.repo / r).resolve()) for r in workspace.import_roots
-        ]
+    async def run_pytest(self, workspace: Workspace, *, timeout: float) -> SandboxRun:
+        import_roots = [str((workspace.repo / r).resolve()) for r in workspace.import_roots]
         cmd = [
             self.python,
             "-I",
@@ -362,9 +345,7 @@ class LocalSandbox:
             "-c",
             _BOOTSTRAP,
             json.dumps(import_roots),
-            *_pytest_args(
-                str(workspace.ini), str(workspace.repo), workspace.test_relpath
-            ),
+            *_pytest_args(str(workspace.ini), str(workspace.repo), workspace.test_relpath),
         ]
         kwargs: dict = {}
         if os.name == "posix":
@@ -379,9 +360,7 @@ class LocalSandbox:
             **kwargs,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
-            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except TimeoutError:
             _kill_tree(process)
             await process.wait()
@@ -451,9 +430,7 @@ class DockerSandbox:
         self.pids_limit = pids_limit
 
     def build_command(self, workspace: Workspace, container_name: str) -> list[str]:
-        import_roots = [
-            str(PurePosixPath("/work/repo") / r) for r in workspace.import_roots
-        ]
+        import_roots = [str(PurePosixPath("/work/repo") / r) for r in workspace.import_roots]
         return [
             self.docker,
             "run",
@@ -498,13 +475,9 @@ class DockerSandbox:
     def _client_env(self) -> dict[str, str]:
         return {k: os.environ[k] for k in _DOCKER_CLIENT_ENV if k in os.environ}
 
-    async def run_pytest(
-        self, workspace: Workspace, *, timeout: float
-    ) -> SandboxRun:
+    async def run_pytest(self, workspace: Workspace, *, timeout: float) -> SandboxRun:
         if shutil.which(self.docker) is None:
-            raise SandboxUnavailableError(
-                f"docker CLI {self.docker!r} not found on PATH"
-            )
+            raise SandboxUnavailableError(f"docker CLI {self.docker!r} not found on PATH")
         container_name = f"gita-sandbox-{uuid.uuid4().hex[:12]}"
         cmd = self.build_command(workspace, container_name)
         process = await asyncio.create_subprocess_exec(
@@ -514,9 +487,7 @@ class DockerSandbox:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
-            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except TimeoutError:
             # Killing the CLI doesn't stop the container; kill it by name.
             await self._force_remove(container_name)
@@ -532,9 +503,7 @@ class DockerSandbox:
         err_text = stderr.decode("utf-8", errors="replace")
         # 125 = docker itself failed (daemon down, image missing, bad flag).
         if returncode == 125:
-            raise SandboxUnavailableError(
-                f"docker run failed: {err_text.strip()[:500]}"
-            )
+            raise SandboxUnavailableError(f"docker run failed: {err_text.strip()[:500]}")
         return SandboxRun(
             returncode=returncode,
             stdout=_truncate(stdout.decode("utf-8", errors="replace")),

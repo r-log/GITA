@@ -36,6 +36,7 @@ After filtering, the pass rate ``verified / original`` feeds into
 ``structural_confidence()``, which the recipe can blend with the LLM's
 self-assessed confidence.
 """
+
 from __future__ import annotations
 
 import ast
@@ -153,10 +154,7 @@ async def verify_findings(
         .where(CodeIndex.repo_id == repo_id)
         .where(CodeIndex.file_path.in_(cited_paths))
     )
-    rows = {
-        row.file_path: row
-        for row in (await session.execute(stmt)).scalars().all()
-    }
+    rows = {row.file_path: row for row in (await session.execute(stmt)).scalars().all()}
 
     verified: list[Finding] = []
     dropped: list[tuple[Finding, str]] = []
@@ -175,9 +173,7 @@ async def verify_findings(
 
         # --- Guardrail 2: line range ---
         if not 1 <= finding.line <= row.line_count:
-            reason = (
-                f"line_out_of_range: line {finding.line} not in 1..{row.line_count}"
-            )
+            reason = f"line_out_of_range: line {finding.line} not in 1..{row.line_count}"
             dropped.append((finding, reason))
             logger.warning(
                 "guardrail_drop reason=line_out_of_range file=%s line=%d max=%d",
@@ -197,8 +193,7 @@ async def verify_findings(
                 )
                 dropped.append((finding, reason))
                 logger.warning(
-                    "guardrail_drop reason=syntax_claim_invalid "
-                    "file=%s line=%d language=%s",
+                    "guardrail_drop reason=syntax_claim_invalid file=%s line=%d language=%s",
                     finding.file,
                     finding.line,
                     row.language,

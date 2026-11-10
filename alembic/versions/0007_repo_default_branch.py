@@ -11,6 +11,7 @@ the common case for existing rows; ``index_repository`` auto-corrects
 for non-main repos on the next index run via
 ``discover_default_branch``.
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa

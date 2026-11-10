@@ -19,6 +19,7 @@ Planted issues:
   parenthesis" on an equivalent AMASS file. ``must_not_mention`` bans
   the hallucination markers so any re-emergence fails the gated test.
 """
+
 from tests.golden_agents.checklist import Checklist
 
 CHECKLIST = Checklist(

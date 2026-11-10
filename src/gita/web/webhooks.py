@@ -25,6 +25,7 @@ Ignored events still get a 200 so GitHub records the delivery as handled.
 GitHub does not retry failed deliveries automatically, so anything that
 gets a 5xx here (queue down) needs a manual redelivery.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -48,12 +49,12 @@ router = APIRouter(prefix="/api/webhooks")
 class WebhookEvent:
     """Parsed webhook event metadata, extracted before dispatch."""
 
-    event_type: str          # X-GitHub-Event header value (e.g. "pull_request")
-    action: str | None       # payload.action (e.g. "opened"), None for push
+    event_type: str  # X-GitHub-Event header value (e.g. "pull_request")
+    action: str | None  # payload.action (e.g. "opened"), None for push
     delivery_id: str | None  # X-GitHub-Delivery header (unique per delivery)
-    repo_full_name: str | None   # payload.repository.full_name
-    sender_login: str | None     # payload.sender.login
-    sender_type: str | None      # payload.sender.type ("User" or "Bot")
+    repo_full_name: str | None  # payload.repository.full_name
+    sender_login: str | None  # payload.sender.login
+    sender_type: str | None  # payload.sender.type ("User" or "Bot")
 
 
 def verify_signature(payload_body: bytes, signature_header: str, secret: str) -> bool:
@@ -64,10 +65,10 @@ def verify_signature(payload_body: bytes, signature_header: str, secret: str) ->
     """
     if not signature_header.startswith("sha256="):
         return False
-    expected = signature_header[len("sha256="):].encode("utf-8", errors="replace")
-    computed = hmac.new(
-        secret.encode("utf-8"), payload_body, hashlib.sha256
-    ).hexdigest().encode("ascii")
+    expected = signature_header[len("sha256=") :].encode("utf-8", errors="replace")
+    computed = (
+        hmac.new(secret.encode("utf-8"), payload_body, hashlib.sha256).hexdigest().encode("ascii")
+    )
     return hmac.compare_digest(computed, expected)
 
 
@@ -175,9 +176,7 @@ async def receive_webhook(
     enqueue_kwargs = dict(job.kwargs)
     if job.defer_seconds:
         enqueue_kwargs["_defer_by"] = job.defer_seconds
-    arq_job = await pool.enqueue_job(
-        job.function_name, _job_id=job.job_id, **enqueue_kwargs
-    )
+    arq_job = await pool.enqueue_job(job.function_name, _job_id=job.job_id, **enqueue_kwargs)
 
     if arq_job is None:
         logger.info(
@@ -186,9 +185,7 @@ async def receive_webhook(
             job.function_name,
             event.delivery_id,
         )
-        return _reply(
-            200, status="ignored", reason="job already queued", job_id=job.job_id
-        )
+        return _reply(200, status="ignored", reason="job already queued", job_id=job.job_id)
 
     logger.info(
         "webhook_dispatched job_id=%s function=%s repo=%s delivery=%s",
@@ -197,6 +194,4 @@ async def receive_webhook(
         job.repo_full_name,
         event.delivery_id,
     )
-    return _reply(
-        200, status="dispatched", job_id=job.job_id, function=job.function_name
-    )
+    return _reply(200, status="dispatched", job_id=job.job_id, function=job.function_name)

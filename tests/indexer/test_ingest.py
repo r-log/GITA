@@ -3,6 +3,7 @@
 Runs the real ingest pipeline against a real (tiny) repo structure, hits
 Postgres, and verifies every row shape.
 """
+
 from pathlib import Path
 
 import pytest
@@ -11,9 +12,7 @@ from sqlalchemy import select
 from gita.db.models import CodeIndex, ImportEdge, Repo
 from gita.indexer.ingest import index_repository
 
-SYNTH_REPO = (
-    Path(__file__).parent.parent / "fixtures" / "synthetic_py"
-).resolve()
+SYNTH_REPO = (Path(__file__).parent.parent / "fixtures" / "synthetic_py").resolve()
 
 
 @pytest.fixture
@@ -148,11 +147,7 @@ class TestIngestSyntheticPy:
 
         # os and dataclasses are stdlib → dst_file should be NULL
         edges = (
-            (
-                await db_session.execute(
-                    select(ImportEdge).where(ImportEdge.dst_file.is_(None))
-                )
-            )
+            (await db_session.execute(select(ImportEdge).where(ImportEdge.dst_file.is_(None))))
             .scalars()
             .all()
         )
@@ -232,21 +227,13 @@ class TestReindex:
         """Running index_repository twice should leave the same row counts."""
         await index_repository(db_session, "synthetic_py", synth_root)
         await db_session.commit()
-        first_files = (
-            await db_session.execute(select(CodeIndex))
-        ).scalars().all()
-        first_edges = (
-            await db_session.execute(select(ImportEdge))
-        ).scalars().all()
+        first_files = (await db_session.execute(select(CodeIndex))).scalars().all()
+        first_edges = (await db_session.execute(select(ImportEdge))).scalars().all()
 
         await index_repository(db_session, "synthetic_py", synth_root)
         await db_session.commit()
-        second_files = (
-            await db_session.execute(select(CodeIndex))
-        ).scalars().all()
-        second_edges = (
-            await db_session.execute(select(ImportEdge))
-        ).scalars().all()
+        second_files = (await db_session.execute(select(CodeIndex))).scalars().all()
+        second_edges = (await db_session.execute(select(ImportEdge))).scalars().all()
 
         assert len(first_files) == len(second_files)
         assert len(first_edges) == len(second_edges)

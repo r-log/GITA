@@ -4,6 +4,7 @@ The findings call reuses ``LLMFinding`` / ``FindingsResponse`` from the
 onboarding schemas — same shape, same guardrails, same conversion. Only
 the summary call is PR-reviewer-specific.
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field

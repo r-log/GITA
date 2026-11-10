@@ -16,6 +16,7 @@ ran and passed. A model reporting 0.99 for tests that fail stays below the
 code-writing threshold; a model that doubts its own tests can hold back
 a passing file.
 """
+
 from __future__ import annotations
 
 import ast
@@ -85,7 +86,7 @@ class TestGenerationResult:
 
     target_file: str
     test_file_path: str
-    test_content: str           # populated even on verification failure
+    test_content: str  # populated even on verification failure
     verified: bool
     verification_errors: list[str] = field(default_factory=list)
     llm_model: str = ""
@@ -105,9 +106,7 @@ def _load_prompt() -> str:
     return (PROMPTS_DIR / _PROMPT_FILE).read_text(encoding="utf-8")
 
 
-async def _get_file_row(
-    session: AsyncSession, repo_id: Any, file_path: str
-) -> CodeIndex | None:
+async def _get_file_row(session: AsyncSession, repo_id: Any, file_path: str) -> CodeIndex | None:
     stmt = select(CodeIndex).where(
         CodeIndex.repo_id == repo_id,
         CodeIndex.file_path == file_path,
@@ -125,10 +124,7 @@ def _render_symbol_summary(structure: dict[str, Any]) -> str:
         sig = fn.get("signature") or fn.get("name", "")
         parent = fn.get("parent_class")
         prefix = f"{parent}." if parent else ""
-        lines.append(
-            f"  def {prefix}{sig} "
-            f"(lines {fn['start_line']}-{fn['end_line']})"
-        )
+        lines.append(f"  def {prefix}{sig} (lines {fn['start_line']}-{fn['end_line']})")
     return "\n".join(lines) if lines else "  (none)"
 
 
@@ -174,10 +170,7 @@ def _render_user_prompt(ctx: dict[str, Any], import_names: list[str]) -> str:
         f"Target module: `{ctx['target_file']}` ({ctx['line_count']} lines)",
     ]
     if import_names:
-        lines.append(
-            "Import it as: "
-            + " or ".join(f"`{name}`" for name in import_names)
-        )
+        lines.append("Import it as: " + " or ".join(f"`{name}`" for name in import_names))
     lines += [
         "",
         "Symbol summary (the things to test):",
@@ -185,10 +178,7 @@ def _render_user_prompt(ctx: dict[str, Any], import_names: list[str]) -> str:
         "",
     ]
     if ctx["imports"]:
-        lines.append(
-            "This module imports from: "
-            + ", ".join(f"`{p}`" for p in ctx["imports"])
-        )
+        lines.append("This module imports from: " + ", ".join(f"`{p}`" for p in ctx["imports"]))
         lines.append("")
     if ctx["imported_by"]:
         lines.append(
@@ -237,6 +227,7 @@ def _imports_target(tree: ast.Module, module_names: list[str]) -> bool:
 
     Accepts ``import a.b``, ``from a.b import x`` and ``from a import b``.
     """
+
     def matches(name: str) -> bool:
         return any(name == m or name.startswith(m + ".") for m in module_names)
 
@@ -293,7 +284,7 @@ def static_checks(content: str, import_names: list[str]) -> list[str]:
 # Verification
 # ---------------------------------------------------------------------------
 def _output_tail(stdout: str, stderr: str) -> str:
-    text = (stdout.strip() or stderr.strip())
+    text = stdout.strip() or stderr.strip()
     return text[-_ERROR_OUTPUT_TAIL_CHARS:]
 
 
@@ -312,9 +303,7 @@ async def verify_test_file(
     ``verified`` is True only if every static check passes and pytest
     reports at least one passing test and no failures or errors.
     """
-    report = VerificationReport(
-        verified=False, sandbox=sandbox.name, isolated=sandbox.is_isolated
-    )
+    report = VerificationReport(verified=False, sandbox=sandbox.name, isolated=sandbox.is_isolated)
 
     import_names = derive_importable_names(target_file, repo_root)
     report.errors = static_checks(content, import_names)
@@ -420,17 +409,14 @@ async def run_test_generation(
         test_file_path or derive_test_file_path(target_file)
     )
     if sandbox is None:
-        sandbox = make_sandbox(
-            settings.test_gen_sandbox, image=settings.test_gen_sandbox_image
-        )
+        sandbox = make_sandbox(settings.test_gen_sandbox, image=settings.test_gen_sandbox_image)
     if timeout is None:
         timeout = settings.test_gen_timeout_seconds
 
     ctx = await _build_prompt_context(session, repo_name, target_file)
     if ctx is None:
         raise FileNotFoundError(
-            f"target_file {target_file!r} not found in index for "
-            f"repo {repo_name!r}"
+            f"target_file {target_file!r} not found in index for repo {repo_name!r}"
         )
 
     import_names = derive_importable_names(target_file, repo_root)
@@ -445,9 +431,7 @@ async def run_test_generation(
         max_tokens=_LLM_MAX_TOKENS,
     )
     if not isinstance(response.parsed, GeneratedTestResponse):
-        raise RuntimeError(
-            "LLM response did not parse as GeneratedTestResponse"
-        )
+        raise RuntimeError("LLM response did not parse as GeneratedTestResponse")
     payload: GeneratedTestResponse = response.parsed
 
     report = await verify_test_file(

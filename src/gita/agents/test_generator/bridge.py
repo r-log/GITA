@@ -17,6 +17,7 @@ do without executing anything.
 The caller is responsible for executing the three Decisions in list
 order and stopping on failure; no in-bridge orchestration.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -46,16 +47,16 @@ class TestGenerationArtifact:
     # domain concept ("test generation artifact"), not a pytest class.
     __test__ = False
 
-    repo: str                           # "owner/repo"
-    base_branch: str                    # "main"
-    base_sha: str                       # commit SHA to branch from
-    target_file: str                    # module being tested, repo-relative
-    test_file_path: str                 # where to write the test file
-    test_content: str                   # the generated pytest code
+    repo: str  # "owner/repo"
+    base_branch: str  # "main"
+    base_sha: str  # commit SHA to branch from
+    target_file: str  # module being tested, repo-relative
+    test_file_path: str  # where to write the test file
+    test_content: str  # the generated pytest code
     existing_test_sha: str | None = None  # blob SHA if the test file exists
-    pr_title: str | None = None         # None → default
-    pr_body: str | None = None          # None → default
-    fallback_issue: int | None = None   # landing spot for COMMENT downgrade
+    pr_title: str | None = None  # None → default
+    pr_body: str | None = None  # None → default
+    fallback_issue: int | None = None  # landing spot for COMMENT downgrade
     confidence: float = 0.9
 
 
@@ -81,9 +82,7 @@ def default_pr_title(target_file: str) -> str:
     return f"tests: add coverage for {name}"
 
 
-def default_pr_body(
-    target_file: str, test_file_path: str, content_hash_prefix: str
-) -> str:
+def default_pr_body(target_file: str, test_file_path: str, content_hash_prefix: str) -> str:
     return (
         f"Auto-generated tests for `{target_file}`.\n"
         f"\n"
@@ -109,14 +108,10 @@ def build_test_generation_decisions(
     the fallback issue. Execute in list order; stop on the first
     non-executed outcome.
     """
-    branch_name = compute_branch_name(
-        artifact.target_file, artifact.base_sha
-    )
+    branch_name = compute_branch_name(artifact.target_file, artifact.base_sha)
     ref_name = f"refs/heads/{branch_name}"
 
-    content_hash = hashlib.sha256(
-        artifact.test_content.encode("utf-8")
-    ).hexdigest()
+    content_hash = hashlib.sha256(artifact.test_content.encode("utf-8")).hexdigest()
     content_hash_prefix = content_hash[:12]
 
     pr_title = artifact.pr_title or default_pr_title(artifact.target_file)
@@ -147,15 +142,11 @@ def build_test_generation_decisions(
     )
 
     # ---- 2. update_file ---------------------------------------------------
-    mode_label = (
-        "update existing" if artifact.existing_test_sha else "create new"
-    )
+    mode_label = "update existing" if artifact.existing_test_sha else "create new"
     file_payload: dict[str, Any] = {
         "path": artifact.test_file_path,
         "content": artifact.test_content,
-        "message": (
-            f"gita: add generated tests for {artifact.target_file}"
-        ),
+        "message": (f"gita: add generated tests for {artifact.target_file}"),
         "branch": branch_name,
     }
     if artifact.existing_test_sha:
@@ -191,10 +182,7 @@ def build_test_generation_decisions(
             "base": artifact.base_branch,
         },
         evidence=[
-            (
-                f"would open PR `{pr_title}` from `{branch_name}` "
-                f"into `{artifact.base_branch}`"
-            ),
+            (f"would open PR `{pr_title}` from `{branch_name}` into `{artifact.base_branch}`"),
             f"purpose: ship generated tests for `{artifact.target_file}`",
         ],
         confidence=artifact.confidence,

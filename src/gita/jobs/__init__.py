@@ -18,6 +18,7 @@ See ``gita.web.dispatch`` for why each ID has the shape it has.
 The actual agent logic lives in ``gita.jobs.runners``. These functions
 are thin ARQ wrappers that delegate to the runners.
 """
+
 from __future__ import annotations
 
 import logging
@@ -61,9 +62,7 @@ async def _with_retry(
         job_try = int(ctx.get("job_try", 1))
         if is_transient(exc) and job_try < _MAX_TRIES:
             defer = _RETRY_BASE_SECONDS * 2 ** (job_try - 1)
-            logger.warning(
-                "job_retry try=%d defer=%ds reason=%r", job_try, defer, exc
-            )
+            logger.warning("job_retry try=%d defer=%ds reason=%r", job_try, defer, exc)
             raise Retry(defer=defer) from exc
         raise
 
@@ -103,9 +102,7 @@ async def onboard_repo(
     )
     from gita.jobs.runners import run_onboarding_job
 
-    return await _with_retry(
-        ctx, lambda: run_onboarding_job(repo_full_name, issue_number)
-    )
+    return await _with_retry(ctx, lambda: run_onboarding_job(repo_full_name, issue_number))
 
 
 async def reindex_repo(
@@ -130,9 +127,7 @@ async def reindex_repo(
 
     return await _with_retry(
         ctx,
-        lambda: run_reindex_job(
-            repo_full_name, after_sha=after_sha, redis=ctx.get("redis")
-        ),
+        lambda: run_reindex_job(repo_full_name, after_sha=after_sha, redis=ctx.get("redis")),
     )
 
 

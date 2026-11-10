@@ -1,4 +1,5 @@
 """Regression tests for incremental-indexing bugs, against real git repos."""
+
 from __future__ import annotations
 
 import os

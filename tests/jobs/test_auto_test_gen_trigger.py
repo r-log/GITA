@@ -6,6 +6,7 @@ row + CodeIndex rows in the test DB so Stage B can answer feasibility
 questions, and a ``FakeRedisPool`` that captures every ``enqueue_job``
 call so we can assert on what would have been enqueued.
 """
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -38,13 +39,8 @@ class FakeRedisPool:
         _job_id: str,
         **kwargs,
     ):
-        self.calls.append(
-            {"function": function_name, "job_id": _job_id, "kwargs": kwargs}
-        )
-        if (
-            self.dedupe_after is not None
-            and len(self.calls) > self.dedupe_after
-        ):
+        self.calls.append({"function": function_name, "job_id": _job_id, "kwargs": kwargs})
+        if self.dedupe_after is not None and len(self.calls) > self.dedupe_after:
             return None
         return object()  # truthy marker — emulates an arq Job
 
@@ -58,9 +54,7 @@ async def _patch_runner_session(db_session: AsyncSession, monkeypatch):
     async def _fake_session_local():
         yield db_session
 
-    monkeypatch.setattr(
-        "gita.jobs.runners.SessionLocal", _fake_session_local
-    )
+    monkeypatch.setattr("gita.jobs.runners.SessionLocal", _fake_session_local)
 
 
 # ---------------------------------------------------------------------------
@@ -72,9 +66,7 @@ def _write(p: Path, content: str = "x = 1\n") -> Path:
     return p
 
 
-async def _make_repo(
-    session, *, name: str = "fixture_repo", auto: bool = True
-) -> Repo:
+async def _make_repo(session, *, name: str = "fixture_repo", auto: bool = True) -> Repo:
     repo = Repo(name=name, root_path="/tmp/no", auto_test_generation=auto)
     session.add(repo)
     await session.flush()
@@ -103,7 +95,9 @@ async def _make_file(
 
 
 def _ingest_result(
-    *, mode: str = "incremental", added_files: list[str] | None = None,
+    *,
+    mode: str = "incremental",
+    added_files: list[str] | None = None,
     head_sha: str = "abc1234567890",
 ) -> IngestResult:
     return IngestResult(
@@ -204,9 +198,7 @@ class TestSkipPaths:
             repo_auto_test_gen=True,
             repo_default_branch="main",
             root_path=tmp_path,
-            ingest_result=_ingest_result(
-                mode="full", added_files=["src/x.py"]
-            ),
+            ingest_result=_ingest_result(mode="full", added_files=["src/x.py"]),
             redis=pool,
         )
         assert result["reason"] == "mode=full"
@@ -274,9 +266,7 @@ class TestStageFiltering:
         assert "src/myapp/with_tests.py" not in result["after_stage_a"]
         assert "src/myapp/without_tests.py" in result["after_stage_a"]
         assert len(pool.calls) == 1
-        assert pool.calls[0]["kwargs"]["target_file"] == (
-            "src/myapp/without_tests.py"
-        )
+        assert pool.calls[0]["kwargs"]["target_file"] == ("src/myapp/without_tests.py")
 
     async def test_stage_b_filters_infeasible_files(
         self,
@@ -306,9 +296,7 @@ class TestStageFiltering:
             repo_auto_test_gen=True,
             repo_default_branch="main",
             root_path=tmp_path,
-            ingest_result=_ingest_result(
-                added_files=["src/internals.py"]
-            ),
+            ingest_result=_ingest_result(added_files=["src/internals.py"]),
             redis=pool,
         )
         assert result["after_stage_a"] == ["src/internals.py"]
@@ -388,16 +376,12 @@ class TestCapAndEnqueue:
             repo_auto_test_gen=True,
             repo_default_branch="main",
             root_path=tmp_path,
-            ingest_result=_ingest_result(
-                added_files=["src/foo.py"], head_sha="abc1234deadbeef"
-            ),
+            ingest_result=_ingest_result(added_files=["src/foo.py"], head_sha="abc1234deadbeef"),
             redis=pool,
         )
         assert len(pool.calls) == 1
         # repo lowered, sha truncated to 7
-        assert pool.calls[0]["job_id"] == (
-            "generate-tests:owner/repo:src/foo.py:abc1234"
-        )
+        assert pool.calls[0]["job_id"] == ("generate-tests:owner/repo:src/foo.py:abc1234")
         # Confirm the runner-level kwargs are correct.
         kwargs = pool.calls[0]["kwargs"]
         assert kwargs["repo_full_name"] == "Owner/REPO"

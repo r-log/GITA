@@ -18,6 +18,7 @@ Error taxonomy (all subclass ``LLMError``):
 - ``LLMRefusalError`` — no content (refusal / content filter).
 - ``LLMSchemaError`` — content arrived but doesn't match the schema.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -77,10 +78,7 @@ class LLMSchemaError(LLMError):
     """The LLM returned JSON that didn't validate against the requested schema."""
 
     def __init__(self, schema_name: str, raw: str, validation_error: Exception):
-        super().__init__(
-            f"LLM response did not validate against {schema_name}: "
-            f"{validation_error}"
-        )
+        super().__init__(f"LLM response did not validate against {schema_name}: {validation_error}")
         self.schema_name = schema_name
         self.raw = raw
         self.validation_error = validation_error
@@ -180,8 +178,7 @@ class LLMClient(Protocol):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.0,
-    ) -> LLMResponse:
-        ...
+    ) -> LLMResponse: ...
 
 
 # ---------------------------------------------------------------------------
@@ -305,9 +302,7 @@ class OpenRouterClient:
             content = choice["message"]["content"]
             finish_reason = choice.get("finish_reason")
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError(
-                f"malformed OpenRouter response: {exc} (raw={data!r:.200})"
-            ) from exc
+            raise LLMError(f"malformed OpenRouter response: {exc} (raw={data!r:.200})") from exc
 
         usage = data.get("usage", {}) or {}
         logger.info(
@@ -325,14 +320,10 @@ class OpenRouterClient:
                 "raise max_tokens or shrink the prompt"
             )
         if content is None or finish_reason == "content_filter":
-            raise LLMRefusalError(
-                f"no content returned (finish_reason={finish_reason!r})"
-            )
+            raise LLMRefusalError(f"no content returned (finish_reason={finish_reason!r})")
 
         parsed = (
-            _parse_structured(content, response_schema)
-            if response_schema is not None
-            else None
+            _parse_structured(content, response_schema) if response_schema is not None else None
         )
         return LLMResponse(
             content=content,
@@ -372,9 +363,7 @@ class FakeLLMClient:
             {
                 "system": system,
                 "user": user,
-                "schema": (
-                    response_schema.__name__ if response_schema else None
-                ),
+                "schema": (response_schema.__name__ if response_schema else None),
                 "model": model,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
@@ -389,10 +378,7 @@ class FakeLLMClient:
             content = canned.model_dump_json()
             parsed: BaseModel | None = canned
             # If a schema was requested, check that the canned response matches.
-            if (
-                response_schema is not None
-                and not isinstance(canned, response_schema)
-            ):
+            if response_schema is not None and not isinstance(canned, response_schema):
                 try:
                     parsed = response_schema.model_validate_json(content)
                 except ValidationError as exc:

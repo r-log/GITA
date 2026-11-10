@@ -8,6 +8,7 @@ Two implementations:
   (``text-embedding-3-small``, 1536 dimensions).
 - ``FakeEmbeddingClient``: deterministic vectors for testing (no API calls).
 """
+
 from __future__ import annotations
 
 import hashlib

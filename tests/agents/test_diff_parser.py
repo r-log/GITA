@@ -3,6 +3,7 @@
 Exercises ``parse_pr_files`` and ``_extract_changed_ranges`` against
 fixture JSON matching GitHub's ``pulls/{n}/files`` response shape.
 """
+
 from __future__ import annotations
 
 from gita.agents.pr_reviewer.diff_parser import (
@@ -24,12 +25,7 @@ class TestExtractChangedRanges:
         assert ranges[0] == ChangedLineRange(start=10, count=8)
 
     def test_multiple_hunks(self):
-        patch = (
-            "@@ -1,3 +1,5 @@ header1\n"
-            " line\n"
-            "@@ -20,4 +22,7 @@ header2\n"
-            " line"
-        )
+        patch = "@@ -1,3 +1,5 @@ header1\n line\n@@ -20,4 +22,7 @@ header2\n line"
         ranges = _extract_changed_ranges(patch)
         assert len(ranges) == 2
         assert ranges[0] == ChangedLineRange(start=1, count=5)
@@ -178,8 +174,7 @@ class TestParsePrFiles:
                 "additions": 20,
                 "deletions": 5,
                 "patch": (
-                    "@@ -10,5 +10,8 @@ first hunk\n ctx\n"
-                    "@@ -100,3 +103,10 @@ second hunk\n ctx"
+                    "@@ -10,5 +10,8 @@ first hunk\n ctx\n@@ -100,3 +103,10 @@ second hunk\n ctx"
                 ),
             },
         ]

@@ -5,6 +5,7 @@ Revises:
 Create Date: 2026-04-11 22:00:00.000000
 
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -66,12 +67,8 @@ def upgrade() -> None:
         sa.Column("language", sa.String(length=32), nullable=False),
         sa.ForeignKeyConstraint(["repo_id"], ["repos.id"], ondelete="CASCADE"),
     )
-    op.create_index(
-        "ix_import_edges_repo_src", "import_edges", ["repo_id", "src_file"]
-    )
-    op.create_index(
-        "ix_import_edges_repo_dst", "import_edges", ["repo_id", "dst_file"]
-    )
+    op.create_index("ix_import_edges_repo_src", "import_edges", ["repo_id", "src_file"])
+    op.create_index("ix_import_edges_repo_dst", "import_edges", ["repo_id", "dst_file"])
 
 
 def downgrade() -> None:

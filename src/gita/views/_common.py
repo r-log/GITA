@@ -1,4 +1,5 @@
 """Shared helpers for the view layer."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,9 +33,7 @@ async def resolve_repo(session: AsyncSession, repo_name: str) -> Repo:
 
     # Fallback — case-insensitive match on github_full_name.
     normalized = repo_name.strip().lower()
-    stmt2 = select(Repo).where(
-        func.lower(Repo.github_full_name) == normalized
-    )
+    stmt2 = select(Repo).where(func.lower(Repo.github_full_name) == normalized)
     repo = (await session.execute(stmt2)).scalar_one_or_none()
     if repo is not None:
         return repo

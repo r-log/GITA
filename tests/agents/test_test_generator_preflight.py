@@ -5,6 +5,7 @@ Stage A (``has_existing_tests``) is sync, filesystem-only — uses
 and DB-backed — uses the existing ``indexed_synth_py`` fixture for
 the happy path and seeds extra rows for the edge cases.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -164,9 +165,7 @@ async def _make_file(
 
 
 class TestIsFeasibleHappyPath:
-    async def test_python_file_with_public_function_passes(
-        self, db_session
-    ):
+    async def test_python_file_with_public_function_passes(self, db_session):
         repo = await _make_repo(db_session)
         await _make_file(
             db_session,
@@ -177,9 +176,7 @@ class TestIsFeasibleHappyPath:
                 "classes": [],
             },
         )
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/utils.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/utils.py")
         assert result.proceed is True
         assert result.reason == "ok"
 
@@ -187,9 +184,7 @@ class TestIsFeasibleHappyPath:
 class TestIsFeasibleRejections:
     async def test_missing_from_index_rejected(self, db_session):
         repo = await _make_repo(db_session)
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/missing.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/missing.py")
         assert result.proceed is False
         assert result.reason == "infeasible:not_indexed"
 
@@ -205,9 +200,7 @@ class TestIsFeasibleRejections:
             language="typescript",
             structure={"functions": [{"name": "go"}]},
         )
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/app.ts"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/app.ts")
         assert result.proceed is False
         assert "unsupported_language" in result.reason
         assert "typescript" in result.reason
@@ -221,20 +214,14 @@ class TestIsFeasibleRejections:
             line_count=999,
             structure={"functions": [{"name": "go"}]},
         )
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/huge.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/huge.py")
         assert result.proceed is False
         assert "too_large" in result.reason
 
     async def test_no_functions_or_classes_rejected(self, db_session):
         repo = await _make_repo(db_session)
-        await _make_file(
-            db_session, repo, "src/constants.py", structure={}
-        )
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/constants.py"
-        )
+        await _make_file(db_session, repo, "src/constants.py", structure={})
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/constants.py")
         assert result.proceed is False
         assert "no_functions_or_classes" in result.reason
 
@@ -249,9 +236,7 @@ class TestIsFeasibleRejections:
                 "classes": [{"name": "_PrivateBase"}],
             },
         )
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/internals.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/internals.py")
         assert result.proceed is False
         assert "no_public_symbols" in result.reason
 
@@ -263,9 +248,7 @@ class TestIsFeasibleRejections:
             "src/myapp/__main__.py",
             structure={"functions": [{"name": "main"}]},
         )
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/myapp/__main__.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/myapp/__main__.py")
         assert result.proceed is False
         assert "dunder_main_entrypoint" in result.reason
 
@@ -278,9 +261,7 @@ class TestIsFeasibleRejections:
             structure={"functions": [{"name": "main"}]},
             content='def main():\n    pass\n\nif __name__ == "__main__":\n    main()\n',
         )
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/cli.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/cli.py")
         assert result.proceed is False
         assert "cli_entrypoint" in result.reason
 
@@ -297,9 +278,7 @@ class TestIsFeasibleRejections:
             },
             content='if __name__ == "__main__":\n    main()\n',
         )
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/cli.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/cli.py")
         assert result.proceed is True
 
 
@@ -309,9 +288,7 @@ class TestIsFeasiblePriorAttemptDedupe:
         # The seeded rows are executed (live) actions.
         monkeypatch.setattr("gita.config.settings.write_mode", "full")
 
-    async def test_shadow_attempt_does_not_block_live_generation(
-        self, db_session, monkeypatch
-    ):
+    async def test_shadow_attempt_does_not_block_live_generation(self, db_session, monkeypatch):
         repo = await _make_repo(db_session)
         await _make_file(
             db_session, repo, "src/utils.py", structure={"functions": [{"name": "go"}]}
@@ -361,15 +338,11 @@ class TestIsFeasiblePriorAttemptDedupe:
             )
         )
         await db_session.flush()
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/utils.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/utils.py")
         assert result.proceed is False
         assert "prior_attempt_exists" in result.reason
 
-    async def test_prior_attempt_for_other_file_does_not_block(
-        self, db_session
-    ):
+    async def test_prior_attempt_for_other_file_does_not_block(self, db_session):
         repo = await _make_repo(db_session)
         await _make_file(
             db_session,
@@ -389,14 +362,10 @@ class TestIsFeasiblePriorAttemptDedupe:
             )
         )
         await db_session.flush()
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/utils.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/utils.py")
         assert result.proceed is True
 
-    async def test_prior_attempt_lookup_is_case_insensitive_on_repo_name(
-        self, db_session
-    ):
+    async def test_prior_attempt_lookup_is_case_insensitive_on_repo_name(self, db_session):
         repo = await _make_repo(db_session)
         await _make_file(
             db_session,
@@ -417,9 +386,7 @@ class TestIsFeasiblePriorAttemptDedupe:
             )
         )
         await db_session.flush()
-        result = await is_feasible(
-            db_session, repo.id, "owner/repo", "src/utils.py"
-        )
+        result = await is_feasible(db_session, repo.id, "owner/repo", "src/utils.py")
         assert result.proceed is False
         assert "prior_attempt_exists" in result.reason
 
@@ -560,9 +527,7 @@ class TestHasExistingTestsJavaScript:
 
 
 class TestHasExistingTestsUnknownLanguage:
-    def test_unknown_extension_proceeds_so_stage_b_can_reject(
-        self, tmp_path: Path
-    ):
+    def test_unknown_extension_proceeds_so_stage_b_can_reject(self, tmp_path: Path):
         """A ``.go`` file should not crash Stage A — it returns ``ok``
         and Stage B handles the real rejection."""
         _write(tmp_path / "main.go", "package main\n")
@@ -575,9 +540,7 @@ class TestHasExistingTestsUnknownLanguage:
 # Stage B — TS/JS coverage (Week 10 Day 2)
 # ---------------------------------------------------------------------------
 class TestIsFeasibleTypeScriptOptIn:
-    async def test_typescript_passes_when_recipe_supports_it(
-        self, db_session
-    ):
+    async def test_typescript_passes_when_recipe_supports_it(self, db_session):
         """The recipe doesn't yet generate TS, but the gate must accept
         TS files when the caller widens ``recipe_languages`` (preview
         does this so users can calibrate detection)."""
@@ -631,7 +594,7 @@ class TestIsFeasibleTypeScriptOptIn:
             "src/app.ts",
             language="typescript",
             structure={"functions": [{"name": "main"}]},
-            content='function main() {}\n// has no __name__ guard\n',
+            content="function main() {}\n// has no __name__ guard\n",
         )
         result = await is_feasible(
             db_session,
@@ -642,9 +605,7 @@ class TestIsFeasibleTypeScriptOptIn:
         )
         assert result.proceed is True
 
-    async def test_typescript_no_public_symbols_still_rejected(
-        self, db_session
-    ):
+    async def test_typescript_no_public_symbols_still_rejected(self, db_session):
         repo = await _make_repo(db_session)
         await _make_file(
             db_session,
@@ -665,9 +626,7 @@ class TestIsFeasibleTypeScriptOptIn:
 
 
 class TestIsFeasibleJavaScriptOptIn:
-    async def test_javascript_passes_when_recipe_supports_it(
-        self, db_session
-    ):
+    async def test_javascript_passes_when_recipe_supports_it(self, db_session):
         repo = await _make_repo(db_session)
         await _make_file(
             db_session,
@@ -690,9 +649,7 @@ class TestIsFeasibleJavaScriptOptIn:
 # preview_repo — TS/JS surface (Week 10 Day 2)
 # ---------------------------------------------------------------------------
 class TestPreviewRepoIncludesTSJS:
-    async def test_preview_scans_typescript_files(
-        self, db_session, tmp_path: Path
-    ):
+    async def test_preview_scans_typescript_files(self, db_session, tmp_path: Path):
         repo = await _make_repo(db_session)
         await _make_file(
             db_session,

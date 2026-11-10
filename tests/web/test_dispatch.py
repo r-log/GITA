@@ -3,6 +3,7 @@
 Exercises ``dispatch_event`` routing, the handlers, and the job IDs they
 produce. No DB, no Redis, no HTTP.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -86,9 +87,7 @@ def _push_payload(
 # Routing
 # ---------------------------------------------------------------------------
 class TestDispatchRouting:
-    @pytest.mark.parametrize(
-        "action", ["opened", "synchronize", "reopened", "ready_for_review"]
-    )
+    @pytest.mark.parametrize("action", ["opened", "synchronize", "reopened", "ready_for_review"])
     async def test_pull_request_actions(self, action):
         job = await dispatch_event("pull_request", action, _pr_payload(action=action))
         assert job is not None and job.function_name == "review_pr"

@@ -8,6 +8,7 @@ The detection shells out to ``git diff --name-status`` — same approach as
 ``_read_head_sha`` in ``ingest.py``. The parser is pure (no I/O) so it
 can be tested without a real git repo.
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,7 +35,7 @@ _STATUS_MAP: dict[str, str] = {
     "D": "deleted",
     "R": "renamed",
     "T": "modified",  # type change → treat as modified
-    "C": "added",     # copied → treat as added
+    "C": "added",  # copied → treat as added
 }
 
 
@@ -100,9 +101,7 @@ def parse_name_status_z(output: str) -> list[FileChange]:
     return _records_to_changes(records)
 
 
-def detect_changes(
-    root: Path, old_sha: str
-) -> list[FileChange] | None:
+def detect_changes(root: Path, old_sha: str) -> list[FileChange] | None:
     """Detect changed files between ``old_sha`` and HEAD.
 
     Returns:
@@ -113,8 +112,14 @@ def detect_changes(
     try:
         result = subprocess.run(
             [
-                "git", "-C", str(root),
-                "diff", "--name-status", "-z", old_sha, "HEAD",
+                "git",
+                "-C",
+                str(root),
+                "diff",
+                "--name-status",
+                "-z",
+                old_sha,
+                "HEAD",
             ],
             capture_output=True,
             text=True,

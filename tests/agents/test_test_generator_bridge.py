@@ -4,6 +4,7 @@ The bridge is pure: given an artifact, return the three Decisions that
 the framework will route (create_branch → update_file → open_pr). All
 tests operate on in-memory artifacts; no DB, no network, no LLM.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -58,9 +59,7 @@ class TestBranchName:
         assert name == "gita/tests/foo-bar-abc1234"
 
     def test_collapses_non_alnum_runs(self):
-        name = compute_branch_name(
-            "backend/app/utils/_private.py", "deadbeefcafe"
-        )
+        name = compute_branch_name("backend/app/utils/_private.py", "deadbeefcafe")
         # leading/trailing hyphens stripped, runs collapsed
         assert name == "gita/tests/backend-app-utils-private-deadbee"
 
@@ -70,9 +69,7 @@ class TestBranchName:
         assert a == b
 
     def test_sha_prefix_shortens_to_7(self):
-        name = compute_branch_name(
-            "foo.py", "abcdef0123456789abcdef0123456789"
-        )
+        name = compute_branch_name("foo.py", "abcdef0123456789abcdef0123456789")
         assert name.endswith("-abcdef0")
 
     def test_short_sha_reused_as_is(self):
@@ -100,9 +97,7 @@ class TestDecisionListShape:
         ]
 
     def test_all_share_repo_and_confidence(self):
-        decisions = build_test_generation_decisions(
-            _artifact(confidence=0.93)
-        )
+        decisions = build_test_generation_decisions(_artifact(confidence=0.93))
         for d in decisions:
             assert d.target["repo"] == "owner/repo"
             assert d.confidence == 0.93
@@ -121,8 +116,7 @@ class TestCreateBranchDecision:
         art = _artifact(base_sha="108125a8b7b512b99cf95af3565b7e2351275bb0")
         [create_branch, _, _] = build_test_generation_decisions(art)
         assert create_branch.payload["ref"] == (
-            "refs/heads/gita/tests/"
-            "backend-app-utils-decorators-108125a"
+            "refs/heads/gita/tests/backend-app-utils-decorators-108125a"
         )
         assert create_branch.payload["base_sha"] == art.base_sha
 
@@ -150,9 +144,7 @@ class TestUpdateFileDecision:
             update_file.payload["message"]
             == "gita: add generated tests for backend/app/utils/decorators.py"
         )
-        assert update_file.payload["branch"] == (
-            "gita/tests/backend-app-utils-decorators-108125a"
-        )
+        assert update_file.payload["branch"] == ("gita/tests/backend-app-utils-decorators-108125a")
 
     def test_create_path_has_no_sha(self):
         [_, update_file, _] = build_test_generation_decisions(_artifact())
@@ -168,22 +160,16 @@ class TestUpdateFileDecision:
         [_, update_file, _] = build_test_generation_decisions(art)
         assert any("4 bytes" in ev for ev in update_file.evidence)
         expected_hash_prefix = hashlib.sha256(b"abc\n").hexdigest()[:12]
-        assert any(
-            expected_hash_prefix in ev for ev in update_file.evidence
-        )
+        assert any(expected_hash_prefix in ev for ev in update_file.evidence)
 
 
 class TestOpenPrDecision:
     def test_payload_has_title_body_head_base(self):
         art = _artifact()
         [_, _, open_pr] = build_test_generation_decisions(art)
-        assert open_pr.payload["head"] == (
-            "gita/tests/backend-app-utils-decorators-108125a"
-        )
+        assert open_pr.payload["head"] == ("gita/tests/backend-app-utils-decorators-108125a")
         assert open_pr.payload["base"] == "main"
-        assert open_pr.payload["title"] == default_pr_title(
-            art.target_file
-        )
+        assert open_pr.payload["title"] == default_pr_title(art.target_file)
         assert art.target_file in open_pr.payload["body"]
         assert art.test_file_path in open_pr.payload["body"]
 
@@ -207,9 +193,7 @@ class TestFallbackIssue:
             assert "fallback_issue" not in d.target
 
     def test_present_on_all_three_decisions(self):
-        decisions = build_test_generation_decisions(
-            _artifact(fallback_issue=42)
-        )
+        decisions = build_test_generation_decisions(_artifact(fallback_issue=42))
         for d in decisions:
             assert d.target["fallback_issue"] == 42
 
@@ -228,12 +212,8 @@ class TestDedupeSignaturesAreStable:
             assert compute_signature(da) == compute_signature(db)
 
     def test_different_base_sha_changes_all_three_signatures(self):
-        a = build_test_generation_decisions(
-            _artifact(base_sha="aaaa1111aaaa1111")
-        )
-        b = build_test_generation_decisions(
-            _artifact(base_sha="bbbb2222bbbb2222")
-        )
+        a = build_test_generation_decisions(_artifact(base_sha="aaaa1111aaaa1111"))
+        b = build_test_generation_decisions(_artifact(base_sha="bbbb2222bbbb2222"))
         for da, db in zip(a, b, strict=True):
             assert compute_signature(da) != compute_signature(db), (
                 f"same signature for {da.action} across different SHAs"
@@ -244,12 +224,8 @@ class TestDedupeSignaturesAreStable:
         base SHA, which don't depend on the test body. Only the
         update_file signature should change when the generated test
         content changes."""
-        a = build_test_generation_decisions(
-            _artifact(test_content="def test_a(): ...\n")
-        )
-        b = build_test_generation_decisions(
-            _artifact(test_content="def test_b(): ...\n")
-        )
+        a = build_test_generation_decisions(_artifact(test_content="def test_a(): ...\n"))
+        b = build_test_generation_decisions(_artifact(test_content="def test_b(): ...\n"))
         assert compute_signature(a[0]) == compute_signature(b[0])
         assert compute_signature(a[1]) != compute_signature(b[1])
         assert compute_signature(a[2]) == compute_signature(b[2])
@@ -277,9 +253,7 @@ class TestDowngradeRendersPreview:
         from gita.agents.decisions import _render_downgrade_body
 
         huge = "\n".join(f"line_{i}" for i in range(200))
-        [_, update_file, _] = build_test_generation_decisions(
-            _artifact(test_content=huge)
-        )
+        [_, update_file, _] = build_test_generation_decisions(_artifact(test_content=huge))
         body = _render_downgrade_body(update_file, reason="too big")
         assert "more lines)" in body
 

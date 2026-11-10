@@ -4,6 +4,7 @@ These don't touch the onboarding agent — they build a fake ``OnboardingResult`
 and assert that ``check_output`` correctly catches / passes each rule.
 Covers the checklist's own failure modes so Day 6 doesn't have to.
 """
+
 from __future__ import annotations
 
 from gita.agents.types import Finding, Milestone, OnboardingResult
@@ -128,9 +129,7 @@ class TestFindingsRules:
 class TestMilestoneRules:
     def test_too_many_milestones_flagged(self):
         result = _good_result()
-        result.milestones = [
-            Milestone(title=f"Milestone {i}", summary="...") for i in range(5)
-        ]
+        result.milestones = [Milestone(title=f"Milestone {i}", summary="...") for i in range(5)]
         checklist = _permissive_checklist()
         checklist.max_milestones = 3
         violations = check_output(result, checklist)

@@ -12,6 +12,7 @@ to point somewhere else if your layout differs.
 To update the snapshot intentionally after you know a change is legitimate:
 adjust the constants at the top of this file.
 """
+
 from __future__ import annotations
 
 import os
@@ -23,9 +24,7 @@ from gita.indexer.ingest import index_repository
 from gita.views.neighborhood import neighborhood_view
 from gita.views.symbol import symbol_view
 
-_DEFAULT_AMASS_PATH = Path(
-    "C:/Users/Roko/Documents/PYTHON/AMAS/electrician-log-mvp"
-)
+_DEFAULT_AMASS_PATH = Path("C:/Users/Roko/Documents/PYTHON/AMAS/electrician-log-mvp")
 AMASS_PATH = Path(os.environ.get("GITA_AMASS_PATH", str(_DEFAULT_AMASS_PATH)))
 
 pytestmark = pytest.mark.skipif(
@@ -70,15 +69,13 @@ class TestAmassIngest:
         await index_repository(db_session, "amass", AMASS_PATH)
         await db_session.commit()
 
-        repo = (
-            await db_session.execute(select(Repo).where(Repo.name == "amass"))
-        ).scalar_one()
+        repo = (await db_session.execute(select(Repo).where(Repo.name == "amass"))).scalar_one()
 
         rows = (
-            await db_session.execute(
-                select(CodeIndex).where(CodeIndex.repo_id == repo.id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(CodeIndex).where(CodeIndex.repo_id == repo.id)))
+            .scalars()
+            .all()
+        )
 
         by_lang: dict[str, int] = {}
         for row in rows:
@@ -96,15 +93,13 @@ class TestAmassIngest:
         await index_repository(db_session, "amass", AMASS_PATH)
         await db_session.commit()
 
-        repo = (
-            await db_session.execute(select(Repo).where(Repo.name == "amass"))
-        ).scalar_one()
+        repo = (await db_session.execute(select(Repo).where(Repo.name == "amass"))).scalar_one()
 
         rows = (
-            await db_session.execute(
-                select(CodeIndex).where(CodeIndex.repo_id == repo.id)
-            )
-        ).scalars().all()
+            (await db_session.execute(select(CodeIndex).where(CodeIndex.repo_id == repo.id)))
+            .scalars()
+            .all()
+        )
 
         for row in rows:
             assert row.structure is not None

@@ -3,6 +3,7 @@
 One response schema — the LLM produces the full test file content plus
 a self-report of what it covered and its confidence.
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
@@ -29,8 +30,7 @@ class GeneratedTestResponse(BaseModel):
     notes: str = Field(
         default="",
         description=(
-            "Caveats, scenarios skipped, or context a reviewer would "
-            "want to know. Kept short."
+            "Caveats, scenarios skipped, or context a reviewer would want to know. Kept short."
         ),
     )
     confidence: float = Field(

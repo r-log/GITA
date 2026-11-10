@@ -9,6 +9,7 @@ Files with no incoming edges still appear in the result (padded with
 ``in_degree=0``) so the agent always gets N files to consider. Tie-break by
 ``file_path`` alphabetically for determinism.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -72,9 +73,7 @@ async def load_bearing_view(
 
     stmt = (
         select(CodeIndex, in_degree_col)
-        .outerjoin(
-            in_degree_subq, in_degree_subq.c.dst == CodeIndex.file_path
-        )
+        .outerjoin(in_degree_subq, in_degree_subq.c.dst == CodeIndex.file_path)
         .where(CodeIndex.repo_id == repo.id)
         .order_by(in_degree_col.desc(), CodeIndex.file_path.asc())
         .limit(limit)
@@ -95,9 +94,7 @@ async def load_bearing_view(
             )
         )
 
-    total_stmt = (
-        select(func.count(CodeIndex.id)).where(CodeIndex.repo_id == repo.id)
-    )
+    total_stmt = select(func.count(CodeIndex.id)).where(CodeIndex.repo_id == repo.id)
     total = int((await session.execute(total_stmt)).scalar_one())
 
     return LoadBearingResult(

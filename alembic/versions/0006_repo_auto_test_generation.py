@@ -8,6 +8,7 @@ Per-repo opt-in for the Week 9 post-reindex auto-test-generation trigger.
 Defaults to FALSE so existing repos get no behavior change until the user
 explicitly opts in via ``gita index --auto-test-gen``.
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa

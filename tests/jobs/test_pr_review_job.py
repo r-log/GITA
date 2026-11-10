@@ -5,6 +5,7 @@ review for its commit, deferred a few seconds. When a job runs, it checks
 the PR's live head; if a newer commit has landed, the job for that commit
 is already queued, so this one skips. Same for PRs closed in the meantime.
 """
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager

@@ -5,6 +5,7 @@ OpenRouter. The agent is wired against the real ``indexed_synth_py``
 fixture — ingested Postgres rows, real views, real prompt loading —
 everything except the LLM call itself.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -111,9 +112,7 @@ class TestOnboardingHappyPath:
             "MilestonesResponse",
         ]
 
-    async def test_project_summary_comes_from_pick_call(
-        self, indexed_synth_py
-    ):
+    async def test_project_summary_comes_from_pick_call(self, indexed_synth_py):
         session, repo = indexed_synth_py
         pick = _pick_response(summary="Tiny model + helpers demo package.")
         fake = _three_call_fake(pick=pick)
@@ -146,9 +145,7 @@ class TestPickValidation:
         session, repo = indexed_synth_py
         pick = _pick_response(picks=[0, 1, 2, 3])  # synth_py has exactly 4 files
         fake = _three_call_fake(pick=pick)
-        result = await run_onboarding(
-            session, repo, llm=fake, deep_read_limit=2
-        )
+        result = await run_onboarding(session, repo, llm=fake, deep_read_limit=2)
         # deep_read_limit=2 caps the picked files — second LLM call sees 2 bodies
         assert isinstance(result, OnboardingResult)
 
@@ -172,9 +169,7 @@ class TestPickValidation:
 # Empty / degenerate paths
 # ---------------------------------------------------------------------------
 class TestEmptyPaths:
-    async def test_zero_findings_means_zero_milestones_and_no_group_call(
-        self, indexed_synth_py
-    ):
+    async def test_zero_findings_means_zero_milestones_and_no_group_call(self, indexed_synth_py):
         session, repo = indexed_synth_py
         fake = FakeLLMClient(
             responses=[
@@ -189,9 +184,7 @@ class TestEmptyPaths:
         # Only two calls — we skipped the grouping call
         assert len(fake.calls) == 2
 
-    async def test_findings_without_citations_are_dropped(
-        self, indexed_synth_py
-    ):
+    async def test_findings_without_citations_are_dropped(self, indexed_synth_py):
         session, repo = indexed_synth_py
         bad_finding = LLMFinding(
             file="",
@@ -209,9 +202,7 @@ class TestEmptyPaths:
         assert result.findings == []
         assert result.milestones == []
 
-    async def test_milestone_with_only_invalid_indices_dropped(
-        self, indexed_synth_py
-    ):
+    async def test_milestone_with_only_invalid_indices_dropped(self, indexed_synth_py):
         session, repo = indexed_synth_py
         # One real finding, but the milestone references a nonexistent index
         milestones = MilestonesResponse(
@@ -243,9 +234,7 @@ class TestErrors:
 # Shadow mode contract: agent never touches GitHub
 # ---------------------------------------------------------------------------
 class TestNoGithubIO:
-    async def test_agent_does_not_import_github_client(
-        self, indexed_synth_py
-    ):
+    async def test_agent_does_not_import_github_client(self, indexed_synth_py):
         """The onboarding module must not depend on the GitHub client.
         Writes are a Day 7 concern, orchestrated outside the agent."""
         import sys

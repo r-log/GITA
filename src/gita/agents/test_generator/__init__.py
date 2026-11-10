@@ -10,6 +10,7 @@ Day 4 ships the recipe that produces the test content via LLM +
 AST + subprocess verification.
 Day 5 wires the CLI and exposes the public surface below.
 """
+
 from gita.agents.test_generator.bridge import (
     TestGenerationArtifact,
     build_test_generation_decisions,

@@ -8,6 +8,7 @@ returned summary + captured enqueue calls.
 The helper is pure (no DB, no GitHub) — exercising it as a unit lets
 us nail every skip path without spinning up the full test-gen pipeline.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -33,13 +34,8 @@ class FakeRedisPool:
         _job_id: str,
         **kwargs,
     ):
-        self.calls.append(
-            {"function": function_name, "job_id": _job_id, "kwargs": kwargs}
-        )
-        if (
-            self.dedupe_after is not None
-            and len(self.calls) > self.dedupe_after
-        ):
+        self.calls.append({"function": function_name, "job_id": _job_id, "kwargs": kwargs})
+        if self.dedupe_after is not None and len(self.calls) > self.dedupe_after:
             return None
         return object()  # truthy marker — emulates an arq Job
 

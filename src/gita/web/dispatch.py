@@ -20,6 +20,7 @@ same ID is queued or running *or its result is still stored*
 * onboarding — ``onboard:{repo}:{issue}``, only when the configured label
   is applied by someone trusted (see ``handle_onboarding_label``).
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,19 +38,17 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 # ``author_association`` values that mean "has a relationship with the
 # repo", as opposed to CONTRIBUTOR / FIRST_TIMER / NONE.
-TRUSTED_AUTHOR_ASSOCIATIONS: frozenset[str] = frozenset(
-    {"OWNER", "MEMBER", "COLLABORATOR"}
-)
+TRUSTED_AUTHOR_ASSOCIATIONS: frozenset[str] = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
 @dataclass
 class JobRequest:
     """Describes a job to enqueue in ARQ."""
 
-    function_name: str       # ARQ function name, e.g. "review_pr"
-    job_id: str              # deterministic; see module docstring
+    function_name: str  # ARQ function name, e.g. "review_pr"
+    job_id: str  # deterministic; see module docstring
     repo_full_name: str
-    kwargs: dict[str, Any]   # passed to the ARQ function
+    kwargs: dict[str, Any]  # passed to the ARQ function
     defer_seconds: float | None = None
 
 
@@ -114,8 +113,7 @@ async def handle_onboarding_label(payload: dict[str, Any]) -> JobRequest | None:
     association = issue.get("author_association", "NONE")
     if sender_login == author_login and association not in TRUSTED_AUTHOR_ASSOCIATIONS:
         logger.info(
-            "onboarding_ignored_untrusted_self_label repo=%s issue=%s "
-            "author=%s association=%s",
+            "onboarding_ignored_untrusted_self_label repo=%s issue=%s author=%s association=%s",
             repo_full_name,
             issue_number,
             author_login,
@@ -157,9 +155,7 @@ async def handle_push_reindex(payload: dict[str, Any]) -> JobRequest | None:
         )
         return None
     if not _SHA_RE.match(after_sha):
-        logger.warning(
-            "push_ignored_bad_sha repo=%s after=%r", repo_full_name, after_sha
-        )
+        logger.warning("push_ignored_bad_sha repo=%s after=%r", repo_full_name, after_sha)
         return None
 
     return JobRequest(

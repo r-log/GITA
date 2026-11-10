@@ -3,6 +3,7 @@
 These use real Postgres transactions: the guarantee depends on the
 unique index on agent_actions, not on application-level checks.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -126,7 +127,11 @@ class TestShadowThenLive:
         client = _SlowClient()
         client.release.set()
         live = await execute_decision(
-            _review(), mode=WriteMode.COMMENT, client=client, session=db_session, agent="pr_reviewer"
+            _review(),
+            mode=WriteMode.COMMENT,
+            client=client,
+            session=db_session,
+            agent="pr_reviewer",
         )
         assert live.outcome == Outcome.EXECUTED
         assert len(client.calls) == 1

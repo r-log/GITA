@@ -22,6 +22,7 @@ The test is gated behind ``GITA_RUN_LLM_TESTS=1`` because
 It uses its own ``db_session`` and indexes the fixture inline so it's
 self-contained — running it alone does not require other golden tests.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -45,9 +46,7 @@ from gita.agents.onboarding import (  # noqa: E402
 )
 from gita.indexer.ingest import index_repository  # noqa: E402
 
-FIXTURE = (
-    Path(__file__).parent.parent / "fixtures" / "seeded_buggy"
-).resolve()
+FIXTURE = (Path(__file__).parent.parent / "fixtures" / "seeded_buggy").resolve()
 
 TARGET_REPO = "r-log/throwaway-dev"
 FALLBACK_ISSUE = 9999
@@ -75,9 +74,7 @@ class _RecordingClient:
             return {
                 "kind": "issue",
                 "id": issue_num,
-                "html_url": (
-                    f"https://github.com/{TARGET_REPO}/issues/{issue_num}"
-                ),
+                "html_url": (f"https://github.com/{TARGET_REPO}/issues/{issue_num}"),
                 "title": title,
             }
         if decision.action == "comment":
@@ -161,8 +158,7 @@ async def test_onboarding_issue_flow_across_write_modes(
             agent="onboarding",
         )
         assert dedupe_result.outcome == Outcome.DEDUPED, (
-            f"expected DEDUPED on second shadow pass, got "
-            f"{dedupe_result.outcome.value}"
+            f"expected DEDUPED on second shadow pass, got {dedupe_result.outcome.value}"
         )
     assert recording_client.calls == []
     await db_session.commit()

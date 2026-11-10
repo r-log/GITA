@@ -15,6 +15,7 @@ Day 2 of Week 3 will bolt these onto ``execute_decision``; Day 1 just proves
 each piece in isolation so the integration doesn't have to debug two bugs at
 once.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -61,9 +62,7 @@ def _decision(
 # ---------------------------------------------------------------------------
 class TestSignatureIsHexString:
     def test_returns_64_char_hex(self):
-        sig = compute_signature(
-            _decision("comment", payload={"body": "hello"})
-        )
+        sig = compute_signature(_decision("comment", payload={"body": "hello"}))
         assert len(sig) == 64
         int(sig, 16)  # must parse as hex
 
@@ -498,20 +497,14 @@ class TestUnknownAction:
 # ---------------------------------------------------------------------------
 class TestCheckSignatureEmpty:
     async def test_returns_none_on_empty_db(self, db_session: AsyncSession):
-        d = _decision(
-            "create_issue", issue=None, payload={"title": "Fix bug"}
-        )
+        d = _decision("create_issue", issue=None, payload={"title": "Fix bug"})
         result = await check_signature(db_session, d, agent="onboarding")
         assert result is None
 
 
 class TestRecordAndCheck:
-    async def test_record_then_check_returns_row(
-        self, db_session: AsyncSession
-    ):
-        d = _decision(
-            "create_issue", issue=None, payload={"title": "Fix bug"}
-        )
+    async def test_record_then_check_returns_row(self, db_session: AsyncSession):
+        d = _decision("create_issue", issue=None, payload={"title": "Fix bug"})
         recorded = await record_action(
             db_session,
             d,
@@ -534,29 +527,19 @@ class TestRecordAndCheck:
         assert found is not None
         assert found.id == recorded.id
 
-    async def test_check_is_scoped_by_agent(
-        self, db_session: AsyncSession
-    ):
+    async def test_check_is_scoped_by_agent(self, db_session: AsyncSession):
         """A second agent running the same signature must not dedupe."""
-        d = _decision(
-            "create_issue", issue=None, payload={"title": "Fix bug"}
-        )
-        await record_action(
-            db_session, d, agent="onboarding", outcome="executed"
-        )
+        d = _decision("create_issue", issue=None, payload={"title": "Fix bug"})
+        await record_action(db_session, d, agent="onboarding", outcome="executed")
         await db_session.commit()
 
         found = await check_signature(db_session, d, agent="onboarding")
         assert found is not None
 
-        not_found = await check_signature(
-            db_session, d, agent="pr_reviewer"
-        )
+        not_found = await check_signature(db_session, d, agent="pr_reviewer")
         assert not_found is None
 
-    async def test_check_normalizes_repo_case(
-        self, db_session: AsyncSession
-    ):
+    async def test_check_normalizes_repo_case(self, db_session: AsyncSession):
         """Recording with 'Owner/Repo' and checking 'owner/repo' must match."""
         record_d = _decision(
             "create_issue",
@@ -570,17 +553,13 @@ class TestRecordAndCheck:
             repo="owner/repo",
             payload={"title": "Fix bug"},
         )
-        await record_action(
-            db_session, record_d, agent="onboarding", outcome="executed"
-        )
+        await record_action(db_session, record_d, agent="onboarding", outcome="executed")
         await db_session.commit()
 
         found = await check_signature(db_session, check_d, agent="onboarding")
         assert found is not None
 
-    async def test_different_repo_not_deduped(
-        self, db_session: AsyncSession
-    ):
+    async def test_different_repo_not_deduped(self, db_session: AsyncSession):
         a = _decision(
             "create_issue",
             issue=None,
@@ -593,9 +572,7 @@ class TestRecordAndCheck:
             repo="other/repo",
             payload={"title": "Fix bug"},
         )
-        await record_action(
-            db_session, a, agent="onboarding", outcome="executed"
-        )
+        await record_action(db_session, a, agent="onboarding", outcome="executed")
         await db_session.commit()
 
         found = await check_signature(db_session, b, agent="onboarding")
@@ -603,23 +580,15 @@ class TestRecordAndCheck:
 
 
 class TestUniqueConstraint:
-    async def test_second_record_raises_integrity_error(
-        self, db_session: AsyncSession
-    ):
+    async def test_second_record_raises_integrity_error(self, db_session: AsyncSession):
         """The same signature can only be inserted once. Day 2 uses this as
         the concurrent-race safety net."""
-        d = _decision(
-            "create_issue", issue=None, payload={"title": "Fix bug"}
-        )
-        await record_action(
-            db_session, d, agent="onboarding", outcome="executed"
-        )
+        d = _decision("create_issue", issue=None, payload={"title": "Fix bug"})
+        await record_action(db_session, d, agent="onboarding", outcome="executed")
         await db_session.commit()
 
         with pytest.raises(IntegrityError):
-            await record_action(
-                db_session, d, agent="onboarding", outcome="executed"
-            )
+            await record_action(db_session, d, agent="onboarding", outcome="executed")
             await db_session.commit()
 
         # Clean up the broken transaction so the test fixture's TRUNCATE works.
@@ -627,24 +596,18 @@ class TestUniqueConstraint:
 
 
 class TestRecordPersistsEvidence:
-    async def test_evidence_roundtrips_as_list(
-        self, db_session: AsyncSession
-    ):
+    async def test_evidence_roundtrips_as_list(self, db_session: AsyncSession):
         d = _decision(
             "create_issue",
             issue=None,
             payload={"title": "x"},
             evidence=["e1", "e2", "e3"],
         )
-        recorded = await record_action(
-            db_session, d, agent="onboarding", outcome="executed"
-        )
+        recorded = await record_action(db_session, d, agent="onboarding", outcome="executed")
         await db_session.commit()
 
         # Reload from DB to confirm the JSONB column deserializes as a list.
         fresh = (
-            await db_session.execute(
-                select(AgentAction).where(AgentAction.id == recorded.id)
-            )
+            await db_session.execute(select(AgentAction).where(AgentAction.id == recorded.id))
         ).scalar_one()
         assert fresh.evidence == ["e1", "e2", "e3"]

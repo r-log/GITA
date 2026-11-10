@@ -1,4 +1,5 @@
 """fetch_head_contents: which changed files get head-side context."""
+
 from __future__ import annotations
 
 import httpx
@@ -27,7 +28,10 @@ class _FakeGithub:
 
 def _fc(path: str, content: str, *, encoding: str = "base64", size: int | None = None):
     return FileContents(
-        path=path, content=content, sha="s", encoding=encoding,
+        path=path,
+        content=content,
+        sha="s",
+        encoding=encoding,
         size=len(content) if size is None else size,
     )
 

@@ -4,6 +4,7 @@ AMASS isn't a lab fixture — it's a real project that moves. So this
 checklist is deliberately *floor*-based: the agent must surface SOMETHING
 concrete, not boilerplate, but we don't pin specific findings.
 """
+
 from tests.golden_agents.checklist import Checklist
 
 CHECKLIST = Checklist(

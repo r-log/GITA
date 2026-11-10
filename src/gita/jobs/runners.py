@@ -11,6 +11,7 @@ the same head SHA. If found, the review is skipped entirely. This
 prevents redundant re-reviews when ``pull_request.synchronize`` events
 arrive after the first review already covered that SHA.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -54,6 +55,7 @@ from gita.llm.client import OpenRouterClient
 from gita.views._common import RepoNotFoundError, resolve_repo
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # "Already reviewed this commit?" (before any LLM call)
@@ -114,9 +116,7 @@ async def fetch_head_contents(
             try:
                 contents = await gh.get_contents(owner, repo, hunk.file_path, ref=head_sha)
             except (httpx.HTTPError, ValueError, UnicodeDecodeError) as exc:
-                logger.info(
-                    "pr_head_fetch_skipped file=%s reason=%s", hunk.file_path, exc
-                )
+                logger.info("pr_head_fetch_skipped file=%s reason=%s", hunk.file_path, exc)
                 return None
         if contents.encoding != "base64" or contents.size > _MAX_HEAD_FILE_BYTES:
             return None  # GitHub omits content above 1 MB ("encoding": "none")
@@ -155,9 +155,7 @@ async def run_pr_review_job(
             repo_obj = await resolve_repo(session, repo_full_name)
             repo_name = repo_obj.name  # canonical short name
         except RepoNotFoundError:
-            logger.warning(
-                "pr_review_no_index repo=%s — skipping", repo_full_name
-            )
+            logger.warning("pr_review_no_index repo=%s — skipping", repo_full_name)
             return {
                 "status": "error",
                 "reason": "repo_not_indexed",
@@ -169,9 +167,7 @@ async def run_pr_review_job(
     if not settings.openrouter_api_key:
         raise RuntimeError("OPENROUTER_API_KEY not configured")
     if not settings.github_app_id or not settings.github_app_private_key_path:
-        raise RuntimeError(
-            "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH not configured"
-        )
+        raise RuntimeError("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH not configured")
 
     auth = GithubAppAuth.from_files(
         app_id=settings.github_app_id,
@@ -247,14 +243,13 @@ async def run_pr_review_job(
     # --- Run the PR reviewer ---
     diff_hunks = parse_pr_files(pr_files_json)
     async with GithubClient(auth=auth) as gh:
-        head_contents = await fetch_head_contents(
-            gh, owner, repo, diff_hunks, actual_sha
-        )
+        head_contents = await fetch_head_contents(gh, owner, repo, diff_hunks, actual_sha)
     model = settings.ai_default_model
 
-    async with OpenRouterClient(
-        api_key=settings.openrouter_api_key, default_model=model
-    ) as llm, SessionLocal() as session:
+    async with (
+        OpenRouterClient(api_key=settings.openrouter_api_key, default_model=model) as llm,
+        SessionLocal() as session,
+    ):
         try:
             result = await run_pr_review(
                 session,
@@ -342,9 +337,7 @@ async def run_onboarding_job(
             repo_obj = await resolve_repo(session, repo_full_name)
             repo_name = repo_obj.name  # canonical short name
         except RepoNotFoundError:
-            logger.warning(
-                "onboarding_no_index repo=%s — skipping", repo_full_name
-            )
+            logger.warning("onboarding_no_index repo=%s — skipping", repo_full_name)
             return {
                 "status": "error",
                 "reason": "repo_not_indexed",
@@ -357,9 +350,10 @@ async def run_onboarding_job(
 
     model = settings.ai_default_model
 
-    async with OpenRouterClient(
-        api_key=settings.openrouter_api_key, default_model=model
-    ) as llm, SessionLocal() as session:
+    async with (
+        OpenRouterClient(api_key=settings.openrouter_api_key, default_model=model) as llm,
+        SessionLocal() as session,
+    ):
         try:
             result = await run_onboarding(session, repo_name, llm=llm)
         except OnboardingError as exc:
@@ -382,11 +376,7 @@ async def run_onboarding_job(
         issue_number=issue_number,
     )
 
-    if (
-        mode != WriteMode.SHADOW
-        and settings.github_app_id
-        and settings.github_app_private_key_path
-    ):
+    if mode != WriteMode.SHADOW and settings.github_app_id and settings.github_app_private_key_path:
         auth = GithubAppAuth.from_files(
             app_id=settings.github_app_id,
             private_key_path=settings.github_app_private_key_path,
@@ -508,9 +498,7 @@ async def run_reindex_job(
             repo_auto_test_gen = bool(repo.auto_test_generation)
             repo_default_branch = repo.default_branch or "main"
         except RepoNotFoundError:
-            logger.warning(
-                "reindex_no_index repo=%s — skipping", repo_full_name
-            )
+            logger.warning("reindex_no_index repo=%s — skipping", repo_full_name)
             return {
                 "status": "error",
                 "reason": "repo_not_indexed",
@@ -519,9 +507,7 @@ async def run_reindex_job(
             }
 
     if not root_path.is_dir():
-        logger.error(
-            "reindex_root_missing repo=%s path=%s", repo_full_name, root_path
-        )
+        logger.error("reindex_root_missing repo=%s path=%s", repo_full_name, root_path)
         return {
             "status": "error",
             "reason": "root_path_missing",
@@ -532,9 +518,7 @@ async def run_reindex_job(
     # --- Git sync ---
     ok, err = _git_sync(root_path, after_sha)
     if not ok:
-        logger.error(
-            "reindex_git_sync_failed repo=%s error=%s", repo_full_name, err
-        )
+        logger.error("reindex_git_sync_failed repo=%s error=%s", repo_full_name, err)
         return {
             "status": "error",
             "reason": "git_sync_failed",
@@ -675,9 +659,7 @@ async def _maybe_enqueue_test_gen_jobs(
     base_sha = ingest_result.head_sha or "unknown"
     async with SessionLocal() as session:
         for path in after_stage_a:
-            result_b = await is_feasible(
-                session, repo_id, repo_full_name, path
-            )
+            result_b = await is_feasible(session, repo_id, repo_full_name, path)
             if result_b.proceed:
                 after_stage_b.append(path)
             else:
@@ -724,9 +706,7 @@ async def _maybe_enqueue_test_gen_jobs(
         if arq_job is None:
             # ARQ-level dedupe: a job with this _job_id is already
             # queued or running — perfectly fine, count as deduped.
-            logger.info(
-                "test_gen_enqueue_deduped job_id=%s", job_id
-            )
+            logger.info("test_gen_enqueue_deduped job_id=%s", job_id)
             enqueued.append({"target_file": path, "job_id": job_id, "deduped": True})
             continue
         logger.info(
@@ -891,13 +871,9 @@ async def run_test_generation_job(
         raise RuntimeError("OPENROUTER_API_KEY not configured")
 
     need_github = target_repo is not None
-    if need_github and (
-        not settings.github_app_id
-        or not settings.github_app_private_key_path
-    ):
+    if need_github and (not settings.github_app_id or not settings.github_app_private_key_path):
         raise RuntimeError(
-            "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be set "
-            "for the push flow"
+            "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH must be set for the push flow"
         )
 
     mode = WriteMode(settings.write_mode)
@@ -908,9 +884,7 @@ async def run_test_generation_job(
         try:
             repo = await resolve_repo(session, repo_full_name)
         except RepoNotFoundError:
-            logger.warning(
-                "test_gen_no_index repo=%s — skipping", repo_full_name
-            )
+            logger.warning("test_gen_no_index repo=%s — skipping", repo_full_name)
             return {
                 "status": "error",
                 "reason": "repo_not_indexed",
@@ -935,10 +909,13 @@ async def run_test_generation_job(
 
     # --- Recipe (LLM + static checks + sandboxed test run) ---
     try:
-        async with OpenRouterClient(
-            api_key=settings.openrouter_api_key,
-            default_model=resolved_model,
-        ) as llm, SessionLocal() as session:
+        async with (
+            OpenRouterClient(
+                api_key=settings.openrouter_api_key,
+                default_model=resolved_model,
+            ) as llm,
+            SessionLocal() as session,
+        ):
             try:
                 recipe_result = await run_test_generation(
                     session,
@@ -995,8 +972,7 @@ async def run_test_generation_job(
     if target_repo is None:
         # Local-only run.
         logger.info(
-            "test_gen_local_done repo=%s file=%s verified=%s "
-            "blended_conf=%.2f",
+            "test_gen_local_done repo=%s file=%s verified=%s blended_conf=%.2f",
             repo_full_name,
             target_file,
             recipe_result.verified,
@@ -1016,22 +992,17 @@ async def run_test_generation_job(
     async with GithubClient(auth=auth) as gh:
         if resolved_base_sha is None:
             try:
-                ref_info = await gh.get_ref(
-                    owner, repo_short, f"heads/{resolved_base_branch}"
-                )
+                ref_info = await gh.get_ref(owner, repo_short, f"heads/{resolved_base_branch}")
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    "test_gen_base_sha_lookup_failed repo=%s "
-                    "base_branch=%s error=%s",
+                    "test_gen_base_sha_lookup_failed repo=%s base_branch=%s error=%s",
                     target_repo,
                     resolved_base_branch,
                     exc,
                 )
                 base_summary.update(
                     status="error",
-                    reason=(
-                        f"base_sha_lookup_failed: {exc}"
-                    ),
+                    reason=(f"base_sha_lookup_failed: {exc}"),
                     base_branch=resolved_base_branch,
                 )
                 return base_summary
@@ -1048,18 +1019,14 @@ async def run_test_generation_job(
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 logger.error(
-                    "test_gen_get_contents_failed repo=%s path=%s "
-                    "status=%s",
+                    "test_gen_get_contents_failed repo=%s path=%s status=%s",
                     target_repo,
                     recipe_result.test_file_path,
                     exc.response.status_code,
                 )
                 base_summary.update(
                     status="error",
-                    reason=(
-                        f"get_contents_failed: HTTP "
-                        f"{exc.response.status_code}"
-                    ),
+                    reason=(f"get_contents_failed: HTTP {exc.response.status_code}"),
                     base_branch=resolved_base_branch,
                     base_sha=resolved_base_sha,
                 )
@@ -1079,9 +1046,7 @@ async def run_test_generation_job(
     )
     decisions = build_test_generation_decisions(artifact)
 
-    decision_summaries = await _execute_decision_chain(
-        decisions, mode=mode, auth=auth
-    )
+    decision_summaries = await _execute_decision_chain(decisions, mode=mode, auth=auth)
 
     auto_review_summary: dict[str, Any] = {}
     try:
@@ -1108,8 +1073,7 @@ async def run_test_generation_job(
 
     final_outcomes = [d["outcome"] for d in decision_summaries]
     logger.info(
-        "test_gen_push_done repo=%s file=%s verified=%s "
-        "blended_conf=%.2f outcomes=%s",
+        "test_gen_push_done repo=%s file=%s verified=%s blended_conf=%.2f outcomes=%s",
         target_repo,
         target_file,
         recipe_result.verified,

@@ -7,6 +7,7 @@ Verifies that:
 
 Uses the test DB and patches ``SessionLocal`` in the runners module.
 """
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -19,9 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.indexer.ingest import index_repository
 
-SYNTH_REPO = (
-    Path(__file__).parent.parent / "fixtures" / "synthetic_py"
-).resolve()
+SYNTH_REPO = (Path(__file__).parent.parent / "fixtures" / "synthetic_py").resolve()
 
 
 @pytest_asyncio.fixture
@@ -52,11 +51,8 @@ async def indexed_repo(db_session: AsyncSession):
 # PR review runner: early resolution
 # ---------------------------------------------------------------------------
 class TestPrReviewResolution:
-
     @pytest.mark.usefixtures("_patch_runner_session")
-    async def test_not_indexed_returns_error_without_api_calls(
-        self, db_session: AsyncSession
-    ):
+    async def test_not_indexed_returns_error_without_api_calls(self, db_session: AsyncSession):
         """If the repo is not indexed, return error without GitHub/LLM calls."""
         from gita.jobs.runners import run_pr_review_job
 
@@ -75,9 +71,7 @@ class TestPrReviewResolution:
         # Patch credentials so we get past validation
         monkeypatch.setattr("gita.jobs.runners.settings.openrouter_api_key", "fake")
         monkeypatch.setattr("gita.jobs.runners.settings.github_app_id", "123")
-        monkeypatch.setattr(
-            "gita.jobs.runners.settings.github_app_private_key_path", "/fake"
-        )
+        monkeypatch.setattr("gita.jobs.runners.settings.github_app_private_key_path", "/fake")
 
         # Mock GithubAppAuth and GithubClient
         mock_auth = AsyncMock()
@@ -96,7 +90,9 @@ class TestPrReviewResolution:
                 with patch("gita.jobs.runners.OpenRouterClient", return_value=mock_llm):
                     captured = {}
 
-                    async def fake_review(session, repo_name, pr_info, diff_hunks, *, llm, **_kwargs):
+                    async def fake_review(
+                        session, repo_name, pr_info, diff_hunks, *, llm, **_kwargs
+                    ):
                         captured["repo_name"] = repo_name
                         return PRReviewResult(
                             repo_name=repo_name,
@@ -119,7 +115,6 @@ class TestPrReviewResolution:
 # Onboarding runner: early resolution
 # ---------------------------------------------------------------------------
 class TestOnboardingResolution:
-
     @pytest.mark.usefixtures("_patch_runner_session")
     async def test_not_indexed_returns_error(self, db_session: AsyncSession):
         from gita.jobs.runners import run_onboarding_job
@@ -146,7 +141,6 @@ class TestOnboardingResolution:
 # Reindex runner: early resolution
 # ---------------------------------------------------------------------------
 class TestReindexResolution:
-
     @pytest.mark.usefixtures("_patch_runner_session")
     async def test_not_indexed_returns_error(self, db_session: AsyncSession):
         from gita.jobs.runners import run_reindex_job
@@ -156,9 +150,7 @@ class TestReindexResolution:
         assert result["reason"] == "repo_not_indexed"
 
     @pytest.mark.usefixtures("_patch_runner_session")
-    async def test_resolves_by_github_full_name(
-        self, db_session: AsyncSession, indexed_repo
-    ):
+    async def test_resolves_by_github_full_name(self, db_session: AsyncSession, indexed_repo):
         from gita.jobs.runners import run_reindex_job
 
         with patch("gita.jobs.runners._git_sync", return_value=(True, "")):

@@ -8,6 +8,7 @@ Uses the ``FakeEmbeddingClient`` so no API calls are made. Verifies:
   fallback contract)
 - empty content files are skipped
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -35,29 +36,29 @@ def py_repo(tmp_path: Path) -> Path:
     src = repo / "src"
     src.mkdir()
     (src / "__init__.py").write_text("")  # empty file
-    (src / "core.py").write_text(
-        "def main():\n    return 1\n"
-    )
-    (src / "utils.py").write_text(
-        "def helper():\n    return 2\n"
-    )
+    (src / "core.py").write_text("def main():\n    return 1\n")
+    (src / "utils.py").write_text("def helper():\n    return 2\n")
 
     subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
     subprocess.run(
         ["git", "-C", str(repo), "config", "user.email", "t@t.com"],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     subprocess.run(
         ["git", "-C", str(repo), "config", "user.name", "Test"],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     subprocess.run(
         ["git", "-C", str(repo), "add", "."],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-m", "initial"],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     return repo
 
@@ -65,11 +66,13 @@ def py_repo(tmp_path: Path) -> Path:
 def _commit(repo: Path, msg: str = "update") -> None:
     subprocess.run(
         ["git", "-C", str(repo), "add", "-A"],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     subprocess.run(
         ["git", "-C", str(repo), "commit", "-m", msg],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
 
 
@@ -80,9 +83,7 @@ async def _rows(session: AsyncSession) -> list[CodeIndex]:
 async def _non_null_embedding_count(session: AsyncSession) -> int:
     return (
         await session.execute(
-            select(func.count(CodeIndex.id)).where(
-                CodeIndex.embedding.is_not(None)
-            )
+            select(func.count(CodeIndex.id)).where(CodeIndex.embedding.is_not(None))
         )
     ).scalar_one()
 
@@ -92,9 +93,7 @@ class TestFullIndexEmbedding:
         self, db_session: AsyncSession, py_repo: Path
     ):
         client = FakeEmbeddingClient()
-        result = await index_repository(
-            db_session, "test", py_repo, embedding_client=client
-        )
+        result = await index_repository(db_session, "test", py_repo, embedding_client=client)
         await db_session.commit()
 
         # core.py, utils.py → two non-empty files embedded.
@@ -102,9 +101,7 @@ class TestFullIndexEmbedding:
         assert result.files_embedded == 2
         assert await _non_null_embedding_count(db_session) == 2
 
-    async def test_embedding_dimensions_match_column(
-        self, db_session: AsyncSession, py_repo: Path
-    ):
+    async def test_embedding_dimensions_match_column(self, db_session: AsyncSession, py_repo: Path):
         await index_repository(
             db_session,
             "test",
@@ -114,17 +111,13 @@ class TestFullIndexEmbedding:
         await db_session.commit()
 
         row = (
-            await db_session.execute(
-                select(CodeIndex).where(CodeIndex.file_path == "src/core.py")
-            )
+            await db_session.execute(select(CodeIndex).where(CodeIndex.file_path == "src/core.py"))
         ).scalar_one()
         # pgvector returns either a list or a numpy array; len() works on both.
         assert row.embedding is not None
         assert len(row.embedding) == EMBEDDING_DIMS
 
-    async def test_empty_file_has_null_embedding(
-        self, db_session: AsyncSession, py_repo: Path
-    ):
+    async def test_empty_file_has_null_embedding(self, db_session: AsyncSession, py_repo: Path):
         await index_repository(
             db_session,
             "test",
@@ -135,9 +128,7 @@ class TestFullIndexEmbedding:
 
         row = (
             await db_session.execute(
-                select(CodeIndex).where(
-                    CodeIndex.file_path == "src/__init__.py"
-                )
+                select(CodeIndex).where(CodeIndex.file_path == "src/__init__.py")
             )
         ).scalar_one()
         assert row.embedding is None
@@ -145,22 +136,16 @@ class TestFullIndexEmbedding:
     async def test_none_client_leaves_embeddings_null(
         self, db_session: AsyncSession, py_repo: Path
     ):
-        result = await index_repository(
-            db_session, "test", py_repo, embedding_client=None
-        )
+        result = await index_repository(db_session, "test", py_repo, embedding_client=None)
         await db_session.commit()
 
         assert result.files_embedded == 0
         assert await _non_null_embedding_count(db_session) == 0
 
-    async def test_client_called_once_per_full_index(
-        self, db_session: AsyncSession, py_repo: Path
-    ):
+    async def test_client_called_once_per_full_index(self, db_session: AsyncSession, py_repo: Path):
         """Single batched embed call per ingest run, not one per file."""
         client = FakeEmbeddingClient()
-        await index_repository(
-            db_session, "test", py_repo, embedding_client=client
-        )
+        await index_repository(db_session, "test", py_repo, embedding_client=client)
         await db_session.commit()
 
         assert client.call_count == 1
@@ -168,27 +153,19 @@ class TestFullIndexEmbedding:
 
 
 class TestIncrementalEmbedding:
-    async def test_only_changed_files_are_embedded(
-        self, db_session: AsyncSession, py_repo: Path
-    ):
+    async def test_only_changed_files_are_embedded(self, db_session: AsyncSession, py_repo: Path):
         # Full index with embeddings.
         client = FakeEmbeddingClient()
-        await index_repository(
-            db_session, "test", py_repo, embedding_client=client
-        )
+        await index_repository(db_session, "test", py_repo, embedding_client=client)
         await db_session.commit()
         assert client.total_texts == 2
 
         # Modify one file.
-        (py_repo / "src" / "utils.py").write_text(
-            "def helper():\n    return 99\n"
-        )
+        (py_repo / "src" / "utils.py").write_text("def helper():\n    return 99\n")
         _commit(py_repo, "change helper")
 
         # Incremental index — should only embed utils.py.
-        result = await index_repository(
-            db_session, "test", py_repo, embedding_client=client
-        )
+        result = await index_repository(db_session, "test", py_repo, embedding_client=client)
         await db_session.commit()
 
         assert result.mode == "incremental"
@@ -201,35 +178,25 @@ class TestIncrementalEmbedding:
         self, db_session: AsyncSession, py_repo: Path
     ):
         client = FakeEmbeddingClient()
-        await index_repository(
-            db_session, "test", py_repo, embedding_client=client
-        )
+        await index_repository(db_session, "test", py_repo, embedding_client=client)
         await db_session.commit()
 
         # Grab core.py's embedding before any modification.
         row_before = (
-            await db_session.execute(
-                select(CodeIndex).where(CodeIndex.file_path == "src/core.py")
-            )
+            await db_session.execute(select(CodeIndex).where(CodeIndex.file_path == "src/core.py"))
         ).scalar_one()
         assert row_before.embedding is not None
         emb_before = list(row_before.embedding)
 
         # Modify utils.py only.
-        (py_repo / "src" / "utils.py").write_text(
-            "def helper():\n    return 123\n"
-        )
+        (py_repo / "src" / "utils.py").write_text("def helper():\n    return 123\n")
         _commit(py_repo)
-        await index_repository(
-            db_session, "test", py_repo, embedding_client=client
-        )
+        await index_repository(db_session, "test", py_repo, embedding_client=client)
         await db_session.commit()
 
         # core.py's embedding should be unchanged.
         row_after = (
-            await db_session.execute(
-                select(CodeIndex).where(CodeIndex.file_path == "src/core.py")
-            )
+            await db_session.execute(select(CodeIndex).where(CodeIndex.file_path == "src/core.py"))
         ).scalar_one()
         assert row_after.embedding is not None
         assert list(row_after.embedding) == pytest.approx(emb_before)

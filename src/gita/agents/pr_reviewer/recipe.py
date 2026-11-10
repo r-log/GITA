@@ -21,6 +21,7 @@ Trust boundaries:
       as unreviewed, and a review with unreviewed files or discarded
       findings can't be an approval.
 """
+
 from __future__ import annotations
 
 import logging
@@ -108,8 +109,7 @@ def _render_file_block(ctx: FileContext) -> str:
     """Render one changed file's diff + context (unfenced)."""
     hunk = ctx.diff_hunk
     lines: list[str] = [
-        f"=== {hunk.file_path} ({hunk.status}, "
-        f"+{hunk.additions}/-{hunk.deletions}) ===",
+        f"=== {hunk.file_path} ({hunk.status}, +{hunk.additions}/-{hunk.deletions}) ===",
         "",
         "DIFF:",
         hunk.patch or "",
@@ -120,16 +120,12 @@ def _render_file_block(ctx: FileContext) -> str:
         lines.append("SYMBOLS NEAR CHANGES (line numbers after this PR):")
         for sym in ctx.symbols_near_changes:
             parent = f" in {sym.parent_class}" if sym.parent_class else ""
-            lines.append(
-                f"  {sym.kind} {sym.name}{parent} "
-                f"(lines {sym.start_line}-{sym.end_line})"
-            )
+            lines.append(f"  {sym.kind} {sym.name}{parent} (lines {sym.start_line}-{sym.end_line})")
 
     if ctx.imported_by:
         lines.append("")
         lines.append(
-            f"IMPORTED BY ({len(ctx.imported_by)} files): "
-            + ", ".join(ctx.imported_by[:5])
+            f"IMPORTED BY ({len(ctx.imported_by)} files): " + ", ".join(ctx.imported_by[:5])
         )
         if len(ctx.imported_by) > 5:
             lines.append(f"  ... and {len(ctx.imported_by) - 5} more")
@@ -235,10 +231,7 @@ def _render_findings_for_summary(
     else:
         rendered = []
         for i, f in enumerate(findings):
-            entry = (
-                f"[{i}] {f.severity} {f.kind} {f.file}:{f.line}\n"
-                f"    {f.description}"
-            )
+            entry = f"[{i}] {f.severity} {f.kind} {f.file}:{f.line}\n    {f.description}"
             if f.fix_sketch:
                 entry += f"\n    fix: {f.fix_sketch}"
             rendered.append(entry)
@@ -249,9 +242,7 @@ def _render_findings_for_summary(
 # ---------------------------------------------------------------------------
 # Deterministic decisions
 # ---------------------------------------------------------------------------
-def decide_verdict(
-    findings: list[Finding], *, dropped: int, unreviewed: int
-) -> str:
+def decide_verdict(findings: list[Finding], *, dropped: int, unreviewed: int) -> str:
     """The review verdict, from verified findings and coverage only.
 
     * ``request_changes`` — any verified high/critical finding.

@@ -4,6 +4,7 @@ Posts the review as a single comment on the PR. Week 5 can upgrade to
 inline PR review comments (GitHub's Review API) once we build the
 diff-line-to-file-line mapping.
 """
+
 from __future__ import annotations
 
 from gita.agents.decisions import Decision
@@ -15,14 +16,14 @@ _COLLAPSE_THRESHOLD = 6
 
 _SEVERITY_BADGE: dict[str, str] = {
     "critical": "\U0001f534",  # red circle
-    "high": "\U0001f7e0",      # orange circle
-    "medium": "\U0001f7e1",    # yellow circle
-    "low": "\U0001f535",       # blue circle
+    "high": "\U0001f7e0",  # orange circle
+    "medium": "\U0001f7e1",  # yellow circle
+    "low": "\U0001f535",  # blue circle
 }
 
 _VERDICT_DISPLAY: dict[str, tuple[str, str]] = {
-    "approve": ("\u2705", "Approved"),              # green check
-    "comment": ("\U0001f4ac", "Comment"),            # speech bubble
+    "approve": ("\u2705", "Approved"),  # green check
+    "comment": ("\U0001f4ac", "Comment"),  # speech bubble
     "request_changes": ("\u26a0\ufe0f", "Changes Requested"),  # warning
 }
 
@@ -73,9 +74,7 @@ def _render_coverage_notes(result: PRReviewResult) -> list[str]:
 def _render_review_body(result: PRReviewResult) -> str:
     """Render the review as a markdown comment body."""
     # --- Header ---
-    verdict_icon, verdict_text = _VERDICT_DISPLAY.get(
-        result.verdict, ("\u2753", result.verdict)
-    )
+    verdict_icon, verdict_text = _VERDICT_DISPLAY.get(result.verdict, ("\u2753", result.verdict))
     lines: list[str] = [
         f"## \U0001f50d PR Review \u2014 #{result.pr_number}",
         "",
@@ -160,10 +159,7 @@ def build_pr_review_decision(
     if head_sha:
         evidence.append(f"head_sha:{head_sha}")
     for finding in result.findings[:3]:
-        evidence.append(
-            f"{finding.severity} {finding.kind} at "
-            f"{finding.file}:{finding.line}"
-        )
+        evidence.append(f"{finding.severity} {finding.kind} at {finding.file}:{finding.line}")
 
     return Decision(
         action="comment",

@@ -6,6 +6,7 @@ package on first use and cached. Load failures are remembered in
 pattern was forced on v1 by tree-sitter-language-pack packaging bugs; we keep
 it as defense-in-depth even though individual packages are more reliable.
 """
+
 from __future__ import annotations
 
 import logging
@@ -38,9 +39,7 @@ def _build_language(name: str) -> Language | None:
 
             return Language(module.language_tsx())
     except Exception as exc:
-        logger.warning(
-            "tree_sitter_language_load_failed language=%s error=%s", name, exc
-        )
+        logger.warning("tree_sitter_language_load_failed language=%s error=%s", name, exc)
         return None
     logger.warning("tree_sitter_language_unknown language=%s", name)
     return None

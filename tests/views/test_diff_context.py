@@ -17,6 +17,7 @@ Import graph:
   → utils.py has in_degree=2 (imported by core + models)
   → models.py has in_degree=1 (imported by core)
 """
+
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,9 +43,7 @@ def _hunk(
     ranges: list[tuple[int, int]] | None = None,
     patch: str | None = "@@ -1,5 +1,5 @@\n ctx",
 ) -> DiffHunk:
-    changed = [
-        ChangedLineRange(start=s, count=c) for s, c in (ranges or [])
-    ]
+    changed = [ChangedLineRange(start=s, count=c) for s, c in (ranges or [])]
     return DiffHunk(
         file_path=file_path,
         status=status,
@@ -148,22 +147,16 @@ class TestDiffContextViewWithoutHead:
         # Only the diff's own new-side lines are citable.
         assert ctx.visible_lines() == {1, 2, 3}
 
-    async def test_imported_by_populated(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_imported_by_populated(self, indexed_synth_py: tuple[AsyncSession, str]):
         """utils.py is imported by core.py and models.py — high impact."""
         session, repo_name = indexed_synth_py
         hunks = [_hunk("src/myapp/utils.py", ranges=[(1, 2)])]
 
         result = await diff_context_view(session, repo_name, hunks)
 
-        assert {"src/myapp/core.py", "src/myapp/models.py"} <= set(
-            result.files[0].imported_by
-        )
+        assert {"src/myapp/core.py", "src/myapp/models.py"} <= set(result.files[0].imported_by)
 
-    async def test_unindexed_added_file(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_unindexed_added_file(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
         hunks = [_hunk("src/brand_new_file.py", status="added", ranges=[(1, 10)])]
 
@@ -250,9 +243,7 @@ def test_count_lines_matches_git():
 
 
 class TestDiffContextViewMixed:
-    async def test_mixed_indexed_and_unindexed(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_mixed_indexed_and_unindexed(self, indexed_synth_py: tuple[AsyncSession, str]):
         """A PR that modifies an indexed file and adds a new one."""
         session, repo_name = indexed_synth_py
         hunks = [
@@ -269,9 +260,7 @@ class TestDiffContextViewMixed:
 
 
 class TestDiffContextViewEmpty:
-    async def test_empty_hunks(
-        self, indexed_synth_py: tuple[AsyncSession, str]
-    ):
+    async def test_empty_hunks(self, indexed_synth_py: tuple[AsyncSession, str]):
         session, repo_name = indexed_synth_py
         result = await diff_context_view(session, repo_name, [])
         assert result.total_count == 0

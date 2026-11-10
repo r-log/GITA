@@ -164,7 +164,7 @@ class TestJsJsdocExtraction:
     def test_jsdoc_on_function(self):
         from gita.indexer.parsers import parse_file
 
-        code = '/** Sum values. */\nfunction sum(arr) { return 0; }\n'
+        code = "/** Sum values. */\nfunction sum(arr) { return 0; }\n"
         s = parse_file(Path("test.js"), code, "javascript")
         fn = next(f for f in s.functions if f.name == "sum")
         assert fn.docstring == "Sum values."
@@ -172,7 +172,7 @@ class TestJsJsdocExtraction:
     def test_jsdoc_on_class(self):
         from gita.indexer.parsers import parse_file
 
-        code = '/** My service. */\nclass Service {}\n'
+        code = "/** My service. */\nclass Service {}\n"
         s = parse_file(Path("test.js"), code, "javascript")
         cls = next(c for c in s.classes if c.name == "Service")
         assert cls.docstring == "My service."
@@ -180,7 +180,7 @@ class TestJsJsdocExtraction:
     def test_multiline_jsdoc_takes_first_line(self):
         from gita.indexer.parsers import parse_file
 
-        code = '/**\n * Calculate total.\n * @param {number[]} values\n */\nfunction total(values) {}\n'
+        code = "/**\n * Calculate total.\n * @param {number[]} values\n */\nfunction total(values) {}\n"
         s = parse_file(Path("test.js"), code, "javascript")
         fn = next(f for f in s.functions if f.name == "total")
         assert fn.docstring == "Calculate total."

@@ -10,6 +10,7 @@ problem. This tests the core value proposition: the agent reviews the
 
 Gated behind ``GITA_RUN_LLM_TESTS=1`` — costs one real LLM run (~$0.10).
 """
+
 from __future__ import annotations
 
 import json
@@ -28,9 +29,7 @@ from gita.agents.pr_reviewer.diff_parser import (  # noqa: E402
 from gita.github.client import PRInfo  # noqa: E402
 from gita.indexer.ingest import index_repository  # noqa: E402
 
-FIXTURE = (
-    Path(__file__).parent.parent / "fixtures" / "seeded_buggy"
-).resolve()
+FIXTURE = (Path(__file__).parent.parent / "fixtures" / "seeded_buggy").resolve()
 
 
 def _pr_info() -> PRInfo:
@@ -64,28 +63,28 @@ def _diff_hunks() -> list[DiffHunk]:
     The reviewer should flag #2 but not #1.
     """
     patch = (
-        "@@ -12,7 +12,7 @@ DB_PASSWORD = \"admin123\"\n"
+        '@@ -12,7 +12,7 @@ DB_PASSWORD = "admin123"\n'
         " \n"
         " def get_user_by_name(conn, name):\n"
         "-    # PLANTED ISSUE: SQL injection via f-string formatting.\n"
         "-    query = f\"SELECT * FROM users WHERE name = '{name}'\"\n"
-        "+    query = \"SELECT * FROM users WHERE name = ?\"\n"
+        '+    query = "SELECT * FROM users WHERE name = ?"\n'
         "+    return conn.execute(query, (name,)).fetchall()\n"
         "-    return conn.execute(query).fetchall()\n"
         " \n"
         "@@ -28,3 +28,12 @@ def delete_user(conn, name):\n"
-        "     conn.execute(\"DELETE FROM users WHERE name = '\" + name + \"'\")\n"
+        '     conn.execute("DELETE FROM users WHERE name = \'" + name + "\'")\n'
         "     # Note: no conn.commit() — silent data loss on rollback.\n"
         "+\n"
         "+\n"
         "+def search_users(conn, pattern):\n"
-        "+    \"\"\"Search users by partial name match.\"\"\"\n"
+        '+    """Search users by partial name match."""\n'
         "+    query = f\"SELECT * FROM users WHERE name LIKE '%{pattern}%'\"\n"
         "+    return conn.execute(query).fetchall()\n"
         "+\n"
         "+\n"
         "+def count_users(conn):\n"
-        "+    return conn.execute(\"SELECT count(*) FROM users\").fetchone()[0]\n"
+        '+    return conn.execute("SELECT count(*) FROM users").fetchone()[0]\n'
     )
     return [
         DiffHunk(
@@ -95,8 +94,8 @@ def _diff_hunks() -> list[DiffHunk]:
             deletions=2,
             patch=patch,
             changed_ranges=[
-                ChangedLineRange(start=12, count=7),   # fix area
-                ChangedLineRange(start=28, count=12),   # new functions
+                ChangedLineRange(start=12, count=7),  # fix area
+                ChangedLineRange(start=28, count=12),  # new functions
             ],
         )
     ]
@@ -137,18 +136,22 @@ async def test_pr_review_catches_new_injection(db_session, real_llm):
         assert finding.line > 0, f"finding {finding.file} has line <= 0"
 
     # 3. At least one finding mentions SQL injection or the new function.
-    serialized = json.dumps([
-        {"file": f.file, "line": f.line, "description": f.description,
-         "severity": f.severity, "kind": f.kind}
-        for f in result.findings
-    ], indent=2).lower()
+    serialized = json.dumps(
+        [
+            {
+                "file": f.file,
+                "line": f.line,
+                "description": f.description,
+                "severity": f.severity,
+                "kind": f.kind,
+            }
+            for f in result.findings
+        ],
+        indent=2,
+    ).lower()
     assert any(
-        term in serialized
-        for term in ["sql", "injection", "search_users", "f-string", "format"]
-    ), (
-        f"no finding mentions SQL injection or search_users. "
-        f"Findings:\n{serialized}"
-    )
+        term in serialized for term in ["sql", "injection", "search_users", "f-string", "format"]
+    ), f"no finding mentions SQL injection or search_users. Findings:\n{serialized}"
 
     # 4. Verdict is "comment" or "request_changes" — NOT "approve"
     # (the PR has a real bug).
@@ -158,6 +161,7 @@ async def test_pr_review_catches_new_injection(db_session, real_llm):
 
     # 5. No banned boilerplate phrases survived the guardrails.
     import re
+
     banned_patterns = [
         r"add unit tests",
         r"set up (?:ci|cd)",
@@ -167,8 +171,7 @@ async def test_pr_review_catches_new_injection(db_session, real_llm):
     for pattern in banned_patterns:
         for finding in result.findings:
             assert not re.search(pattern, finding.description, re.IGNORECASE), (
-                f"banned phrase {pattern!r} found in finding: "
-                f"{finding.description!r}"
+                f"banned phrase {pattern!r} found in finding: {finding.description!r}"
             )
 
     # 6. Confidence is reasonable (above 0.3 — the comment threshold).

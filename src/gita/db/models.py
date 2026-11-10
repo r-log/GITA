@@ -30,17 +30,13 @@ class Base(DeclarativeBase):
 class Repo(Base):
     __tablename__ = "repos"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     # Unique case-insensitively (see __table_args__): lookups lower() it.
     github_full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     root_path: Mapped[str] = mapped_column(Text, nullable=False)
     head_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    indexed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -79,9 +75,7 @@ class Repo(Base):
 class CodeIndex(Base):
     __tablename__ = "code_index"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     repo_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("repos.id", ondelete="CASCADE"),
@@ -124,9 +118,7 @@ class CodeIndex(Base):
 class ImportEdge(Base):
     __tablename__ = "import_edges"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     repo_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("repos.id", ondelete="CASCADE"),
@@ -162,9 +154,7 @@ class AgentAction(Base):
 
     __tablename__ = "agent_actions"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     repo_name: Mapped[str] = mapped_column(String(255), nullable=False)
     agent: Mapped[str] = mapped_column(String(64), nullable=False)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -172,14 +162,10 @@ class AgentAction(Base):
     external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    evidence: Mapped[list[str]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
+    evidence: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     # False for shadow-mode observations (nothing reached GitHub). Dedupe
     # checks never let a shadow row suppress a live side effect.
-    live: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default="true", default=True
-    )
+    live: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true", default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

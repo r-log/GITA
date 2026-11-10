@@ -18,6 +18,7 @@ the ``github_assistant_test`` DB once per session, open one engine once per
 session, and reuse connections across tests. Each test just gets a fresh
 ``AsyncSession`` and a ``TRUNCATE`` at the end.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -52,13 +53,9 @@ _ADMIN_DB_URL = settings.database_url.rsplit("/", 1)[0] + "/postgres"
 
 async def _recreate_test_db() -> None:
     """Drop and recreate the empty test database."""
-    admin = create_async_engine(
-        _ADMIN_DB_URL, isolation_level="AUTOCOMMIT", poolclass=NullPool
-    )
+    admin = create_async_engine(_ADMIN_DB_URL, isolation_level="AUTOCOMMIT", poolclass=NullPool)
     async with admin.connect() as conn:
-        await conn.execute(
-            text(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)')
-        )
+        await conn.execute(text(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)'))
         await conn.execute(text(f'CREATE DATABASE "{TEST_DB_NAME}"'))
     await admin.dispose()
 
@@ -103,9 +100,7 @@ async def db_session(test_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     """Function-scoped session off the shared engine. Truncates the three
     tables at the end of each test so the next test starts with a clean slate.
     """
-    session_factory = async_sessionmaker(
-        test_engine, expire_on_commit=False, class_=AsyncSession
-    )
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False, class_=AsyncSession)
     try:
         async with session_factory() as session:
             yield session
@@ -126,9 +121,7 @@ async def db_session(test_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 # ---------------------------------------------------------------------------
 from gita.indexer.ingest import index_repository as _index_repository  # noqa: E402
 
-_SYNTH_REPO_PATH = (
-    _Path(__file__).parent / "fixtures" / "synthetic_py"
-).resolve()
+_SYNTH_REPO_PATH = (_Path(__file__).parent / "fixtures" / "synthetic_py").resolve()
 _SYNTH_REPO_NAME = "synthetic_py"
 
 

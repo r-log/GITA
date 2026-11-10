@@ -1,4 +1,5 @@
 """Tests for neutralising model-written text before it is posted."""
+
 from __future__ import annotations
 
 from gita.agents.render import inline, neutralize, quote_lines

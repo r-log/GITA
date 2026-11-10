@@ -6,6 +6,7 @@ sender filtering, event parsing, and edge cases. No DB or Redis needed.
 The test secret and payloads are synthetic. HMAC signatures are computed
 inline so the tests are self-contained.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -123,9 +124,7 @@ def _post_webhook(
 @pytest.fixture
 def client(monkeypatch):
     """TestClient with GITHUB_WEBHOOK_SECRET set and a fake ARQ pool."""
-    monkeypatch.setattr(
-        "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
-    )
+    monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET)
     from gita.web import create_app
 
     app = create_app(use_lifespan=False)
@@ -136,9 +135,7 @@ def client(monkeypatch):
 @pytest.fixture
 def client_no_secret(monkeypatch):
     """TestClient with no webhook secret configured."""
-    monkeypatch.setattr(
-        "gita.web.webhooks.settings.github_webhook_secret", None
-    )
+    monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", None)
     from gita.web import create_app
 
     app = create_app(use_lifespan=False)
@@ -161,9 +158,7 @@ class TestVerifySignature:
 
     def test_wrong_prefix(self):
         body = b'{"hello": "world"}'
-        digest = hmac.new(
-            TEST_SECRET.encode(), body, hashlib.sha256
-        ).hexdigest()
+        digest = hmac.new(TEST_SECRET.encode(), body, hashlib.sha256).hexdigest()
         assert verify_signature(body, f"sha1={digest}", TEST_SECRET) is False
 
     def test_empty_body(self):
@@ -257,9 +252,7 @@ class TestSignatureVerification:
 # ---------------------------------------------------------------------------
 class TestBotSenderFilter:
     def test_bot_sender_ignored(self, client):
-        payload = _make_payload(
-            sender_type="Bot", sender_login="gita-agents[bot]"
-        )
+        payload = _make_payload(sender_type="Bot", sender_login="gita-agents[bot]")
         resp = _post_webhook(client, payload)
         assert resp.status_code == 200
         data = resp.json()
@@ -275,9 +268,7 @@ class TestBotSenderFilter:
 
     def test_organization_sender_dispatched(self, client):
         """GitHub Org-owned actions fire with sender.type=Organization."""
-        payload = _make_payload(
-            sender_type="Organization", sender_login="r-log"
-        )
+        payload = _make_payload(sender_type="Organization", sender_login="r-log")
         resp = _post_webhook(client, payload)
         assert resp.status_code == 200
         assert resp.json()["status"] == "dispatched"
@@ -349,9 +340,7 @@ class TestEventTypeParsing:
 
     def test_missing_event_header_returns_400(self, client):
         payload = _make_payload()
-        resp = _post_webhook(
-            client, payload, include_event_header=False
-        )
+        resp = _post_webhook(client, payload, include_event_header=False)
         assert resp.status_code == 400
         assert "missing" in resp.json()["error"].lower()
 
@@ -418,9 +407,7 @@ class TestDeliveryId:
     def test_delivery_id_logged(self, client):
         """Delivery ID should be accepted and parsed (used for tracing)."""
         payload = _make_payload()
-        resp = _post_webhook(
-            client, payload, delivery_id="550e8400-e29b-41d4-a716-446655440000"
-        )
+        resp = _post_webhook(client, payload, delivery_id="550e8400-e29b-41d4-a716-446655440000")
         assert resp.status_code == 200
         assert resp.json()["status"] == "dispatched"
 
@@ -431,9 +418,7 @@ class TestDeliveryId:
 class TestArqPoolIntegration:
     def test_no_pool_returns_503(self, monkeypatch):
         """If the ARQ pool is unavailable, return 503."""
-        monkeypatch.setattr(
-            "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
-        )
+        monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET)
         from gita.web import create_app
 
         app = create_app(use_lifespan=False)
@@ -447,9 +432,7 @@ class TestArqPoolIntegration:
 
     def test_duplicate_job_id_ignored(self, monkeypatch):
         """A redelivery for the same PR commit returns 'job already queued'."""
-        monkeypatch.setattr(
-            "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
-        )
+        monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET)
         from gita.web import create_app
 
         app = create_app(use_lifespan=False)

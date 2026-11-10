@@ -8,6 +8,7 @@ table already holds such a pair; resolve those rows first.
 Revision ID: 0009
 Revises: 0008
 """
+
 from collections.abc import Sequence
 
 from alembic import op

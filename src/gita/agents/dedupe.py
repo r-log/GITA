@@ -26,6 +26,7 @@ It has three parts:
    at-least-once: the reservation rolls back and a retry repeats the
    call.
 """
+
 from __future__ import annotations
 
 import hashlib

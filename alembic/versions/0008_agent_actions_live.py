@@ -13,6 +13,7 @@ a decision that only ran in shadow is not retried live).
 Revision ID: 0008
 Revises: 0007
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa

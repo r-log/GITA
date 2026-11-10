@@ -16,6 +16,7 @@ zero-width space after ``@`` and before tag-like ``<`` defeats mention
 and HTML parsing without visibly changing the text, including inside
 code spans.
 """
+
 from __future__ import annotations
 
 import re

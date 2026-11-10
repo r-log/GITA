@@ -7,6 +7,7 @@ daemon and the sandbox image are available — set
 ``GITA_SANDBOX_IMAGE`` to override the image name (default
 ``gita-sandbox:latest``; build it from ``docker/sandbox.Dockerfile``).
 """
+
 from __future__ import annotations
 
 import os
@@ -74,9 +75,7 @@ class TestValidateTestFilePath:
 class TestParsePytestCounts:
     def test_mixed_summary(self):
         out = "....F\n1 failed, 4 passed, 2 skipped in 0.12s\n"
-        assert parse_pytest_counts(out) == PytestCounts(
-            passed=4, failed=1, errors=0, skipped=2
-        )
+        assert parse_pytest_counts(out) == PytestCounts(passed=4, failed=1, errors=0, skipped=2)
 
     def test_uses_last_summary_line_only(self):
         out = "print: 99 passed (fake)\n2 passed in 0.01s\n"

@@ -1,4 +1,5 @@
 """Job retry policy, Redis URL handling and logging setup."""
+
 from __future__ import annotations
 
 import logging
@@ -15,7 +16,9 @@ from gita.worker import _mask_url, _parse_redis_url
 
 def _status_error(code: int) -> httpx.HTTPStatusError:
     request = httpx.Request("GET", "https://api.github.com/x")
-    return httpx.HTTPStatusError("x", request=request, response=httpx.Response(code, request=request))
+    return httpx.HTTPStatusError(
+        "x", request=request, response=httpx.Response(code, request=request)
+    )
 
 
 @pytest.mark.parametrize(

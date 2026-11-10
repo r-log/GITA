@@ -2,6 +2,7 @@
 
 Skipped at collection time until ``gita.agents.onboarding`` lands on Day 5.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,9 +19,7 @@ from tests.golden_agents.checklists.seeded_buggy import (  # noqa: E402
     CHECKLIST,
 )
 
-FIXTURE = (
-    Path(__file__).parent.parent / "fixtures" / "seeded_buggy"
-).resolve()
+FIXTURE = (Path(__file__).parent.parent / "fixtures" / "seeded_buggy").resolve()
 
 
 async def test_seeded_buggy_checklist_passes(db_session, real_llm):
@@ -32,6 +31,4 @@ async def test_seeded_buggy_checklist_passes(db_session, real_llm):
     result = await run_onboarding(db_session, "seeded_buggy", llm=real_llm)
 
     violations = check_output(result, CHECKLIST)
-    assert violations == [], (
-        "seeded_buggy checklist violations:\n  - " + "\n  - ".join(violations)
-    )
+    assert violations == [], "seeded_buggy checklist violations:\n  - " + "\n  - ".join(violations)

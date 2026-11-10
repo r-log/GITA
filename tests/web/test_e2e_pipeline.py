@@ -8,6 +8,7 @@ test DB.
 
 External services (GitHub API, LLM) are mocked.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -24,9 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.indexer.ingest import index_repository
 
-SYNTH_REPO = (
-    Path(__file__).parent.parent / "fixtures" / "synthetic_py"
-).resolve()
+SYNTH_REPO = (Path(__file__).parent.parent / "fixtures" / "synthetic_py").resolve()
 
 TEST_SECRET = "e2e-pipeline-test-secret"
 SHA_A, SHA_B, SHA_C = "a" * 40, "b" * 40, "c" * 40
@@ -109,9 +108,7 @@ def _issue_labeled(number: int, *, sender: str, author: str, association: str) -
 @pytest.fixture
 def webhook_client(monkeypatch):
     """FastAPI TestClient with fake ARQ pool and known secret."""
-    monkeypatch.setattr(
-        "gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET
-    )
+    monkeypatch.setattr("gita.web.webhooks.settings.github_webhook_secret", TEST_SECRET)
     from gita.web import create_app
 
     app = create_app(use_lifespan=False)
@@ -237,9 +234,7 @@ class TestPrReviewPipeline:
         assert job["head_sha"] == SHA_A
 
     @pytest.mark.usefixtures("indexed_repo", "_patch_runner_session")
-    async def test_pr_review_resolves_indexed_repo(
-        self, db_session: AsyncSession, monkeypatch
-    ):
+    async def test_pr_review_resolves_indexed_repo(self, db_session: AsyncSession, monkeypatch):
         """Resolution succeeds, so the job fails later at the credential check."""
         from gita.jobs.runners import run_pr_review_job
 

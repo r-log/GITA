@@ -5,6 +5,7 @@ them before the actual onboarding agent lands on Day 5. The dataclass fields
 are meant to stay stable across Week 2 — if the agent discovers it needs
 different shape, we revise here and everything else follows.
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -18,8 +19,8 @@ class Finding:
 
     file: str
     line: int
-    severity: str         # "low" | "medium" | "high" | "critical"
-    kind: str             # "bug" | "security" | "quality" | "missing" | ...
+    severity: str  # "low" | "medium" | "high" | "critical"
+    kind: str  # "bug" | "security" | "quality" | "missing" | ...
     description: str
     fix_sketch: str = ""
 

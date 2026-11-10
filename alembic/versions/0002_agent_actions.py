@@ -5,6 +5,7 @@ Revises: 0001
 Create Date: 2026-04-12 00:00:00.000000
 
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -49,9 +50,7 @@ def upgrade() -> None:
             name="uq_agent_actions_signature",
         ),
     )
-    op.create_index(
-        "ix_agent_actions_repo_name", "agent_actions", ["repo_name"]
-    )
+    op.create_index("ix_agent_actions_repo_name", "agent_actions", ["repo_name"])
 
 
 def downgrade() -> None:

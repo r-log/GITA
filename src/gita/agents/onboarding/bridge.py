@@ -10,6 +10,7 @@ Two bridges:
 Both are pure functions: they take an ``OnboardingResult`` and return
 ``Decision`` objects without any I/O.
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,9 +26,9 @@ _COLLAPSE_THRESHOLD = 6
 
 _SEVERITY_BADGE: dict[str, str] = {
     "critical": "\U0001f534",  # red circle
-    "high": "\U0001f7e0",      # orange circle
-    "medium": "\U0001f7e1",    # yellow circle
-    "low": "\U0001f535",       # blue circle
+    "high": "\U0001f7e0",  # orange circle
+    "medium": "\U0001f7e1",  # yellow circle
+    "low": "\U0001f535",  # blue circle
 }
 
 
@@ -35,9 +36,7 @@ def _severity_icon(severity: str) -> str:
     return _SEVERITY_BADGE.get(severity.lower(), "\u26aa")
 
 
-def _wrap_details(
-    summary: str, body_lines: list[str], *, collapse: bool
-) -> list[str]:
+def _wrap_details(summary: str, body_lines: list[str], *, collapse: bool) -> list[str]:
     if not collapse:
         return body_lines
     wrapped = ["<details>", f"<summary>{summary}</summary>", ""]
@@ -67,9 +66,7 @@ def _render_finding_card(index: int, finding: Finding) -> list[str]:
 # ---------------------------------------------------------------------------
 # Milestone card
 # ---------------------------------------------------------------------------
-def _render_milestone_card(
-    milestone: Milestone, findings: list[Finding]
-) -> list[str]:
+def _render_milestone_card(milestone: Milestone, findings: list[Finding]) -> list[str]:
     conf_pct = f"{milestone.confidence:.0%}"
     lines = [
         f"#### \U0001f3af {inline(milestone.title)}",
@@ -78,11 +75,7 @@ def _render_milestone_card(
         "",
     ]
     if milestone.finding_indices:
-        cited = [
-            findings[i]
-            for i in milestone.finding_indices
-            if 0 <= i < len(findings)
-        ]
+        cited = [findings[i] for i in milestone.finding_indices if 0 <= i < len(findings)]
         if cited:
             for finding in cited:
                 icon = _severity_icon(finding.severity)
@@ -129,8 +122,7 @@ def _render_comment_body(result: OnboardingResult) -> str:
         if collapse:
             lines.extend(
                 _wrap_details(
-                    f"\U0001f50e Findings ({len(result.findings)}) "
-                    f"\u2014 click to expand",
+                    f"\U0001f50e Findings ({len(result.findings)}) \u2014 click to expand",
                     findings_block,
                     collapse=True,
                 )
@@ -139,10 +131,7 @@ def _render_comment_body(result: OnboardingResult) -> str:
         else:
             lines.extend(findings_block)
     else:
-        lines.append(
-            "\u2705 No concrete findings \u2014 "
-            "the reviewed files looked clean."
-        )
+        lines.append("\u2705 No concrete findings \u2014 the reviewed files looked clean.")
         lines.append("")
 
     # --- Milestones ---
@@ -151,14 +140,11 @@ def _render_comment_body(result: OnboardingResult) -> str:
         milestones_block: list[str] = [
             "---",
             "",
-            f"### \U0001f5fa\ufe0f Proposed Milestones "
-            f"({len(result.milestones)})",
+            f"### \U0001f5fa\ufe0f Proposed Milestones ({len(result.milestones)})",
             "",
         ]
         for milestone in result.milestones:
-            milestones_block.extend(
-                _render_milestone_card(milestone, result.findings)
-            )
+            milestones_block.extend(_render_milestone_card(milestone, result.findings))
 
         if collapse:
             lines.extend(
@@ -229,11 +215,7 @@ def _render_issue_body(
         "",
     ]
 
-    cited = [
-        findings[i]
-        for i in milestone.finding_indices
-        if 0 <= i < len(findings)
-    ]
+    cited = [findings[i] for i in milestone.finding_indices if 0 <= i < len(findings)]
     if cited:
         collapse = len(cited) >= _COLLAPSE_THRESHOLD
         checklist: list[str] = [
@@ -254,8 +236,7 @@ def _render_issue_body(
         if collapse:
             lines.extend(
                 _wrap_details(
-                    f"\U0001f50e Findings ({len(cited)}) "
-                    f"\u2014 click to expand",
+                    f"\U0001f50e Findings ({len(cited)}) \u2014 click to expand",
                     checklist,
                     collapse=True,
                 )
@@ -266,8 +247,7 @@ def _render_issue_body(
 
     lines.append("---")
     lines.append(
-        f"<sub>\U0001f916 GITA v0.1.0 \u00b7 onboarding agent \u00b7 "
-        f"source: `{source_repo}`</sub>"
+        f"<sub>\U0001f916 GITA v0.1.0 \u00b7 onboarding agent \u00b7 source: `{source_repo}`</sub>"
     )
     return "\n".join(lines)
 
@@ -285,9 +265,7 @@ def build_onboarding_issue_decisions(
 
     decisions: list[Decision] = []
     for milestone in result.milestones:
-        cited_indices = [
-            i for i in milestone.finding_indices if 0 <= i < len(result.findings)
-        ]
+        cited_indices = [i for i in milestone.finding_indices if 0 <= i < len(result.findings)]
         if not cited_indices:
             logger.warning(
                 "skipping_milestone_no_valid_findings title=%s",
@@ -302,25 +280,19 @@ def build_onboarding_issue_decisions(
         ]
         for idx in cited_indices:
             finding = result.findings[idx]
-            evidence.append(
-                f"{finding.severity} {finding.kind} at "
-                f"{finding.file}:{finding.line}"
-            )
+            evidence.append(f"{finding.severity} {finding.kind} at {finding.file}:{finding.line}")
 
         target: dict[str, Any] = {"repo": target_repo}
         if fallback_comment_target is not None:
             target["fallback_issue"] = fallback_comment_target
 
         sig_keys = sorted(
-            f"{result.findings[i].file}:{result.findings[i].line}"
-            for i in cited_indices
+            f"{result.findings[i].file}:{result.findings[i].line}" for i in cited_indices
         )
 
         payload: dict[str, Any] = {
             "title": inline(milestone.title),
-            "body": _render_issue_body(
-                milestone, result.findings, result.repo_name
-            ),
+            "body": _render_issue_body(milestone, result.findings, result.repo_name),
             "_signature_keys": sig_keys,
         }
         if default_labels:

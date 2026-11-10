@@ -10,6 +10,7 @@ stores the engine for shared use. Shutdown disposes the engine.
 
 ARQ discovers the worker by importing ``WorkerSettings`` from this module.
 """
+
 from __future__ import annotations
 
 import logging
@@ -69,9 +70,7 @@ async def startup(ctx: dict[str, Any]) -> None:
             await conn.execute(text("SELECT 1"))
         logger.info("worker_db_check ok")
     except Exception:
-        logger.warning(
-            "worker_db_check failed — jobs will fail individually"
-        )
+        logger.warning("worker_db_check failed — jobs will fail individually")
     ctx["engine"] = engine
     ctx["initialized"] = True
 

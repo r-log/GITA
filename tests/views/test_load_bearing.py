@@ -12,6 +12,7 @@ Expected in-degrees:
     core.py      = 0
     __init__.py  = 0
 """
+
 from __future__ import annotations
 
 import pytest
@@ -33,9 +34,7 @@ class TestLoadBearingRanking:
         assert result.limit == 10
         assert result.total_files == 4
 
-    async def test_four_files_returned_under_default_limit(
-        self, indexed_synth_py
-    ):
+    async def test_four_files_returned_under_default_limit(self, indexed_synth_py):
         session, repo = indexed_synth_py
         result = await load_bearing_view(session, repo)
         assert len(result.files) == 4
@@ -66,9 +65,7 @@ class TestLoadBearingRanking:
         session, repo = indexed_synth_py
         first = await load_bearing_view(session, repo)
         second = await load_bearing_view(session, repo)
-        assert [f.file_path for f in first.files] == [
-            f.file_path for f in second.files
-        ]
+        assert [f.file_path for f in first.files] == [f.file_path for f in second.files]
 
     async def test_tiebreak_is_alphabetical_file_path(self, indexed_synth_py):
         """Files with zero in-degree should be the expected set, in
@@ -76,13 +73,13 @@ class TestLoadBearingRanking:
         we sort Python-side before comparing."""
         session, repo = indexed_synth_py
         result = await load_bearing_view(session, repo)
-        zero_rank = sorted(
-            f.file_path for f in result.files if f.in_degree == 0
+        zero_rank = sorted(f.file_path for f in result.files if f.in_degree == 0)
+        assert zero_rank == sorted(
+            [
+                "src/myapp/__init__.py",
+                "src/myapp/core.py",
+            ]
         )
-        assert zero_rank == sorted([
-            "src/myapp/__init__.py",
-            "src/myapp/core.py",
-        ])
 
 
 class TestLoadBearingLimit:
@@ -128,9 +125,7 @@ class TestLoadBearingSymbolSummary:
     async def test_models_summary_has_user_class(self, indexed_synth_py):
         session, repo = indexed_synth_py
         result = await load_bearing_view(session, repo)
-        models = next(
-            f for f in result.files if f.file_path.endswith("models.py")
-        )
+        models = next(f for f in result.files if f.file_path.endswith("models.py"))
         kinds_by_name = {s.name: s.kind for s in models.symbol_summary}
         assert kinds_by_name.get("User") == "class"
 

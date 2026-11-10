@@ -16,6 +16,7 @@ runs without GitHub), the view falls back to the indexed copy, which is
 the *base* version. That copy is passed as unnumbered context only:
 numbering it would invite citations in the wrong coordinate system.
 """
+
 from __future__ import annotations
 
 import logging
@@ -142,9 +143,7 @@ def _symbols_near_changes(
 ) -> list[SymbolInDiff]:
     if not changed_ranges:
         return []
-    return [
-        s for s in _extract_symbols_with_lines(structure) if _overlaps(s, changed_ranges)
-    ]
+    return [s for s in _extract_symbols_with_lines(structure) if _overlaps(s, changed_ranges)]
 
 
 def context_windows(
