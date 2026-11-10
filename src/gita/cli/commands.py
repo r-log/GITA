@@ -74,6 +74,30 @@ _DEFAULT_MAX_ISSUES = 10
 # ---------------------------------------------------------------------------
 # Index / repos / stats
 # ---------------------------------------------------------------------------
+async def cmd_history_sync(args: argparse.Namespace) -> int:
+    """Read merged PRs and trace fixes to the PRs they repaired (git only, no model calls)."""
+    from gita.history.sync import sync_history
+
+    root = Path(args.path).resolve()
+    if not (root / ".git").exists():
+        print(f"error: not a git repository: {root}", file=sys.stderr)
+        return 2
+    name = args.name or root.name
+    async with SessionLocal() as session:
+        result = await sync_history(session, name, root, full=args.full)
+        await session.commit()
+    print(f"History of {name!r} ({result.mode}) at {result.head_sha[:10]}")
+    print(f"  merged PRs added: {result.prs_added}")
+    print(f"  fix PRs traced:   {result.fixes_linked} ({result.links_added} links)")
+    print(f"  elapsed:          {result.elapsed_s}s")
+    if result.shallow:
+        print(
+            "  warning: shallow clone; changes older than its history count as "
+            "inherited code (fetch more history for a fuller record)"
+        )
+    return 0
+
+
 async def cmd_index(args: argparse.Namespace) -> int:
     import time
 
