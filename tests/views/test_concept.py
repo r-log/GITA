@@ -14,12 +14,12 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gita.views._common import SymbolBrief
 from gita.views.concept import (
     ConceptResult,
     _symbols_matching_query,
     concept_view,
 )
-from gita.views._common import SymbolBrief
 
 
 # ---------------------------------------------------------------------------
@@ -201,12 +201,12 @@ class TestConceptViewSymbolBoost:
 # ---------------------------------------------------------------------------
 # Hybrid mode: FTS + vector similarity
 # ---------------------------------------------------------------------------
-import pytest_asyncio  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
+
+import pytest_asyncio  # noqa: E402
 
 from gita.indexer.embeddings import FakeEmbeddingClient  # noqa: E402
 from gita.indexer.ingest import index_repository as _index_repository  # noqa: E402
-
 
 _SYNTH_REPO_PATH = (
     _Path(__file__).parent.parent / "fixtures" / "synthetic_py"

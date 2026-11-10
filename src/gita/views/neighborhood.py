@@ -143,9 +143,7 @@ async def neighborhood_view(
     siblings: list[FileInfo] = []
     for r in all_rows:
         r_parent = str(PurePosixPath(r.file_path).parent)
-        if r_parent == "." and parent_str == "":
-            siblings.append(_row_to_file_info(r))
-        elif r_parent == parent_str:
+        if r_parent == "." and parent_str == "" or r_parent == parent_str:
             siblings.append(_row_to_file_info(r))
         if len(siblings) >= MAX_SIBLINGS:
             break

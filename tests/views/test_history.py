@@ -14,7 +14,6 @@ from gita.indexer.ingest import index_repository
 from gita.views._common import RepoNotFoundError
 from gita.views.history import HistoryResult, history_view
 
-
 GIT = shutil.which("git")
 pytestmark = pytest.mark.skipif(GIT is None, reason="git not available")
 
@@ -146,6 +145,7 @@ class TestHistoryErrors:
         session, repo_name, file_path = tmp_git_repo
         # Point repo to a nonexistent dir
         from sqlalchemy import update
+
         from gita.db.models import Repo
 
         await session.execute(

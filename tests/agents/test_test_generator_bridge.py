@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 
-from gita.agents.decisions import Decision
 from gita.agents.dedupe import compute_signature
 from gita.agents.test_generator.bridge import (
     TestGenerationArtifact,
@@ -225,7 +224,7 @@ class TestDedupeSignaturesAreStable:
         test-gen run resume where the last one left off."""
         a = build_test_generation_decisions(_artifact())
         b = build_test_generation_decisions(_artifact())
-        for da, db in zip(a, b):
+        for da, db in zip(a, b, strict=True):
             assert compute_signature(da) == compute_signature(db)
 
     def test_different_base_sha_changes_all_three_signatures(self):
@@ -235,7 +234,7 @@ class TestDedupeSignaturesAreStable:
         b = build_test_generation_decisions(
             _artifact(base_sha="bbbb2222bbbb2222")
         )
-        for da, db in zip(a, b):
+        for da, db in zip(a, b, strict=True):
             assert compute_signature(da) != compute_signature(db), (
                 f"same signature for {da.action} across different SHAs"
             )

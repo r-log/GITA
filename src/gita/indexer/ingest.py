@@ -176,7 +176,7 @@ async def _attach_embeddings(
         )
         return 0
 
-    for row, vec in zip(indexed_rows, vectors):
+    for row, vec in zip(indexed_rows, vectors, strict=True):
         row.embedding = vec
     return len(indexed_rows)
 

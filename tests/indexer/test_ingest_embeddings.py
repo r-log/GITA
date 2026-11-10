@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gita.db.models import CodeIndex, Repo
+from gita.db.models import CodeIndex
 from gita.indexer.embeddings import (
     EMBEDDING_DIMS,
     EMBEDDING_INPUT_CHAR_LIMIT,

@@ -17,7 +17,6 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gita.db.models import Repo
 from gita.indexer.ingest import index_repository
 
 SYNTH_REPO = (

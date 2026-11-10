@@ -105,10 +105,7 @@ def _find_enclosing_class_name(
 
 
 def _is_async_function(node) -> bool:
-    for child in node.children:
-        if child.type == "async":
-            return True
-    return False
+    return any(child.type == "async" for child in node.children)
 
 
 def _extract_python_signature(func_node, source: bytes) -> str | None:

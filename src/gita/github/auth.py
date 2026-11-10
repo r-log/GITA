@@ -32,7 +32,7 @@ class GithubAppAuth:
     @classmethod
     def from_files(
         cls, app_id: int, private_key_path: str | Path
-    ) -> "GithubAppAuth":
+    ) -> GithubAppAuth:
         path = Path(private_key_path)
         if not path.is_file():
             raise FileNotFoundError(

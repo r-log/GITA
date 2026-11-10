@@ -70,8 +70,9 @@ def _migrate_test_db() -> None:
     indexes and constraints that only exist in migrations included — and
     a migration that doesn't apply fails every test run.
     """
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     root = _Path(__file__).resolve().parent.parent
     cfg = Config(str(root / "alembic.ini"))

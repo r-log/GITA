@@ -14,12 +14,12 @@ from gita.agents.onboarding import (
     LLMFinding,
     LLMMilestone,
     MilestonesResponse,
-    OnboardingError,
     PickFilesResponse,
     run_onboarding,
 )
 from gita.agents.types import Finding, Milestone, OnboardingResult
 from gita.llm.client import FakeLLMClient
+from gita.views._common import RepoNotFoundError
 
 
 def _pick_response(
@@ -156,7 +156,7 @@ class TestPickValidation:
         session, repo = indexed_synth_py
         pick = _pick_response(picks=[99, 100, 101])  # all out of range
         fake = _three_call_fake(pick=pick)
-        result = await run_onboarding(session, repo, llm=fake)
+        await run_onboarding(session, repo, llm=fake)
         # Fallback picks the top 3 by rank — findings call still happens
         assert len(fake.calls) >= 2
 
@@ -235,7 +235,7 @@ class TestEmptyPaths:
 class TestErrors:
     async def test_unindexed_repo_raises(self, db_session):
         fake = _three_call_fake()
-        with pytest.raises(Exception):  # RepoNotFoundError from resolve_repo
+        with pytest.raises(RepoNotFoundError):
             await run_onboarding(db_session, "not-indexed", llm=fake)
 
 

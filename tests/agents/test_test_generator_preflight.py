@@ -7,6 +7,7 @@ the happy path and seeds extra rows for the edge cases.
 """
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -762,5 +763,5 @@ def test_supported_preview_languages_covers_recipe_set():
 # Make the dataclass explicitly imported so importers stay typed in CI.
 def test_preflight_result_is_immutable():
     r = PreflightResult(proceed=True, reason="ok")
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         r.proceed = False  # type: ignore[misc]

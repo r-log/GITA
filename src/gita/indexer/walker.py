@@ -86,10 +86,7 @@ def _is_skipped(path: Path, include_tests: bool) -> bool:
             return True
         if not include_tests and part in TEST_DIRS:
             return True
-    for suffix in SKIP_SUFFIXES:
-        if path.name.endswith(suffix):
-            return True
-    return False
+    return any(path.name.endswith(suffix) for suffix in SKIP_SUFFIXES)
 
 
 def indexable_language(

@@ -6,10 +6,9 @@ and bodies.
 """
 from __future__ import annotations
 
-import json
-
 import base64
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -32,7 +31,7 @@ class RequestCapture:
 
 
 def _iso_in(seconds: int) -> str:
-    ts = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    ts = datetime.now(UTC) + timedelta(seconds=seconds)
     return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -347,7 +346,7 @@ class TestInstallationTokenCache:
         # Force-expire the cached token
         client._installation_tokens[(999, None)] = _CachedToken(
             token="ghs_old",
-            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            expires_at=datetime.now(UTC) - timedelta(seconds=1),
         )
         second = await client._get_installation_token(999)
         # Refreshed from the mock → fresh token value

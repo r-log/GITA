@@ -83,8 +83,9 @@ class TestWorkerSettings:
 def _redis_available_sync() -> bool:
     """Quick synchronous check if Redis is reachable via raw TCP."""
     import socket
-    from gita.worker import _parse_redis_url
+
     from gita.config import settings
+    from gita.worker import _parse_redis_url
     rs = _parse_redis_url(settings.redis_url)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(2)
@@ -109,6 +110,7 @@ class TestRedisIntegration:
     @pytest.fixture
     async def pool(self):
         from arq import create_pool
+
         from gita.config import settings
         # Use settings.redis_url (127.0.0.1) not WorkerSettings.redis_settings
         # which may have been built with stale module-level defaults.
@@ -179,7 +181,7 @@ class TestRedisIntegration:
 
     async def test_shutdown_hook_disposes_engine(self):
         """Shutdown hook disposes the engine created by startup."""
-        from gita.worker import startup, shutdown
+        from gita.worker import shutdown, startup
         ctx: dict = {}
         await startup(ctx)
         assert ctx.get("engine") is not None

@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import base64
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -92,7 +92,7 @@ class GithubClient:
         if self._owns_http:
             await self.http.aclose()
 
-    async def __aenter__(self) -> "GithubClient":
+    async def __aenter__(self) -> GithubClient:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
@@ -305,7 +305,7 @@ class GithubClient:
         token can't reach the installation's other repos. Cached per
         ``(installation, repo)``.
         """
-        current = now if now is not None else datetime.now(timezone.utc)
+        current = now if now is not None else datetime.now(UTC)
         key = (installation_id, repo)
         cached = self._installation_tokens.get(key)
         if cached is not None and cached.is_fresh(current):
@@ -698,7 +698,7 @@ class GithubClient:
     # -----------------------------------------------------------------
     async def get_pr(
         self, owner: str, repo: str, number: int
-    ) -> "PRInfo":
+    ) -> PRInfo:
         """Fetch PR metadata. Returns a typed dataclass, not raw JSON."""
         token = await self._installation_token_for_repo(owner, repo)
         url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls/{number}"
@@ -772,7 +772,7 @@ class GithubClient:
     # -----------------------------------------------------------------
     async def get_ref(
         self, owner: str, repo: str, ref: str
-    ) -> "RefInfo":
+    ) -> RefInfo:
         """Fetch a git ref (branch or tag).
 
         ``ref`` is the short ref (e.g. ``"heads/main"``), NOT the fully
@@ -803,7 +803,7 @@ class GithubClient:
         path: str,
         *,
         ref: str | None = None,
-    ) -> "FileContents":
+    ) -> FileContents:
         """Fetch a file's contents from the repo.
 
         Returns a ``FileContents`` with base64-decoded UTF-8 content and

@@ -11,7 +11,6 @@ import jwt
 import pytest
 
 from gita.github.auth import GithubAppAuth
-
 from tests.github.conftest import TEST_APP_ID
 
 

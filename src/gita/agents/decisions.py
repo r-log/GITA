@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy.exc import IntegrityError
@@ -51,13 +51,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
-class WriteMode(str, Enum):
+class WriteMode(StrEnum):
     SHADOW = "shadow"
     COMMENT = "comment"
     FULL = "full"
 
 
-class Outcome(str, Enum):
+class Outcome(StrEnum):
     """Terminal state of a decision passed through ``execute_decision``."""
 
     EXECUTED = "executed"
