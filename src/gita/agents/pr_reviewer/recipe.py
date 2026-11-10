@@ -45,7 +45,9 @@ logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
-_REVIEW_MAX_TOKENS = 4096
+# Room for a full findings list on a large PR (and any reasoning the model
+# does first). Billing is per generated token, not per token allowed.
+_REVIEW_MAX_TOKENS = 16_000
 _SUMMARY_MAX_TOKENS = 1024
 _MAX_FILES_PER_REVIEW = 20
 _FILE_CONTEXT_CAP_CHARS = 8_000

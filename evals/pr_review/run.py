@@ -67,6 +67,7 @@ from gita.indexer.ingest import index_repository
 from gita.llm.client import (
     FakeLLMClient,
     LLMClient,
+    LLMIncompleteError,
     LLMRefusalError,
     LLMResponse,
     LLMSchemaError,
@@ -127,7 +128,22 @@ class RecordingLLM:
 
     async def call(self, *, system: str, user: str, **kwargs: Any) -> LLMResponse:
         start = time.monotonic()
-        response = await self.inner.call(system=system, user=user, **kwargs)
+        try:
+            response = await self.inner.call(system=system, user=user, **kwargs)
+        except LLMIncompleteError as exc:
+            # Billed but unusable (truncated, refused): keep its cost on record.
+            self.calls.append(
+                RecordedCall(
+                    system=system,
+                    user=user,
+                    content="",
+                    model=exc.model or "",
+                    usage=dict(exc.usage),
+                    latency_s=time.monotonic() - start,
+                    finish_reason=type(exc).__name__,
+                )
+            )
+            raise
         self.calls.append(
             RecordedCall(
                 system=system,
@@ -503,6 +519,11 @@ def summarize(variant_dir: Path) -> dict:
             k: {"value": v.value, "ci_lo": v.lo, "ci_hi": v.hi, "n": v.n} for k, v in agg.items()
         },
         "cost_usd_total": round(sum(costs), 4) if len(costs) == len(rows) and rows else None,
+        # Billed calls whose output couldn't be used (truncated, refused).
+        "failed_cost_usd": round(
+            sum(e["usage"].get("cost_usd") or 0 for e in _read_jsonl(variant_dir / "errors.jsonl")),
+            4,
+        ),
         "mean_latency_s": mean("latency_s"),
         "mean_in_tokens": mean("in_tokens"),
         "mean_out_tokens": mean("out_tokens"),

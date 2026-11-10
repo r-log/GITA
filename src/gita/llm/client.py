@@ -66,11 +66,26 @@ class LLMRequestError(LLMError):
         self.status_code = status_code
 
 
-class LLMTruncatedError(LLMError):
+class LLMIncompleteError(LLMError):
+    """A call that completed and was billed, but whose output can't be used.
+
+    Carries the provider's ``usage`` and the serving ``model`` so callers can
+    still account for what the call cost.
+    """
+
+    def __init__(
+        self, message: str, *, usage: dict[str, Any] | None = None, model: str | None = None
+    ):
+        super().__init__(message)
+        self.usage = usage or {}
+        self.model = model
+
+
+class LLMTruncatedError(LLMIncompleteError):
     """The response stopped at ``max_tokens``; structured output is incomplete."""
 
 
-class LLMRefusalError(LLMError):
+class LLMRefusalError(LLMIncompleteError):
     """The provider returned no content (refusal or content filter)."""
 
 
@@ -309,11 +324,13 @@ class OpenRouterClient:
         # alias to a dated snapshot or fall back to another provider.
         served_model = data.get("model") or model_name
         logger.info(
-            "llm_call model=%s served=%s input_tokens=%s output_tokens=%s cost=%s finish=%s schema=%s",
+            "llm_call model=%s served=%s input_tokens=%s output_tokens=%s reasoning_tokens=%s "
+            "cost=%s finish=%s schema=%s",
             model_name,
             served_model,
             usage.get("prompt_tokens"),
             usage.get("completion_tokens"),
+            (usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
             usage.get("cost"),
             finish_reason,
             response_schema.__name__ if response_schema else None,
@@ -322,10 +339,16 @@ class OpenRouterClient:
         if finish_reason == "length":
             raise LLMTruncatedError(
                 f"response hit max_tokens={max_tokens} (model={model_name}); "
-                "raise max_tokens or shrink the prompt"
+                "raise max_tokens or shrink the prompt",
+                usage=usage,
+                model=served_model,
             )
         if content is None or finish_reason == "content_filter":
-            raise LLMRefusalError(f"no content returned (finish_reason={finish_reason!r})")
+            raise LLMRefusalError(
+                f"no content returned (finish_reason={finish_reason!r})",
+                usage=usage,
+                model=served_model,
+            )
 
         parsed = (
             _parse_structured(content, response_schema) if response_schema is not None else None

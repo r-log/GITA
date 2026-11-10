@@ -354,6 +354,21 @@ class TestOpenRouterFailureShapes:
         with pytest.raises(LLMTruncatedError, match="max_tokens"):
             await client.call(system="x", user="y", response_schema=SimpleResponse)
 
+    async def test_truncation_still_reports_what_the_call_cost(self):
+        """A truncated call was billed: its usage travels with the error."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _make_chat_response('{"label": "cut of')
+            body["choices"][0]["finish_reason"] = "length"
+            body["model"] = "served/model"
+            body["usage"] = {"prompt_tokens": 900, "completion_tokens": 4096, "cost": 0.17}
+            return httpx.Response(200, json=body)
+
+        with pytest.raises(LLMTruncatedError) as info:
+            await _build_client(handler).call(system="x", user="y")
+        assert info.value.usage["cost"] == 0.17
+        assert info.value.model == "served/model"
+
     async def test_missing_content_is_a_refusal(self):
         def handler(request: httpx.Request) -> httpx.Response:
             body = _make_chat_response("x")
