@@ -1,0 +1,25 @@
+kind = "bug"
+tags = ["logic"]
+title = "Store absolute expiry timestamps in the cache"
+body = "Expiry times are now real timestamps, which makes them easier to read when debugging."
+notes = "set() uses time.time() but get() still compares against time.monotonic(): entries never expire."
+
+[[edits]]
+file = "shop/cache.py"
+find = '''        self._entries[key] = (time.monotonic() + self._ttl_s, value)'''
+replace = '''        self._entries[key] = (time.time() + self._ttl_s, value)'''
+
+[[expect]]
+id = "mixed_clocks"
+file = "shop/cache.py"
+anchor = "        self._entries[key] = (time.time() + self._ttl_s, value)"
+span = 0
+kinds = ["bug"]
+severity = "medium"
+
+# Added after the Haiku run (v2): the same seeded bug, seen from get().
+[[acceptable]]
+id = "read_side_comparison"
+file = "shop/cache.py"
+anchor = "        if time.monotonic() >= expires_at:"
+description_regex = '(?i)(monotonic|time\.time|wall|clock)'

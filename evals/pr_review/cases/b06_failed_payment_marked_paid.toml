@@ -1,0 +1,70 @@
+kind = "bug"
+tags = ["logic"]
+title = "Add checkout handler"
+body = "Charges the customer's card and marks the order as paid."
+notes = "A declined or failed charge is swallowed and the order is still marked paid."
+
+[[edits]]
+file = "shop/api.py"
+find = '''from shop import db
+'''
+replace = '''from shop import db, payments
+'''
+
+[[edits]]
+file = "shop/api.py"
+append = '''
+
+
+def checkout(conn: sqlite3.Connection, user: User | None, client, order_id: int, card_token: str) -> dict:
+    user = require_active(user)
+    row = conn.execute(
+        "SELECT total_cents FROM orders WHERE id = ? AND user_id = ?", (order_id, user.id)
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"order {order_id} not found")
+    try:
+        charge_id = payments.charge(client, row["total_cents"], card_token)
+    except payments.PaymentError:
+        charge_id = None
+    with db.transaction(conn):
+        conn.execute(
+            "UPDATE orders SET status = 'paid', charge_id = ? WHERE id = ?", (charge_id, order_id)
+        )
+    return {"order_id": order_id, "status": "paid"}
+'''
+
+[[expect]]
+id = "swallowed_payment_error"
+file = "shop/api.py"
+anchor = "    except payments.PaymentError:"
+span = 5
+kinds = ["bug", "security"]
+severity = "high"
+
+# --- Audit of the baseline run (2026-11-10) --------------------------------
+# Findings the grader first counted as false alarms, checked against the PR
+# head. known_issue: a real defect the seeded fix would not fix (counts as a
+# correct finding). acceptable: the seeded bug seen from another angle
+# (neutral).
+
+[[known_issue]]
+id = "double_charge"
+file = "shop/api.py"
+# Widened after the Sonnet run (v3), which cited the charge, not the lookup.
+anchor = "def checkout("
+span = 15
+description_regex = '(?i)(already[- ]paid|status|second time|twice)'
+evidence = """checkout never reads the order's status, so calling it again on a paid
+order (retry, double click) charges the card again and overwrites charge_id.
+Re-raising the payment error doesn't fix it."""
+
+[[known_issue]]
+id = "charge_before_write"
+file = "shop/api.py"
+anchor = 'charge_id = payments.charge(client, row["total_cents"], card_token)'
+span = 6
+description_regex = '(?i)(before the db|compensat|reconcil|charged but)'
+evidence = """The card is charged before, and outside, the transaction that records
+it: if the UPDATE or commit fails, the customer is charged, the order isn't
+marked paid and no charge id is kept to refund against."""

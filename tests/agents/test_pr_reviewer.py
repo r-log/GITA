@@ -248,10 +248,10 @@ class TestCoverage:
             DiffHunk(
                 file_path="src/myapp/huge.py",
                 status="added",
-                additions=5000,
+                additions=12000,
                 deletions=0,
-                patch="@@ -0,0 +1,5000 @@\n" + "+x = 1\n" * 5000,
-                changed_ranges=[ChangedLineRange(start=1, count=5000)],
+                patch="@@ -0,0 +1,12000 @@\n" + "+x = 1\n" * 12000,
+                changed_ranges=[ChangedLineRange(start=1, count=12000)],
             ),
         ]
         llm = FakeLLMClient(responses=[_findings_response(findings=[]), _summary_response()])
@@ -488,8 +488,9 @@ class TestReviewAgainstPRHead:
 
         assert [f.file for f in result.findings] == ["src/myapp/payments.py"]
         assert result.verdict == "request_changes"
-        # The model saw numbered head content for the new file.
-        assert "FILE AFTER THIS PR (2 lines)" in llm.calls[0]["user"]
+        # The model saw the new file once, numbered (not diff + file).
+        assert "NEW FILE (2 lines, all added)" in llm.calls[0]["user"]
+        assert "DIFF:" not in llm.calls[0]["user"]
         assert '    2:     return db.execute(f"SELECT' in llm.calls[0]["user"]
 
     async def test_long_file_shows_numbered_windows_only(
@@ -528,3 +529,147 @@ class TestReviewAgainstPRHead:
         assert "x_900" not in user
         # Line 900 was never shown, so the citation can't be checked: dropped.
         assert result.findings == [] and result.dropped_findings == 1
+
+
+class TestPromptBudget:
+    """Large real PRs: the budget goes to code a finding can cite."""
+
+    @staticmethod
+    def _ctx(path, status, additions, *, patch_chars=100, head=None, language="python"):
+        from gita.views.diff_context import FileContext, context_windows, count_lines
+
+        patch = "@@ -1,1 +1,1 @@\n" + "+" + "x" * patch_chars
+        hunk = DiffHunk(
+            file_path=path,
+            status=status,
+            additions=additions,
+            deletions=0 if status == "added" else 3,
+            patch=patch,
+            changed_ranges=[ChangedLineRange(start=1, count=max(additions, 1))],
+        )
+        n = count_lines(head) if head is not None else None
+        return FileContext(
+            file_path=path,
+            diff_hunk=hunk,
+            indexed=False,
+            language=language,
+            head_content=head,
+            head_line_count=n,
+            context_windows=context_windows(n, hunk.changed_ranges) if n else [],
+        )
+
+    def test_source_code_gets_the_budget_before_docs_and_tests(self):
+        from gita.agents.pr_reviewer.recipe import build_review_prompt
+
+        files = [
+            self._ctx("design/architecture.md", "modified", 400, patch_chars=30_000, language=None),
+            self._ctx("src/tests/HandlerTest.cpp", "modified", 300, patch_chars=30_000),
+            self._ctx("src/game/Handlers.cpp", "added", 600, patch_chars=30_000),
+        ]
+        prompt = build_review_prompt(_pr_info(), files, nonce="n", budget_chars=40_000)
+        assert prompt.reviewed_paths == ["src/game/Handlers.cpp"]
+        assert prompt.unreviewed_paths == ["design/architecture.md", "src/tests/HandlerTest.cpp"]
+
+    def test_new_file_is_shown_once_numbered(self):
+        from gita.agents.pr_reviewer.recipe import build_review_prompt
+
+        head = "int a;\nint b;\n"
+        prompt = build_review_prompt(
+            _pr_info(), [self._ctx("src/a.cpp", "added", 2, head=head)], nonce="n"
+        )
+        assert "NEW FILE (2 lines, all added)" in prompt.text
+        assert "DIFF:" not in prompt.text and "+xxxx" not in prompt.text
+
+    def test_deleted_file_is_listed_not_shown(self):
+        from gita.agents.pr_reviewer.recipe import build_review_prompt
+
+        gone = self._ctx("src/old.cpp", "removed", 0, patch_chars=50_000)
+        prompt = build_review_prompt(_pr_info(), [gone], nonce="n")
+        assert "file deleted" in prompt.text and "xxxx" not in prompt.text
+        assert prompt.reviewed_paths == ["src/old.cpp"]
+
+    def test_a_file_too_big_for_its_share_is_not_shown_in_part(self):
+        from gita.agents.pr_reviewer.recipe import _FILE_BLOCK_CAP_CHARS, build_review_prompt
+
+        big = self._ctx("src/big.py", "modified", 9000, patch_chars=_FILE_BLOCK_CAP_CHARS)
+        prompt = build_review_prompt(_pr_info(), [big], nonce="n")
+        assert prompt.unreviewed_paths == ["src/big.py"] and "xxxx" not in prompt.text
+
+
+class TestChangesInContext:
+    """Each changed line is shown once, numbered, where it is."""
+
+    def test_added_and_removed_lines_marked_in_place(self):
+        from gita.agents.pr_reviewer.recipe import _changes_in_context
+
+        head = "a\nb\nNEW\nc\nd\n"
+        patch = "@@ -1,5 +1,5 @@\n a\n b\n+NEW\n c\n-OLD\n d"
+        out = _changes_in_context(head, [(1, 5)], patch).splitlines()
+        assert out == ["    1: a", "    2: b", "    3+ NEW", "    4: c", "     - OLD", "    5: d"]
+
+    def test_pure_deletion_and_end_of_file(self):
+        from gita.agents.pr_reviewer.recipe import _changes_in_context
+
+        mid = _changes_in_context("a\nb\nc\n", [(1, 3)], "@@ -3,1 +2,0 @@\n-gone")
+        assert mid.splitlines() == ["    1: a", "    2: b", "     - gone", "    3: c"]
+        end = _changes_in_context("a\nb\n", [(1, 2)], "@@ -1,3 +1,2 @@\n a\n b\n-gone")
+        assert end.splitlines()[-1] == "     - gone"
+
+    def test_modified_file_shows_no_separate_diff(self):
+        from gita.agents.pr_reviewer.recipe import _render_file_block
+
+        ctx = TestPromptBudget._ctx("src/a.py", "modified", 1, head="x = 1\ny = 2\n")
+        block = _render_file_block(ctx)
+        assert "CHANGES IN CONTEXT" in block and "DIFF:" not in block
+
+    def test_raw_diff_when_the_file_content_is_unknown(self):
+        from gita.agents.pr_reviewer.recipe import _render_file_block
+
+        block = _render_file_block(TestPromptBudget._ctx("src/a.py", "modified", 1))
+        assert "DIFF:" in block
+
+
+class TestContextByRole:
+    def test_tests_and_docs_get_windows_not_whole_files(self):
+        from gita.agents.pr_reviewer.diff_parser import ChangedLineRange
+        from gita.views.diff_context import _CONTEXT_BY_ROLE, context_windows, file_role
+
+        change = [ChangedLineRange(start=100, count=1)]
+        assert file_role("src/tests/PlayerTest.cpp", "cpp") == "test"
+        assert file_role("design/architecture.md", None) == "doc"
+        assert file_role("src/game/Player.cpp", "cpp") == "source"
+        whole, radius = _CONTEXT_BY_ROLE["test"]
+        assert context_windows(250, change, whole_max=whole, radius=radius) == [(90, 110)]
+        whole, radius = _CONTEXT_BY_ROLE["doc"]
+        assert context_windows(250, change, whole_max=whole, radius=radius) == [(97, 103)]
+        whole, radius = _CONTEXT_BY_ROLE["source"]
+        assert context_windows(250, change, whole_max=whole, radius=radius) == [(1, 250)]
+
+
+class TestRouting:
+    async def test_findings_go_to_the_routed_model_and_the_summary_to_small(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        from gita.agents.pr_reviewer.bridge import build_pr_review_decision
+        from gita.agents.routing import ModelTiers
+
+        session, repo_name = indexed_synth_py
+        llm = FakeLLMClient(responses=[_findings_response(findings=[]), _summary_response()])
+        tiers = ModelTiers(small="m-small", standard="m-standard", large="m-large")
+
+        result = await run_pr_review(
+            session, repo_name, _pr_info(), _diff_hunks(), llm=llm, models=tiers
+        )
+
+        assert [c["model"] for c in llm.calls] == [result.model, "m-small"]
+        assert result.tier in ("standard", "large") and result.route_reasons
+        body = build_pr_review_decision(result, "acme/app", 42, head_sha="abc").payload["body"]
+        assert f"{result.model} ({result.tier})" in body
+
+    async def test_without_tiers_every_call_uses_the_client_default(
+        self, indexed_synth_py: tuple[AsyncSession, str]
+    ):
+        session, repo_name = indexed_synth_py
+        llm = FakeLLMClient(responses=[_findings_response(findings=[]), _summary_response()])
+        result = await run_pr_review(session, repo_name, _pr_info(), _diff_hunks(), llm=llm)
+        assert [c["model"] for c in llm.calls] == [None, None] and result.model is None

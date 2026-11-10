@@ -8,6 +8,7 @@ line numbers. The public entry point is ``parse_file``.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -26,7 +27,9 @@ _DOCSTRING_CAP = 200
 @dataclass
 class Symbol:
     name: str
-    kind: str  # "function" | "method" | "async_function" | "async_method" | "class"
+    # "function" | "method" | "async_function" | "async_method" | "class" |
+    # "interface" | "struct" | "union" | "enum" | "record"
+    kind: str
     start_line: int  # 1-indexed
     end_line: int  # 1-indexed, inclusive
     parent_class: str | None = None
@@ -57,6 +60,10 @@ class FileStructure:
 
 _QUERY_CACHE: dict[str, Query] = {}
 
+# Grammars that share another language's query file (TSX is TypeScript plus
+# JSX: same node types for everything the query captures).
+_QUERY_FILE: dict[str, str] = {"tsx": "typescript"}
+
 
 def _load_query(language: str) -> Query | None:
     if language in _QUERY_CACHE:
@@ -64,7 +71,7 @@ def _load_query(language: str) -> Query | None:
     lang = get_language(language)
     if lang is None:
         return None
-    query_path = QUERIES_DIR / f"{language}.scm"
+    query_path = QUERIES_DIR / f"{_QUERY_FILE.get(language, language)}.scm"
     if not query_path.exists():
         logger.warning("missing_query_file language=%s path=%s", language, query_path)
         return None
@@ -432,10 +439,301 @@ def _extract_javascript(source: bytes, tree) -> FileStructure:
     return _extract_ts_js(source, tree, "javascript")
 
 
+# ---------------------------------------------------------------------------
+# C and C++
+# ---------------------------------------------------------------------------
+_C_TYPE_KINDS = {
+    "class_specifier": "class",
+    "struct_specifier": "struct",
+    "union_specifier": "union",
+    "enum_specifier": "enum",
+}
+# Declarators that wrap the function declarator: `T* f()`, `T& C::f()`, `(f)()`.
+_C_DECLARATOR_WRAPPERS = frozenset(
+    {"pointer_declarator", "reference_declarator", "parenthesized_declarator"}
+)
+# Wrappers whose comment belongs to the definition they wrap.
+_C_DEFINITION_WRAPPERS = frozenset(
+    {"template_declaration", "field_declaration", "declaration", "type_definition"}
+)
+_SIGNATURE_CAP = 300
+
+
+def _collapse(text: str) -> str:
+    return " ".join(text.split())[:_SIGNATURE_CAP]
+
+
+def _c_function_declarator(func_node):
+    node = func_node.child_by_field_name("declarator")
+    while node is not None and node.type in _C_DECLARATOR_WRAPPERS:
+        inner = node.child_by_field_name("declarator")
+        if inner is None:  # parenthesized_declarator has no field name
+            inner = next(iter(node.named_children), None)
+        node = inner
+    return node if node is not None and node.type == "function_declarator" else None
+
+
+def _c_name_and_scope(declarator, source: bytes) -> tuple[str, str | None]:
+    """``Game::Player::Tick`` -> ("Tick", "Player"); ``~Player`` -> ("~Player", None)."""
+    target = declarator.child_by_field_name("declarator")
+    if target is None:
+        return _node_text(declarator, source), None
+    scope: str | None = None
+    while target.type == "qualified_identifier":
+        scope_node = target.child_by_field_name("scope")
+        if scope_node is not None:
+            scope = _node_text(scope_node, source).split("<", 1)[0]
+        name_node = target.child_by_field_name("name")
+        if name_node is None:
+            break
+        target = name_node
+    return _node_text(target, source), scope
+
+
+def _c_enclosing_type(node, source: bytes) -> str | None:
+    current = node.parent
+    while current is not None:
+        if current.type in _C_TYPE_KINDS:
+            name = current.child_by_field_name("name")
+            return _node_text(name, source).split("<", 1)[0] if name is not None else None
+        current = current.parent
+    return None
+
+
+def _definition_anchor(node, wrappers: frozenset[str]):
+    """The outermost wrapper starting on the same line (``template <...>`` may
+    start a line earlier) — that's where a doc comment sits."""
+    anchor = node
+    while anchor.parent is not None and anchor.parent.type in wrappers:
+        parent = anchor.parent
+        if parent.type != "template_declaration" and parent.start_point[0] != anchor.start_point[0]:
+            break
+        anchor = parent
+    return anchor
+
+
+_DOC_DECORATION = re.compile(r"[-=*/#~_+\s]*")
+_DOC_PREFIX = re.compile(r"^(?:/\*\*|/\*!|/\*|///|//!|//)\s?")
+_XML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
+
+
+def _comment_block(anchor, source: bytes) -> str | None:
+    """Text of the comments directly above ``anchor`` (no blank line between)."""
+    parts: list[str] = []
+    expect_end = anchor.start_point[0] - 1
+    prev = anchor.prev_sibling
+    while prev is not None and prev.type == "comment" and prev.end_point[0] == expect_end:
+        before = prev.prev_sibling
+        if before is not None and before.end_point[0] == prev.start_point[0]:
+            break  # a trailing comment on the previous statement
+        parts.insert(0, _node_text(prev, source))
+        expect_end = prev.start_point[0] - 1
+        prev = before
+    return "\n".join(parts) if parts else None
+
+
+def _first_doc_line(text: str | None) -> str | None:
+    """First meaningful line of a // , /// , /* */ or /** */ comment block."""
+    if not text:
+        return None
+    for raw in text.splitlines():
+        line = _DOC_PREFIX.sub("", raw.strip())
+        line = line.removesuffix("*/").strip().lstrip("*").strip()
+        line = _XML_TAG.sub("", line).strip()
+        for tag in ("@brief", "\\brief"):
+            if line.startswith(tag):
+                line = line[len(tag) :].strip()
+        if not line or _DOC_DECORATION.fullmatch(line) or line[0] in "@\\":
+            continue
+        return line[:_DOCSTRING_CAP]
+    return None
+
+
+def _c_signature(func_node, source: bytes, start_node) -> str | None:
+    """Everything before the body, minus a constructor's initializer list."""
+    end = func_node.child_by_field_name("body")
+    for child in func_node.children:
+        if child.type == "field_initializer_list":
+            end = child
+            break
+    if end is None:
+        return None
+    return _collapse(source[start_node.start_byte : end.start_byte].decode("utf-8", "replace"))
+
+
+def _extract_c_family(source: bytes, tree, language: str) -> FileStructure:
+    """C and C++: functions, methods (inline or ``Class::method``), types, includes."""
+    query = _load_query(language)
+    if query is None:
+        return FileStructure()
+    structure = FileStructure()
+    captures = QueryCursor(query).captures(tree.root_node)
+
+    for func_node in _nodes_from_captures(captures, "function.body"):
+        declarator = _c_function_declarator(func_node)
+        if declarator is None:
+            continue  # a macro the grammar couldn't see through
+        name, scope = _c_name_and_scope(declarator, source)
+        parent_class = scope or _c_enclosing_type(func_node, source)
+        anchor = _definition_anchor(func_node, frozenset({"template_declaration"}))
+        structure.functions.append(
+            Symbol(
+                name=name,
+                kind="method" if parent_class else "function",
+                start_line=anchor.start_point[0] + 1,
+                end_line=func_node.end_point[0] + 1,
+                parent_class=parent_class,
+                signature=_c_signature(func_node, source, anchor),
+                docstring=_first_doc_line(_comment_block(anchor, source)),
+            )
+        )
+
+    for type_node in _nodes_from_captures(captures, "class.body"):
+        name_node = type_node.child_by_field_name("name")
+        if name_node is None:
+            continue  # anonymous struct/union/enum
+        anchor = _definition_anchor(type_node, _C_DEFINITION_WRAPPERS)
+        structure.classes.append(
+            Symbol(
+                name=_node_text(name_node, source).split("<", 1)[0],
+                kind=_C_TYPE_KINDS[type_node.type],
+                start_line=anchor.start_point[0] + 1,
+                end_line=type_node.end_point[0] + 1,
+                parent_class=_c_enclosing_type(type_node, source),
+                docstring=_first_doc_line(_comment_block(anchor, source)),
+            )
+        )
+
+    for imp_node in _nodes_from_captures(captures, "import"):
+        structure.imports.append(
+            ImportStmt(
+                raw=_node_text(imp_node, source).strip(), start_line=imp_node.start_point[0] + 1
+            )
+        )
+    _sort_by_line(structure)
+    return structure
+
+
+def _sort_by_line(structure: FileStructure) -> None:
+    structure.functions.sort(key=lambda sym: (sym.start_line, sym.name))
+    structure.classes.sort(key=lambda sym: (sym.start_line, sym.name))
+    structure.imports.sort(key=lambda imp: imp.start_line)
+
+
+def _extract_c(source: bytes, tree) -> FileStructure:
+    return _extract_c_family(source, tree, "c")
+
+
+def _extract_cpp(source: bytes, tree) -> FileStructure:
+    return _extract_c_family(source, tree, "cpp")
+
+
+# ---------------------------------------------------------------------------
+# C#
+# ---------------------------------------------------------------------------
+_CS_TYPE_KINDS = {
+    "class_declaration": "class",
+    "struct_declaration": "struct",
+    "interface_declaration": "interface",
+    "record_declaration": "record",
+    "enum_declaration": "enum",
+}
+
+
+def _cs_enclosing_type(node, source: bytes) -> str | None:
+    current = node.parent
+    while current is not None:
+        if current.type in _CS_TYPE_KINDS:
+            name = current.child_by_field_name("name")
+            return _node_text(name, source) if name is not None else None
+        current = current.parent
+    return None
+
+
+def _cs_signature(node, source: bytes) -> str | None:
+    """Modifiers, return type, name and parameters; attributes and body left out."""
+    start = next((c for c in node.children if c.type != "attribute_list"), None)
+    end = node.child_by_field_name("body")
+    if end is None:
+        end = next((c for c in node.children if c.type in ("arrow_expression_clause", ";")), None)
+    if start is None:
+        return None
+    stop = end.start_byte if end is not None else node.end_byte
+    return _collapse(source[start.start_byte : stop].decode("utf-8", "replace"))
+
+
+def _extract_csharp(source: bytes, tree) -> FileStructure:
+    query = _load_query("csharp")
+    if query is None:
+        return FileStructure()
+    structure = FileStructure()
+    captures = QueryCursor(query).captures(tree.root_node)
+
+    for node in _nodes_from_captures(captures, "function.body"):
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        parent_class = _cs_enclosing_type(node, source)
+        is_async = any(
+            c.type == "modifier" and _node_text(c, source) == "async" for c in node.children
+        )
+        is_method = parent_class is not None and node.type != "local_function_statement"
+        kind = "method" if is_method else "function"
+        structure.functions.append(
+            Symbol(
+                name=_node_text(name_node, source),
+                kind=f"async_{kind}" if is_async else kind,
+                start_line=node.start_point[0] + 1,
+                end_line=node.end_point[0] + 1,
+                parent_class=parent_class,
+                signature=_cs_signature(node, source),
+                docstring=_first_doc_line(_comment_block(node, source)),
+                decorators=[
+                    _collapse(_node_text(c, source))
+                    for c in node.children
+                    if c.type == "attribute_list"
+                ],
+            )
+        )
+
+    for node in _nodes_from_captures(captures, "class.body"):
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        structure.classes.append(
+            Symbol(
+                name=_node_text(name_node, source),
+                kind=_CS_TYPE_KINDS[node.type],
+                start_line=node.start_point[0] + 1,
+                end_line=node.end_point[0] + 1,
+                parent_class=_cs_enclosing_type(node, source),
+                docstring=_first_doc_line(_comment_block(node, source)),
+                decorators=[
+                    _collapse(_node_text(c, source))
+                    for c in node.children
+                    if c.type == "attribute_list"
+                ],
+            )
+        )
+
+    for imp_node in _nodes_from_captures(captures, "import"):
+        structure.imports.append(
+            ImportStmt(
+                raw=_node_text(imp_node, source).strip(), start_line=imp_node.start_point[0] + 1
+            )
+        )
+    _sort_by_line(structure)
+    return structure
+
+
 _EXTRACTORS = {
     "python": _extract_python,
     "typescript": _extract_typescript,
+    "tsx": lambda source, tree: _extract_ts_js(source, tree, "tsx"),
     "javascript": _extract_javascript,
+    "c": _extract_c,
+    "cpp": _extract_cpp,
+    "csharp": _extract_csharp,
 }
 
 

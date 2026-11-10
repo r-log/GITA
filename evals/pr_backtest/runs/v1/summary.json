@@ -1,0 +1,47 @@
+{
+  "variant": "diff-only",
+  "reviews": 12,
+  "errors": 1,
+  "caught": {
+    "all": {
+      "caught": 5,
+      "of": 13
+    },
+    "code": {
+      "caught": 4,
+      "of": 7
+    },
+    "repo": {
+      "caught": 0,
+      "of": 1
+    },
+    "domain": {
+      "caught": 1,
+      "of": 5
+    }
+  },
+  "findings": 14,
+  "findings_not_yet_judged": 0,
+  "located": {
+    "all": 0.308,
+    "code": 0.429,
+    "repo": 0.0,
+    "domain": 0.2,
+    "chance_all": 0.081,
+    "chance_code": 0.087
+  },
+  "located_n": {
+    "all": 13,
+    "code": 7,
+    "repo": 1,
+    "domain": 5
+  },
+  "mean_findings": 1.167,
+  "request_changes": 0.083,
+  "cost_usd_total": 8.3035,
+  "failed_cost_usd": 1.1902,
+  "mean_prompt_chars": 121258.417,
+  "models": [
+    "anthropic/claude-fable-5.2"
+  ]
+}

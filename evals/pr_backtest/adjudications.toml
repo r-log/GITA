@@ -1,0 +1,489 @@
+# Every finding of every review (keyed by run: the results directory), read against the case's later-fixed
+# defects after the run. `describes` is the defect the finding describes
+# (wherever it points), or "" for none of them. A defect counts as CAUGHT in
+# a review when one of its findings describes it; LOCATED (cites a line the
+# fix changed, within the tolerance) is reported separately. Findings that
+# describe none of the mined defects are not judged right or wrong here:
+# this backtest measures recall only.
+
+[[finding]]
+run = "baseline"
+case = "pr206"
+rep = 0
+finding = 0
+describes = ""
+note = "m_gameTime vs time(NULL) at startup: not a mined defect"
+
+[[finding]]
+run = "baseline"
+case = "pr206"
+rep = 0
+finding = 1
+describes = "fix208"
+note = "localTm keeps tm_isdst of now when passed to mktime: the defect fix #208 repaired. Rated low, cited where the struct is built"
+
+[[finding]]
+run = "baseline"
+case = "pr31"
+rep = 0
+finding = 0
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "baseline"
+case = "pr31"
+rep = 0
+finding = 1
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "baseline"
+case = "pr31"
+rep = 0
+finding = 2
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "baseline"
+case = "pr31"
+rep = 0
+finding = 3
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "baseline"
+case = "pr39"
+rep = 0
+finding = 0
+describes = "fix40"
+note = "the staging stream arms the cipher and promotes on ANY first packet, not only CMSG_AUTH_CONTINUED_SESSION"
+
+[[finding]]
+run = "baseline"
+case = "pr39"
+rep = 0
+finding = 1
+describes = "fix40"
+note = "CMSG_AUTH_CONTINUED_SESSION accepted without checking its length: the fix added CONTINUED_SESSION_SIZE"
+
+[[finding]]
+run = "baseline"
+case = "pr39"
+rep = 0
+finding = 2
+describes = "fix40"
+note = "SendResumeComms runs before the promotion can fail: the ordering half the fix moved inside the promotion"
+
+[[finding]]
+run = "baseline"
+case = "pr411"
+rep = 0
+finding = 0
+describes = ""
+note = "column-index comment; not the DELETE without guid"
+
+[[finding]]
+run = "baseline"
+case = "pr451"
+rep = 0
+finding = 0
+describes = "fix507"
+note = "the loop reads 8 tab pairs while the SELECT has 6, so name/level/class/zone become tab data; cited 5 lines above the changed lines"
+
+[[finding]]
+run = "baseline"
+case = "pr520"
+rep = 0
+finding = 0
+describes = ""
+note = "includes, coupling, README; not auto-accept"
+
+[[finding]]
+run = "baseline"
+case = "pr520"
+rep = 0
+finding = 1
+describes = ""
+note = "includes, coupling, README; not auto-accept"
+
+[[finding]]
+run = "baseline"
+case = "pr520"
+rep = 0
+finding = 2
+describes = ""
+note = "includes, coupling, README; not auto-accept"
+
+[[finding]]
+run = "baseline"
+case = "pr625"
+rep = 0
+finding = 0
+describes = ""
+note = "duplicate ToPlayer call"
+
+[[finding]]
+run = "baseline"
+case = "pr625"
+rep = 0
+finding = 1
+describes = ""
+note = "about the const_cast counting script's regex, not the lootable-flag write"
+
+[[finding]]
+run = "baseline"
+case = "pr656"
+rep = 0
+finding = 0
+describes = "fix736"
+note = "the LOS gate asks whether the spell is disabled for the target, not whether LOS is disabled: the dropped LOS flag"
+
+[[finding]]
+run = "baseline"
+case = "pr691"
+rep = 0
+finding = 0
+describes = "fix735"
+note = "names the hand-written two-text yell serializer the fix replaced, and that it doesn't set up the packet; framed as drift, rated low"
+
+[[finding]]
+run = "baseline"
+case = "pr691"
+rep = 0
+finding = 1
+describes = ""
+note = "the fix did retype this parameter, but the finding is about type consistency, not the broken yell"
+
+[[finding]]
+run = "baseline"
+case = "pr691"
+rep = 0
+finding = 2
+describes = ""
+note = "linkage of builder classes"
+
+[[finding]]
+run = "v1"
+case = "pr206"
+rep = 0
+finding = 0
+describes = ""
+note = "m_gameTime vs time(NULL): not a mined defect"
+
+[[finding]]
+run = "v1"
+case = "pr206"
+rep = 0
+finding = 1
+describes = "fix208"
+note = "tm_isdst carried into mktime: the defect; cited 24 lines from the changed lines"
+
+[[finding]]
+run = "v1"
+case = "pr31"
+rep = 0
+finding = 0
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "v1"
+case = "pr31"
+rep = 0
+finding = 1
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "v1"
+case = "pr31"
+rep = 0
+finding = 2
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "v1"
+case = "pr39"
+rep = 0
+finding = 0
+describes = "fix40"
+note = "any opcode arms the cipher and promotes; CMSG_AUTH_CONTINUED_SESSION not checked"
+
+[[finding]]
+run = "v1"
+case = "pr39"
+rep = 0
+finding = 1
+describes = "fix40"
+note = "SendResumeComms before the promotion can fail"
+
+[[finding]]
+run = "v1"
+case = "pr411"
+rep = 0
+finding = 0
+describes = ""
+note = "column-index comment"
+
+[[finding]]
+run = "v1"
+case = "pr451"
+rep = 0
+finding = 0
+describes = "fix507"
+note = "8 tabs read, 6 selected: name/level/class/zone read as tab data"
+
+[[finding]]
+run = "v1"
+case = "pr520"
+rep = 0
+finding = 0
+describes = ""
+note = "includes and doc blocks"
+
+[[finding]]
+run = "v1"
+case = "pr520"
+rep = 0
+finding = 1
+describes = ""
+note = "includes and doc blocks"
+
+[[finding]]
+run = "v1"
+case = "pr625"
+rep = 0
+finding = 0
+describes = ""
+note = "about the counting script's regex"
+
+[[finding]]
+run = "v1"
+case = "pr656"
+rep = 0
+finding = 0
+describes = "fix736"
+note = "the refactor drops the LOS flag at this call"
+
+[[finding]]
+run = "v1"
+case = "pr691"
+rep = 0
+finding = 0
+describes = "fix735"
+note = "names the hand-written yell serializer the fix replaced"
+
+# --- run: haiku (Claude Haiku 5.5, indexed) ---
+[[finding]]
+run = "haiku"
+case = "pr206"
+rep = 0
+finding = 0
+describes = "fix208"
+note = "tm_isdst copied from now into mktime without resetting to -1: the defect"
+
+[[finding]]
+run = "haiku"
+case = "pr31"
+rep = 0
+finding = 0
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "haiku"
+case = "pr31"
+rep = 0
+finding = 1
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "haiku"
+case = "pr31"
+rep = 0
+finding = 2
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "haiku"
+case = "pr31"
+rep = 0
+finding = 3
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "haiku"
+case = "pr31"
+rep = 0
+finding = 4
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "haiku"
+case = "pr31"
+rep = 0
+finding = 5
+describes = ""
+note = "not about the leading-zero handling of S"
+
+[[finding]]
+run = "haiku"
+case = "pr319"
+rep = 0
+finding = 0
+describes = ""
+note = "handler_moves.py rewrite mismatch"
+
+[[finding]]
+run = "haiku"
+case = "pr319"
+rep = 0
+finding = 1
+describes = "fix605"
+note = "a pet that may be a charmed player is C-cast to Creature: the unsafe cast on a non-pet unit fix #605 removed"
+
+[[finding]]
+run = "haiku"
+case = "pr39"
+rep = 0
+finding = 0
+describes = "fix40"
+note = "the continued-session payload is never verified; the redirect ticket is claimed by address alone"
+
+[[finding]]
+run = "haiku"
+case = "pr39"
+rep = 0
+finding = 1
+describes = ""
+note = "seed RNG vs the CSPRNG comment"
+
+[[finding]]
+run = "haiku"
+case = "pr39"
+rep = 0
+finding = 2
+describes = "fix40"
+note = "SendResumeComms before the promotion can fail"
+
+[[finding]]
+run = "haiku"
+case = "pr39"
+rep = 0
+finding = 3
+describes = ""
+note = "dead m_bannerDone"
+
+[[finding]]
+run = "haiku"
+case = "pr39"
+rep = 0
+finding = 4
+describes = ""
+note = "const cast in AuthCrypt"
+
+[[finding]]
+run = "haiku"
+case = "pr411"
+rep = 0
+finding = 0
+describes = ""
+note = "include allow-list"
+
+[[finding]]
+run = "haiku"
+case = "pr415"
+rep = 0
+finding = 0
+describes = ""
+note = "include allow-list"
+
+[[finding]]
+run = "haiku"
+case = "pr451"
+rep = 0
+finding = 0
+describes = "fix507"
+note = "8 tabs read, 6 selected: name/level/class/zone read as tab data; rated high"
+
+[[finding]]
+run = "haiku"
+case = "pr533"
+rep = 0
+finding = 0
+describes = ""
+note = "CUF profile name length, unrelated"
+
+[[finding]]
+run = "haiku"
+case = "pr625"
+rep = 0
+finding = 0
+describes = "fix635"
+note = "const_cast<Creature*> to SetFlag inside the value-building path: the side effect in a packet builder"
+
+[[finding]]
+run = "haiku"
+case = "pr625"
+rep = 0
+finding = 1
+describes = ""
+note = "unchecked Transport downcast"
+
+[[finding]]
+run = "haiku"
+case = "pr656"
+rep = 0
+finding = 0
+describes = ""
+note = "a removed DISABLE_TYPE_MAP case falls through: a different issue from the LOS flag"
+
+# --- run: sonnet (Claude Sonnet 5.5, indexed) ---
+[[finding]]
+run = "sonnet"
+case = "pr206"
+rep = 0
+finding = 0
+describes = "fix208"
+note = "mktime on a copied tm without tm_isdst = -1: the defect"
+
+[[finding]]
+run = "sonnet"
+case = "pr31"
+rep = 0
+finding = 0
+describes = ""
+note = "duplicate SRP width constants"
+
+[[finding]]
+run = "sonnet"
+case = "pr31"
+rep = 0
+finding = 1
+describes = ""
+note = "a test that asserts nothing about short S"
+
+[[finding]]
+run = "sonnet"
+case = "pr39"
+rep = 0
+finding = 0
+describes = "fix40"
+note = "any opcode arms the ciphers and promotes; the continued-session check comes after promotion"
+
+[[finding]]
+run = "sonnet"
+case = "pr625"
+rep = 0
+finding = 0
+describes = "fix635"
+note = "const_cast<Creature*> to write the lootable flag while the update packet is built"

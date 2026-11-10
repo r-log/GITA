@@ -25,6 +25,7 @@ Trust boundaries:
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,26 +36,30 @@ from gita.agents.guardrails import structural_confidence, verify_pr_findings
 from gita.agents.onboarding.schemas import FindingsResponse, LLMFinding
 from gita.agents.pr_reviewer.diff_parser import DiffHunk
 from gita.agents.pr_reviewer.schemas import ReviewSummaryResponse
+from gita.agents.routing import ModelTiers, route_review
 from gita.agents.types import Finding, PRReviewResult
 from gita.github.client import PRInfo
 from gita.llm.client import LLMClient
 from gita.views._common import resolve_repo
-from gita.views.diff_context import FileContext, diff_context_view
+from gita.views.diff_context import FileContext, diff_context_view, file_role
 
 logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
-_REVIEW_MAX_TOKENS = 4096
+# Room for a full findings list on a large PR (and any reasoning the model
+# does first). Billing is per generated token, not per token allowed.
+_REVIEW_MAX_TOKENS = 32_000
 _SUMMARY_MAX_TOKENS = 1024
 _MAX_FILES_PER_REVIEW = 20
 _FILE_CONTEXT_CAP_CHARS = 8_000
-# A single file's patch above this is not shown in part: half a diff
-# invites confident findings about the half that's missing.
-_PATCH_CAP_CHARS = 20_000
 _PR_BODY_CAP_CHARS = 4_000
 # Total budget for the per-file blocks of the review prompt (~35k tokens).
 _PROMPT_BUDGET_CHARS = 140_000
+# One file's block may take at most this share of the budget. A file over
+# it is not shown in part: half a diff invites confident findings about the
+# half that's missing.
+_FILE_BLOCK_CAP_CHARS = int(_PROMPT_BUDGET_CHARS * 0.4)
 
 _BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 
@@ -105,15 +110,85 @@ def _numbered_windows(content: str, windows: list[tuple[int, int]]) -> str:
     return "\n".join(out)
 
 
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _patch_marks(patch: str) -> tuple[set[int], dict[int, list[str]]]:
+    """Head lines a patch adds, and its removed lines keyed by the head line
+    they stood before (one past the end for removals at the end of the file)."""
+    added: set[int] = set()
+    removed: dict[int, list[str]] = {}
+    new = 1
+    for row in patch.split("\n"):
+        header = _HUNK.match(row)
+        if header:
+            start, count = int(header.group(1)), header.group(2)
+            # "+9,0": nothing added; the removed lines stood after line 9.
+            new = start + 1 if count == "0" else max(start, 1)
+        elif row.startswith("+"):
+            added.add(new)
+            new += 1
+        elif row.startswith("-"):
+            removed.setdefault(new, []).append(row[1:])
+        elif not row.startswith("\\"):
+            new += 1
+    return added, removed
+
+
+def _changes_in_context(content: str, windows: list[tuple[int, int]], patch: str) -> str:
+    """The head windows with each change marked in place: ``+`` on an added
+    line, and removed lines (which have no number any more) where they were.
+    Every changed line appears once; the diff isn't repeated beside it."""
+    added, removed = _patch_marks(patch)
+    lines = content.split("\n")
+    total = len(lines) - (1 if lines and lines[-1] == "" else 0)
+    out: list[str] = []
+    for i, (start, end) in enumerate(windows):
+        if i > 0 or start > 1:
+            out.append("   ...")
+        last = min(end, total)
+        for n in range(start, last + 1):
+            out.extend(f"     - {old}" for old in removed.get(n, []))
+            out.append(f"{n:>5}{'+' if n in added else ':'} {lines[n - 1]}")
+        if last == total:
+            out.extend(f"     - {old}" for old in removed.get(total + 1, []))
+    if windows and windows[-1][1] < total:
+        out.append("   ...")
+    return "\n".join(out)
+
+
+def _review_priority(ctx: FileContext) -> tuple[int, int, str]:
+    """Order in which files get the prompt budget: code a finding can cite first.
+
+    On a large PR the budget runs out, and what runs out last should be
+    what matters least: added source code before tests, build files and
+    docs, and patches that only delete (moved-out code, which no finding
+    can cite) last. Within a tier, the most added lines first.
+    """
+    hunk = ctx.diff_hunk
+    if hunk.additions == 0:
+        tier = 4
+    else:
+        tier = {"source": 0, "other": 1, "test": 2, "doc": 3}[
+            file_role(ctx.file_path, ctx.language)
+        ]
+    return (tier, -hunk.additions, ctx.file_path)
+
+
 def _render_file_block(ctx: FileContext) -> str:
     """Render one changed file's diff + context (unfenced)."""
     hunk = ctx.diff_hunk
-    lines: list[str] = [
-        f"=== {hunk.file_path} ({hunk.status}, +{hunk.additions}/-{hunk.deletions}) ===",
-        "",
-        "DIFF:",
-        hunk.patch or "",
-    ]
+    header = f"=== {hunk.file_path} ({hunk.status}, +{hunk.additions}/-{hunk.deletions}) ==="
+    if hunk.status == "removed":
+        # No line of a deleted file can be cited: say it's gone, spend nothing.
+        return f"{header}\n(file deleted; its {hunk.deletions} lines are not shown)"
+    # With the head content, every change is shown once, in place, in the
+    # numbered file (a new file is all additions). Without it, the raw diff.
+    has_head = ctx.head_content is not None and bool(ctx.context_windows)
+    new_file = hunk.status == "added" and has_head
+    lines: list[str] = [header]
+    if not has_head:
+        lines += ["", "DIFF:", hunk.patch or ""]
 
     if ctx.symbols_near_changes:
         lines.append("")
@@ -130,15 +205,21 @@ def _render_file_block(ctx: FileContext) -> str:
         if len(ctx.imported_by) > 5:
             lines.append(f"  ... and {len(ctx.imported_by) - 5} more")
 
-    if ctx.head_content is not None and ctx.context_windows:
+    if has_head:
         lines.append("")
         whole = ctx.context_windows == [(1, ctx.head_line_count)]
-        lines.append(
-            f"FILE AFTER THIS PR ({ctx.head_line_count} lines"
-            + ("" if whole else ", windows around the changes")
-            + "):"
-        )
-        lines.append(_numbered_windows(ctx.head_content, ctx.context_windows))
+        if new_file:
+            lines.append(f"NEW FILE ({ctx.head_line_count} lines, all added):")
+            lines.append(_numbered_windows(ctx.head_content, ctx.context_windows))
+        else:
+            span = "" if whole else ", windows around the changes"
+            lines.append(
+                f"CHANGES IN CONTEXT (file after this PR, {ctx.head_line_count} lines{span}; "
+                "`+` added line, `-` removed line):"
+            )
+            lines.append(
+                _changes_in_context(ctx.head_content, ctx.context_windows, hunk.patch or "")
+            )
     elif ctx.base_content:
         base = ctx.base_content[:_FILE_CONTEXT_CAP_CHARS]
         lines.append("")
@@ -167,9 +248,10 @@ def build_review_prompt(
 ) -> _ReviewPrompt:
     """Assemble the review prompt and record which files made it in.
 
-    A file is unreviewed when it has no patch (binary, or too large for
-    GitHub to return one), its patch exceeds ``_PATCH_CAP_CHARS``, or
-    including it would exceed ``budget_chars``.
+    Files take the budget in ``_review_priority`` order. A file is
+    unreviewed when it has no patch (binary, or too large for GitHub to
+    return one), its block exceeds ``_FILE_BLOCK_CAP_CHARS``, or including
+    it would exceed ``budget_chars``. A deleted file is listed, not shown.
     """
     body = pr_info.body or ""
     if len(body) > _PR_BODY_CAP_CHARS:
@@ -184,19 +266,22 @@ def build_review_prompt(
     prompt = _ReviewPrompt(text="")
     blocks: list[str] = []
     used = 0
-    for ctx in files:
-        patch = ctx.diff_hunk.patch
-        if not patch or len(patch) > _PATCH_CAP_CHARS:
+    for ctx in sorted(files, key=_review_priority):
+        if not ctx.diff_hunk.patch and ctx.diff_hunk.status != "removed":
             prompt.unreviewed_paths.append(ctx.file_path)
             continue
         block = fence(_render_file_block(ctx), nonce=nonce, source="changed_file")
-        if used + len(block) > budget_chars:
+        if len(block) > _FILE_BLOCK_CAP_CHARS or used + len(block) > budget_chars:
             prompt.unreviewed_paths.append(ctx.file_path)
             continue
         blocks.append(block)
         used += len(block)
         prompt.reviewed_paths.append(ctx.file_path)
 
+    # Report coverage in the PR's own file order, whatever order filled the budget.
+    position = {ctx.file_path: i for i, ctx in enumerate(files)}
+    prompt.unreviewed_paths.sort(key=position.__getitem__)
+    prompt.reviewed_paths.sort(key=position.__getitem__)
     prompt.text = (
         f"Untrusted blocks in this message are delimited by "
         f"<untrusted_{nonce}> ... </untrusted_{nonce}>.\n\n"
@@ -291,6 +376,7 @@ async def run_pr_review(
     llm: LLMClient,
     max_files: int = _MAX_FILES_PER_REVIEW,
     head_contents: dict[str, str] | None = None,
+    models: ModelTiers | None = None,
 ) -> PRReviewResult:
     """Run the two-stage PR review recipe.
 
@@ -300,6 +386,10 @@ async def run_pr_review(
     and the guardrails can check syntax claims against the real file.
     The recipe handles context, LLM calls, guardrails, the verdict, and
     confidence blending.
+
+    With ``models``, the findings call goes to the tier ``route_review``
+    picks and the summary to the small tier; without, both calls use the
+    client's default model.
     """
     await resolve_repo(session, repo_name)  # fail fast on an unindexed repo
     nonce = _new_nonce()
@@ -326,6 +416,18 @@ async def run_pr_review(
     unreviewed = over_cap + prompt.unreviewed_paths
     total_files = len(diff_hunks) + len(over_cap)
 
+    route = None
+    if models is not None:
+        reviewed_files = [f for f in diff_context.files if f.file_path in prompt.reviewed_paths]
+        route = route_review(reviewed_files, models)
+        logger.info(
+            "pr_review_route pr=%d tier=%s model=%s reasons=%s",
+            pr_info.number,
+            route.tier,
+            route.model,
+            "; ".join(route.reasons),
+        )
+
     findings: list[Finding] = []
     original_count = 0
     if prompt.reviewed_paths:
@@ -334,6 +436,7 @@ async def run_pr_review(
             user=prompt.text,
             response_schema=FindingsResponse,
             max_tokens=_REVIEW_MAX_TOKENS,
+            **({"model": route.model} if route else {}),
         )
         if not isinstance(findings_response.parsed, FindingsResponse):
             raise PRReviewError("findings call returned no parsed response")
@@ -371,6 +474,7 @@ async def run_pr_review(
         ),
         response_schema=ReviewSummaryResponse,
         max_tokens=_SUMMARY_MAX_TOKENS,
+        **({"model": models.small} if models else {}),
     )
     if not isinstance(summary_response.parsed, ReviewSummaryResponse):
         raise PRReviewError("summary call returned no parsed response")
@@ -395,4 +499,7 @@ async def run_pr_review(
         confidence=final_confidence,
         dropped_findings=dropped,
         unreviewed_files=unreviewed,
+        model=route.model if route else None,
+        tier=route.tier if route else None,
+        route_reasons=list(route.reasons) if route else [],
     )

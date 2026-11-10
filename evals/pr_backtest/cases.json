@@ -1,0 +1,770 @@
+{
+ "repo": "r-log/mangosthree-server",
+ "mined_at_head": "d40e21c114ed1c88744d29c8194bd45ab9e3ab2b",
+ "cases": [
+  {
+   "id": "pr31",
+   "pr": 31,
+   "title": "[Auth] SRP6 as a unit, and the vectors the in-house crypto must reproduce",
+   "base": "e4b6f75bf1d64fcd90bc3eb7f4f6fce564fa6c1f",
+   "head": "84508bb23181c8c4cb0229688d43164449d814b5",
+   "bugs": [
+    {
+     "id": "fix505",
+     "fix_pr": 505,
+     "fix_title": "Derive the SRP session key as the client does when S has zero low bytes",
+     "fix_base": "bb619a72f5b64ba7f4c4840dabfb51629c940146",
+     "fix_head": "ee30279482a204675b2094c3d43cdb16ae724405",
+     "share": 1.0,
+     "truth": [
+      {
+       "file": "src/realmd/Auth/Srp6.cpp",
+       "lines": [
+        117,
+        118,
+        119,
+        122,
+        125,
+        127,
+        129,
+        136,
+        138,
+        141
+       ]
+      },
+      {
+       "file": "src/realmd/Auth/Srp6.h",
+       "lines": [
+        79,
+        80,
+        83,
+        84
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr39",
+   "pr": 39,
+   "title": "[Proto] The second world stream: the four defects between the redirect design and a working login",
+   "base": "70eee7417de9e675822a09a668cbb012b0a3abd5",
+   "head": "ad126ecd871c384fa5c0538c64de2c3addf08903",
+   "bugs": [
+    {
+     "id": "fix40",
+     "fix_pr": 40,
+     "fix_title": "[Proto] Review fixes for the second stream: announce inside the promotion, and refuse anything but the handshake",
+     "fix_base": "4f341776503734a80b10282bd0eb139590be9a2a",
+     "fix_head": "776ffa9aadb5e71dc7f1ca0bade07a897425fd28",
+     "share": 0.64,
+     "truth": [
+      {
+       "file": "src/proto/ClientConnection.cpp",
+       "lines": [
+        75,
+        403,
+        404,
+        409,
+        410,
+        411,
+        412,
+        413,
+        414,
+        415,
+        421,
+        422,
+        423,
+        424,
+        425,
+        426,
+        427,
+        428,
+        429,
+        430,
+        431,
+        432,
+        433
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr206",
+   "pr": 206,
+   "title": "[Game] The monthly quest reset computes and compares on one clock",
+   "base": "beb8e38053fd54732a5e07974e574d5608745b85",
+   "head": "9993321608a8fb694ece381a1ee18f646a60ced8",
+   "bugs": [
+    {
+     "id": "fix208",
+     "fix_pr": 208,
+     "fix_title": "[Game] The monthly quest reset lands on local midnight in every zone",
+     "fix_base": "9993321608a8fb694ece381a1ee18f646a60ced8",
+     "fix_head": "a0f47de51e642186028e4ced833fcecf935c6244",
+     "share": 0.64,
+     "truth": [
+      {
+       "file": "src/game/WorldHandlers/World.cpp",
+       "lines": [
+        1770,
+        1772,
+        1773,
+        1785
+       ]
+      },
+      {
+       "file": "src/game/WorldHandlers/World.h",
+       "lines": [
+        838,
+        839,
+        841
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr319",
+   "pr": 319,
+   "title": "[Game] Decoupling: the pet command handlers move into session/handlers/entities as a stateless class",
+   "base": "f896bda39a3f98133e3c55476be9ee29c4dd1e7e",
+   "head": "ae5448722efb427c125cbc6ecfa86bd3b647252a",
+   "bugs": [
+    {
+     "id": "fix605",
+     "fix_pr": 605,
+     "fix_title": "[Entities] A pet action on a charmed creature or a mind-controlled player sets no pet state, and a controlled player is not asked a creature's movement",
+     "fix_base": "f97a42f881dd3b7c97bb77c623f6b39cd3a4d71b",
+     "fix_head": "cb50cb992ac29b1c8989d6d4afc06968b490800c",
+     "share": 0.94,
+     "truth": [
+      {
+       "file": "src/game/session/handlers/entities/PetHandlers.cpp",
+       "lines": [
+        79,
+        80,
+        88,
+        91,
+        114,
+        115,
+        116,
+        125,
+        126,
+        127,
+        133,
+        134,
+        136,
+        137,
+        138,
+        152,
+        171,
+        173,
+        174,
+        176,
+        182,
+        196,
+        209,
+        224,
+        225,
+        275,
+        284,
+        327,
+        350
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr411",
+   "pr": 411,
+   "title": "[Game] Decoupling: CurrencyMgr's statements and row reading move to a repository",
+   "base": "294dd5266a25049b7c8015df4294881bb8a09832",
+   "head": "70bba82a568ea265c0979f642154c4ba62d01fc0",
+   "bugs": [
+    {
+     "id": "fix468",
+     "fix_pr": 468,
+     "fix_title": "Delete only the logging-in character's row of an unknown currency",
+     "fix_base": "382176978ac4028919a9766b493f8cf945c4e213",
+     "fix_head": "61999cc8d196227d9d4f005974ff3f4eb5508580",
+     "share": 0.62,
+     "truth": [
+      {
+       "file": "src/game/entities/player/inventory/CurrencyMgr.cpp",
+       "lines": [
+        305
+       ]
+      },
+      {
+       "file": "src/game/persistence/characters/inventory/CurrencyRepository.cpp",
+       "lines": [
+        45,
+        47
+       ]
+      },
+      {
+       "file": "src/game/persistence/characters/inventory/CurrencyRepository.h",
+       "lines": [
+        49,
+        50
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr415",
+   "pr": 415,
+   "title": "[Game] Decoupling: TalentMgr's statements and row reading move to a repository",
+   "base": "7a655fbd25a0caad8a519dcb09ca79e7d3cabcc3",
+   "head": "2592b25dee708f04b9ebcd298de53e764ce43890",
+   "bugs": [
+    {
+     "id": "fix465",
+     "fix_pr": 465,
+     "fix_title": "Delete only the logging-in character's invalid talent and glyph rows",
+     "fix_base": "a8dc08af2ef79384009200aa125a5f0996049c43",
+     "fix_head": "232e4cc415e42a5ccb66e13ab518ad5af6fcaea6",
+     "share": 0.51,
+     "truth": [
+      {
+       "file": "src/game/entities/player/talents/TalentMgr.cpp",
+       "lines": [
+        237,
+        246,
+        272
+       ]
+      },
+      {
+       "file": "src/game/persistence/characters/talents/TalentRepository.cpp",
+       "lines": [
+        40,
+        41,
+        42,
+        43,
+        44,
+        50,
+        51,
+        52,
+        53,
+        54
+       ]
+      },
+      {
+       "file": "src/game/persistence/characters/talents/TalentRepository.h",
+       "lines": [
+        59,
+        60,
+        61,
+        65,
+        66,
+        67
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr451",
+   "pr": 451,
+   "title": "Read the guilds' and arena teams' loads as rows",
+   "base": "7aac3bf0401baabc47dd81ff7bb91961aadae96d",
+   "head": "48d832d6d6d35bf91abc2c8ea832d65ba8a7c611",
+   "bugs": [
+    {
+     "id": "fix507",
+     "fix_pr": 507,
+     "fix_title": "Read and keep all eight guild bank tabs of a guild member",
+     "fix_base": "c701cd99db3b9da47bf675bf7bf54769907df5a4",
+     "fix_head": "df806d03cb037ea029495ecfc55861be67eada58",
+     "share": 1.0,
+     "truth": [
+      {
+       "file": "src/game/persistence/characters/social/GuildRepository.cpp",
+       "lines": [
+        91,
+        92,
+        93,
+        94,
+        95,
+        96,
+        104,
+        105
+       ]
+      },
+      {
+       "file": "src/game/persistence/characters/social/GuildRepository.h",
+       "lines": [
+        100,
+        101,
+        102
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr516",
+   "pr": 516,
+   "title": "Move the query handlers into a stateless class under session/handlers/entities",
+   "base": "d599bff62b49d28c97aa4060f06cf86568a1add5",
+   "head": "40bcfb72715909cbe8cbb4e1a1f41d1a08c631f1",
+   "bugs": [
+    {
+     "id": "fix756",
+     "fix_pr": 756,
+     "fix_title": "[Creatures] The creature query reply holds the female name, the second type-flags word and the required expansion the client reads",
+     "fix_base": "5b812127ef4cb284897b3548b19fb71526bc97a1",
+     "fix_head": "8eccbbcdf0d7c210d659a35564541ce1403dc789",
+     "share": 0.59,
+     "truth": [
+      {
+       "file": "src/game/session/handlers/entities/QueryHandlers.cpp",
+       "lines": [
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        124,
+        125,
+        126
+       ]
+      }
+     ]
+    },
+    {
+     "id": "fix754",
+     "fix_pr": 754,
+     "fix_title": "[GameObjects] The gameobject query reply holds the 32 data words, the scale, the quest items and the required level the client reads",
+     "fix_base": "0f266ceac5df65963c57be3ab04c514ecf2b53f3",
+     "fix_head": "9fd9df47582ddc13ab2fd179cd5baab0fd1ce9eb",
+     "share": 0.86,
+     "truth": [
+      {
+       "file": "src/game/session/handlers/entities/QueryHandlers.cpp",
+       "lines": [
+        39,
+        153,
+        157,
+        177,
+        178,
+        179,
+        180,
+        181,
+        182,
+        183,
+        184,
+        185,
+        186,
+        187,
+        188,
+        189,
+        190,
+        191
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr520",
+   "pr": 520,
+   "title": "Move the quest handlers into a stateless class under session/handlers/entities",
+   "base": "a6b29b2a20da977e0a95b1d7fc2f9c7cf907c2f1",
+   "head": "2a072dec1bc475ee2a46f30da728ce23ae0c75ac",
+   "bugs": [
+    {
+     "id": "fix759",
+     "fix_pr": 759,
+     "fix_title": "[Quests] Auto-accept quests go into the log when their details are shown",
+     "fix_base": "4adf7116e8ca9c26dfbcc9ffd1a3ff788c3792f5",
+     "fix_head": "929a183215febd538bd5bd3d9dd1ed190ce7b8bd",
+     "share": 0.89,
+     "truth": [
+      {
+       "file": "src/game/session/handlers/entities/QuestHandlers.cpp",
+       "lines": [
+        44,
+        189,
+        190,
+        191,
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        198,
+        199,
+        200,
+        201,
+        202,
+        203,
+        204,
+        205,
+        206,
+        207,
+        208,
+        209,
+        210,
+        211,
+        212,
+        213,
+        214,
+        215,
+        216,
+        217,
+        218,
+        219,
+        220,
+        221,
+        222,
+        262,
+        331,
+        332,
+        606,
+        607
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr533",
+   "pr": 533,
+   "title": "Place the misc file's remaining session members beside their peers and delete it",
+   "base": "2fd796b74d1b7a2140c1e6bc51d34e7f5a05beb1",
+   "head": "42e4e4abed2dff833c5882a06e10072455236555",
+   "bugs": [
+    {
+     "id": "fix740",
+     "fix_pr": 740,
+     "fix_title": "[session] Read the client's skipped movement time and relay it, with the relay on its own 4.3.4 opcode",
+     "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
+     "fix_head": "c5b4d0974f15bdc17c0dd88d656f86aa0e7f6646",
+     "share": 0.68,
+     "truth": [
+      {
+       "file": "src/game/WorldHandlers/MovementHandler.cpp",
+       "lines": [
+        661,
+        662,
+        664,
+        666,
+        667,
+        668,
+        669,
+        670,
+        671,
+        672,
+        673,
+        674,
+        675,
+        676,
+        677,
+        678,
+        679,
+        680,
+        681,
+        683,
+        684
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr603",
+   "pr": 603,
+   "title": "[Maps] An aura whose caster is a player on another map is updated by the world thread after the map phase",
+   "base": "62eb7e919554aec5daf76503b4cf528066e6da61",
+   "head": "e93783c95d1d3ce112420cc85e40f6aae88e13a8",
+   "bugs": [
+    {
+     "id": "fix609",
+     "fix_pr": 609,
+     "fix_title": "[Harness] Scenario 939's priest waits out the aura on Deepholm, which no vessel route leaves or enters",
+     "fix_base": "9ac595c5dc355729b939bab258ef2335c26a85c3",
+     "fix_head": "d91b95b8fccaec4baffaff07385b7c1529ab93c3",
+     "share": 1.0,
+     "truth": [
+      {
+       "file": "src/game/Harness/ScenariosSpell.cpp",
+       "lines": [
+        1564,
+        1565,
+        1566,
+        1567,
+        1568,
+        1569,
+        1570,
+        1571,
+        1573,
+        1607,
+        1608,
+        1693,
+        1698
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr625",
+   "pr": 625,
+   "title": "[Entities] The last C-style casts give way to const-correct calls",
+   "base": "227032208b88829ad3a2f47af2ca4fb1790726a9",
+   "head": "08b9d59c5994eae03e369265b82ab31e5012c2e9",
+   "bugs": [
+    {
+     "id": "fix635",
+     "fix_pr": 635,
+     "fix_title": "[Entities] A creature's lootable flag is its own state; building a packet no longer writes it",
+     "fix_base": "786708c9185de3fae8f01f15fca9348d12a3466d",
+     "fix_head": "6bba9de818611907ab32fdc9314ac235df279757",
+     "share": 0.91,
+     "truth": [
+      {
+       "file": "src/game/Object/ObjectUpdate.cpp",
+       "lines": [
+        765,
+        766,
+        767,
+        768,
+        769,
+        770,
+        771,
+        772,
+        773,
+        774
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr653",
+   "pr": 653,
+   "title": "[Data] ObjectMgr no longer reaches the online players",
+   "base": "b587616a713f2518b99bc3f062d5828c0cfaf5ce",
+   "head": "5c53cf0f47585e14d74746a650dd82ac42d32dc0",
+   "bugs": [
+    {
+     "id": "fix737",
+     "fix_pr": 737,
+     "fix_title": "[social] Delete an expired mail's item rows when the expiry run deletes the mail",
+     "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
+     "fix_head": "03c4471f4802ac1101e555adce125e12b4a84027",
+     "share": 1.0,
+     "truth": [
+      {
+       "file": "src/game/WorldHandlers/Mail.cpp",
+       "lines": [
+        569,
+        570
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr656",
+   "pr": 656,
+   "title": "[Data] The spell-disable check reads its unit through a subject the entities implement",
+   "base": "00f7b8d094fe2afad8c42cd8457afab30baaff6c",
+   "head": "452e4d95138ceff85e626e72aeb9a577af713087",
+   "bugs": [
+    {
+     "id": "fix736",
+     "fix_pr": 736,
+     "fix_title": "[spells] Test the line of sight disable flag where a cast or a creature's target pick asks for it",
+     "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
+     "fix_head": "c87cd5d788592eadbd33f5d9ba00950e00569056",
+     "share": 0.91,
+     "truth": [
+      {
+       "file": "src/game/WorldHandlers/DisableMgr.cpp",
+       "lines": [
+        365
+       ]
+      },
+      {
+       "file": "src/game/WorldHandlers/DisableMgr.h",
+       "lines": [
+        84,
+        85
+       ]
+      },
+      {
+       "file": "src/game/Object/Creature.cpp",
+       "lines": [
+        74,
+        2713
+       ]
+      },
+      {
+       "file": "src/game/spells/pipeline/SpellCheckTarget.cpp",
+       "lines": [
+        209
+       ]
+      },
+      {
+       "file": "src/game/spells/pipeline/SpellChecks.cpp",
+       "lines": [
+        277
+       ]
+      },
+      {
+       "file": "src/game/spells/pipeline/SpellTargeting.cpp",
+       "lines": [
+        370,
+        469,
+        1281
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr691",
+   "pr": 691,
+   "title": "[pvp] Tell clients the battleground and map chat through their notices",
+   "base": "74f09e84d1dc9a4b22b62590740080b4354af64e",
+   "head": "fabbafe3f4cec0435a966a349983c38212936f9b",
+   "bugs": [
+    {
+     "id": "fix735",
+     "fix_pr": 735,
+     "fix_title": "[pvp] Send the battleground herald's two-text yells as monster yells",
+     "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
+     "fix_head": "ca9e10172a685d86ab9979a0a434899d5c274ce4",
+     "share": 0.87,
+     "truth": [
+      {
+       "file": "src/game/BattleGround/BattleGround.cpp",
+       "lines": [
+        1167
+       ]
+      },
+      {
+       "file": "src/game/BattleGround/BattleGroundMgr.cpp",
+       "lines": [
+        185
+       ]
+      },
+      {
+       "file": "src/game/BattleGround/BattleGroundMgr.h",
+       "lines": [
+        477
+       ]
+      },
+      {
+       "file": "src/game/session/packets/pvp/BattleGroundPackets.cpp",
+       "lines": [
+        112,
+        171,
+        181,
+        182,
+        183,
+        184,
+        185,
+        186,
+        187,
+        188,
+        189,
+        190,
+        191,
+        195,
+        202,
+        867
+       ]
+      },
+      {
+       "file": "src/game/session/packets/pvp/BattleGroundPackets.h",
+       "lines": [
+        65
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "pr726",
+   "pr": 726,
+   "title": "[data] Hold the game object spawns and the cell guids in data/ stores",
+   "base": "49282501f58e8f2c091442a40fc9c7f01a9fa37e",
+   "head": "43e6171f2e7154005d4583fc03218a9908c4ba04",
+   "bugs": [
+    {
+     "id": "fix734",
+     "fix_pr": 734,
+     "fix_title": "[data] Drop a deleted creature spawn from its map's active list",
+     "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
+     "fix_head": "0a2c67d11c2266f3e702e97a8711689785a8837b",
+     "share": 0.57,
+     "truth": [
+      {
+       "file": "src/game/data/CellObjectGuidStore.cpp",
+       "lines": [
+        47
+       ]
+      },
+      {
+       "file": "src/game/data/CellObjectGuidStore.h",
+       "lines": [
+        37,
+        48,
+        49
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

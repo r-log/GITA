@@ -1,0 +1,18 @@
+kind = "bug"
+tags = ["security"]
+title = "Shorter session tokens"
+body = "Tokens were long enough to wrap in our logs; 4 bytes is plenty."
+notes = "4 random bytes is ~32 bits: session tokens become guessable."
+
+[[edits]]
+file = "shop/auth.py"
+find = '''    return secrets.token_urlsafe(32)'''
+replace = '''    return secrets.token_urlsafe(4)'''
+
+[[expect]]
+id = "weak_token"
+file = "shop/auth.py"
+anchor = "    return secrets.token_urlsafe(4)"
+span = 0
+kinds = ["security"]
+severity = "high"

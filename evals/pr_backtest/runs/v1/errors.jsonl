@@ -1,0 +1,1 @@
+{"error": "LLMTruncatedError('response hit max_tokens=16000 (model=anthropic/claude-fable-5.2); raise max_tokens or shrink the prompt')", "failure_class": "truncated", "prompt_id": "pr319", "rep": 0, "usage": {"cost_usd": 1.190248, "input_tokens": 68781, "output_tokens": 16000}}

@@ -27,8 +27,10 @@ once it has run and passed in a sandbox.
   without tests, generates a pytest file, **runs it in an isolated
   container**, and opens a PR only if the tests pass.
 - **Indexing** — full or incremental (git-diff driven) indexing of Python,
-  TypeScript and JavaScript into Postgres: symbols, signatures,
-  docstrings, an import graph, full-text search and optional embeddings.
+  TypeScript/TSX, JavaScript, C, C++ and C# into Postgres: symbols,
+  signatures, docstrings, an import/include graph, full-text search and
+  optional embeddings. A 2,100-file C++ game server indexes in about 11 s,
+  with 99.9% of its project `#include`s resolved without the build system.
 
 ## How a PR review works
 
@@ -77,6 +79,38 @@ GitHub comment    model text neutralised (@-mentions, HTML, images)
 
 The threat model, with the control for each threat and the known gaps,
 is in [SECURITY.md](SECURITY.md).
+
+## Measured: the PR reviewer
+
+An end-to-end eval ([evals/pr_review](evals/pr_review/README.md)) runs
+the real review pipeline on 27 pull requests with known bugs (16 seeded-bug
+PRs, 9 clean ones, 2 that try prompt injection), three times each, and
+grades the posted review deterministically. Claude Fable 5.2, 81 reviews,
+$0.06 and ~12 s of model time per review; scores include the guardrail
+fix described below:
+
+| | |
+|---|---|
+| Seeded bugs reported | 100% (57/57) |
+| Medium+ findings that are real | 100% (seeded only: 73% — see below) |
+| Clean PRs without a false alarm | 100% (27/27) |
+| Prompt-injection PRs still flagged | 100% (6/6) |
+
+What the eval found mattered more than the scores:
+
+- **A guardrail bug.** The parse-error guardrail dropped a correct,
+  critical SQL-injection finding because it mentioned the SQL syntax error
+  a stray quote causes; that review said `comment` instead of
+  `request_changes`. Fixed, and verified by **replaying** the recorded
+  model responses through the fixed code: no model calls, no sampling
+  noise, one review changed (baseline recall was 98%).
+- **The grader, not the model, produced the false alarms.** 30 findings
+  matched no seeded bug. On inspection 21 were real bugs the test PRs
+  contained by accident (a missing ownership check, a double charge,
+  negative quantities that add stock) and 9 restated a seeded bug; none
+  were wrong. They're recorded per case with evidence.
+- **The suite is too easy for this model** to rank models; it works as a
+  regression gate. Harder, cross-file cases are the next step.
 
 ### Trust model — `WRITE_MODE`
 
@@ -128,6 +162,7 @@ worker.
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_WEBHOOK_SECRET` | GitHub App credentials. |
 | `GITHUB_APP_SLUG` | Ignore only GITA's own bot; other bots' PRs are reviewed. |
 | `OPENROUTER_API_KEY`, `AI_DEFAULT_MODEL` | LLM provider and model. |
+| `AI_MODEL_SMALL`, `AI_MODEL_STANDARD`, `AI_MODEL_LARGE` | Optional model tiers: the reviewer routes each PR to one by what it changes (`agents/routing.py`). |
 | `OPENAI_API_KEY` | Optional: file embeddings for semantic search. |
 | `WRITE_MODE` | `shadow` / `comment` / `full`. |
 | `ONBOARDING_LABEL` | Label that requests onboarding (default `gita:onboard`). |
@@ -169,16 +204,19 @@ build.
   comments.
 - **Token permissions** are scoped to one repository but not narrowed per
   action (see SECURITY.md).
-- **Indexing:** `.tsx` files are not indexed, and some TypeScript forms
-  (abstract classes, anonymous default exports, `require()`) are not
-  captured. Files with parse errors are indexed with partial structure.
+- **Indexing:** some TypeScript forms (abstract classes, anonymous default
+  exports, `require()`) are not captured. C/C++ `#include`s are resolved
+  by path, not from the build's include directories, and macros aren't
+  expanded; C# `using` directives are recorded but not resolved (a
+  namespace spans files). Files with parse errors are indexed with
+  partial structure.
 - **Test generation** targets Python only, and the sandbox image must
   contain the target repository's dependencies.
 - **The model provider** is OpenRouter through a small HTTP client
   (`llm/client.py`); agents depend only on the `LLMClient` protocol.
-- **No precision/recall numbers yet.** The seeded-bug fixtures and
-  checklists in `tests/golden_agents/` are the start of an evaluation
-  harness; publishing measured results is the next step.
+- **The review eval is synthetic and small** (27 hand-written PRs on a
+  small service). Onboarding and test generation have golden tests but no
+  measured eval yet.
 
 ## Repository layout
 
@@ -198,6 +236,7 @@ src/gita/
   views/         deterministic query layer used by the agents
   web/           FastAPI webhook receiver and event dispatch
 alembic/         migrations (the schema's source of truth, checked in CI)
+evals/           PR-review eval: cases, grader, runner, recorded runs
 docker/          sandbox image for generated tests
 tests/           pytest suites and fixture repositories
 ```

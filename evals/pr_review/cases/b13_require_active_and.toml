@@ -1,0 +1,18 @@
+kind = "bug"
+tags = ["security"]
+title = "Refactor require_active condition"
+body = "Small cleanup of the login check."
+notes = "'and' instead of 'or': anonymous callers (user=None) and deactivated users now pass."
+
+[[edits]]
+file = "shop/auth.py"
+find = '''    if user is None or not user.is_active:'''
+replace = '''    if user is None and not user.is_active:'''
+
+[[expect]]
+id = "and_or"
+file = "shop/auth.py"
+anchor = "    if user is None and not user.is_active:"
+span = 0
+kinds = ["security", "bug"]
+severity = "critical"

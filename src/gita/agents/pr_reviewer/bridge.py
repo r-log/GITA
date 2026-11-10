@@ -125,8 +125,9 @@ def _render_review_body(result: PRReviewResult) -> str:
     # --- Footer ---
     lines.append("")
     lines.append("---")
+    reviewer = f" \u00b7 {result.model} ({result.tier})" if result.model else ""
     lines.append(
-        f"<sub>\U0001f916 GITA v{__version__} \u00b7 PR reviewer \u00b7 "
+        f"<sub>\U0001f916 GITA v{__version__} \u00b7 PR reviewer{reviewer} \u00b7 "
         f"confidence {result.confidence:.0%}</sub>"
     )
     return "\n".join(lines)

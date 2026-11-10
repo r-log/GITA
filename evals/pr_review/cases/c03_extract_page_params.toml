@@ -1,0 +1,22 @@
+kind = "clean"
+tags = ["refactor"]
+title = "Extract page parameter handling"
+body = "Pulls the paging arithmetic into a helper so the upcoming search endpoint can reuse it."
+notes = "Behaviour-preserving refactor."
+
+[[edits]]
+file = "shop/api.py"
+find = '''def list_products(conn: sqlite3.Connection, user: User | None, page: int, per_page: int) -> dict:
+    per_page = clamp_per_page(per_page)
+    rows = db.list_products(conn, limit=per_page, offset=offset_for(page, per_page))
+    return {"page": page, "items": [dict(row) for row in rows]}'''
+replace = '''def _page_window(page: int, per_page: int) -> tuple[int, int]:
+    """(limit, offset) for a 1-based page."""
+    per_page = clamp_per_page(per_page)
+    return per_page, offset_for(page, per_page)
+
+
+def list_products(conn: sqlite3.Connection, user: User | None, page: int, per_page: int) -> dict:
+    limit, offset = _page_window(page, per_page)
+    rows = db.list_products(conn, limit=limit, offset=offset)
+    return {"page": page, "items": [dict(row) for row in rows]}'''

@@ -1,0 +1,47 @@
+kind = "bug"
+tags = ["logic"]
+title = "Add quick_order helper for one-click purchases"
+body = "Builds an order from a single item plus optional extras."
+notes = "Mutable default list is shared between calls, so orders accumulate items."
+
+[[edits]]
+file = "shop/orders.py"
+append = '''
+
+
+def quick_order(item: LineItem, extras: list[LineItem] = []) -> Order:
+    extras.append(item)
+    return Order(items=extras)
+'''
+
+[[expect]]
+id = "mutable_default"
+file = "shop/orders.py"
+anchor = "def quick_order(item: LineItem, extras: list[LineItem] = []) -> Order:"
+span = 1
+kinds = ["bug", "quality"]
+severity = "medium"
+
+# --- Audit of the baseline run (2026-11-10) --------------------------------
+# Findings the grader first counted as false alarms, checked against the PR
+# head. known_issue: a real defect the seeded fix would not fix (counts as a
+# correct finding). acceptable: the seeded bug seen from another angle
+# (neutral).
+
+[[known_issue]]
+id = "aliases_caller_list"
+file = "shop/orders.py"
+anchor = "    extras.append(item)"
+span = 1
+description_regex = '(?i)(caller|alias|in place|same list)'
+evidence = """When the caller passes `extras`, quick_order appends to the caller's
+list and the returned Order aliases it (checked: the list grows and
+`order.items is extras`). Replacing the mutable default with None doesn't fix it."""
+
+[[known_issue]]
+id = "skips_quantity_check"
+file = "shop/orders.py"
+anchor = "    return Order(items=extras)"
+description_regex = '(?i)(quantity|Order\.add)'
+evidence = """Order(items=...) bypasses the quantity > 0 check in Order.add:
+quick_order(LineItem(1, 100, -3)) builds an order with a -300 cent subtotal (checked)."""

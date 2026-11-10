@@ -1,0 +1,47 @@
+{
+  "variant": "indexed",
+  "reviews": 15,
+  "errors": 0,
+  "caught": {
+    "all": {
+      "caught": 5,
+      "of": 16
+    },
+    "code": {
+      "caught": 5,
+      "of": 9
+    },
+    "repo": {
+      "caught": 0,
+      "of": 1
+    },
+    "domain": {
+      "caught": 0,
+      "of": 6
+    }
+  },
+  "findings": 21,
+  "findings_not_yet_judged": 0,
+  "located": {
+    "all": 0.25,
+    "code": 0.444,
+    "repo": 0.0,
+    "domain": 0.0,
+    "chance_all": 0.091,
+    "chance_code": 0.129
+  },
+  "located_n": {
+    "all": 16,
+    "code": 9,
+    "repo": 1,
+    "domain": 6
+  },
+  "mean_findings": 1.4,
+  "request_changes": 0.067,
+  "cost_usd_total": 0.1071,
+  "failed_cost_usd": 0,
+  "mean_prompt_chars": 103326.4,
+  "models": [
+    "anthropic/claude-haiku-5.5"
+  ]
+}

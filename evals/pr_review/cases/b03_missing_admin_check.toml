@@ -1,0 +1,35 @@
+kind = "bug"
+tags = ["security"]
+title = "Add product deletion endpoint"
+body = "Lets back-office staff remove discontinued products."
+notes = "Every other mutating handler calls require_admin; this one doesn't."
+
+[[edits]]
+file = "shop/api.py"
+append = '''
+
+
+def delete_product(conn: sqlite3.Connection, user: User | None, product_id: int) -> dict:
+    with db.transaction(conn):
+        conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
+    return {"deleted": product_id}
+'''
+
+[[expect]]
+id = "no_authz"
+file = "shop/api.py"
+anchor = "def delete_product(conn: sqlite3.Connection, user: User | None, product_id: int) -> dict:"
+span = 3
+kinds = ["security", "bug", "missing"]
+severity = "high"
+
+# Added after the Sonnet run (v3).
+[[known_issue]]
+id = "reports_missing_as_deleted"
+file = "shop/api.py"
+anchor = "def delete_product("
+span = 4
+description_regex = '(?i)(nonexistent|rowcount|result is ignored|as if it succeeded)'
+evidence = """delete_product returns {"deleted": product_id} whether or not a row was
+deleted (the DELETE's rowcount is ignored); get_product raises LookupError for
+the same id."""

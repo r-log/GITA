@@ -8,7 +8,8 @@ under ``root`` that survives the filter. Filter rules:
   generated, and virtualenv paths.
 - Must NOT match a skipped suffix (``SKIP_SUFFIXES``) — catches minified JS,
   type-only declaration files, protobuf stubs, and lockfiles.
-- Must be < ``MAX_FILE_SIZE`` bytes (default 200 KB).
+- Must be < ``MAX_FILE_SIZE`` bytes (default 512 KB: large hand-written
+  C++ translation units — a game server's ``Player.cpp`` — exceed 200 KB).
 - Tests/specs are excluded by default (the agents analyse product code);
   pass ``include_tests=True`` to index them.
 """
@@ -26,7 +27,25 @@ LANGUAGE_BY_EXT: dict[str, str] = {
     ".mjs": "javascript",
     ".cjs": "javascript",
     ".jsx": "javascript",
+    ".tsx": "tsx",
+    ".c": "c",
+    # Headers parse with the C++ grammar: it accepts C headers too, and a
+    # `.h` file can't be told apart without the build system.
+    ".h": "cpp",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".c++": "cpp",
+    ".hh": "cpp",
+    ".hpp": "cpp",
+    ".hxx": "cpp",
+    ".inl": "cpp",
+    ".ipp": "cpp",
+    ".cs": "csharp",
 }
+
+# Languages whose #include statements resolve against the repo's headers.
+C_FAMILY: frozenset[str] = frozenset({"c", "cpp"})
 
 SKIP_DIRS: frozenset[str] = frozenset(
     {
@@ -52,6 +71,16 @@ SKIP_DIRS: frozenset[str] = frozenset(
         ".ruff_cache",
         ".tox",
         "vendor",
+        # Vendored third-party code, common in C/C++ repos
+        "dep",
+        "deps",
+        "third_party",
+        "thirdparty",
+        "3rdparty",
+        "external",
+        "extern",
+        # .NET build output (generated .cs files)
+        "obj",
         ".idea",
         ".vscode",
     }
@@ -66,10 +95,14 @@ SKIP_SUFFIXES: tuple[str, ...] = (
     ".pyi",
     "_pb2.py",
     "_pb2_grpc.py",
+    ".pb.h",
+    ".pb.cc",
+    ".g.cs",
+    ".designer.cs",
     ".lock",
 )
 
-MAX_FILE_SIZE = 200_000  # 200 KB
+MAX_FILE_SIZE = 512_000  # 512 KB
 
 
 @dataclass(frozen=True)
@@ -87,7 +120,8 @@ def _is_skipped(path: Path, include_tests: bool) -> bool:
             return True
         if not include_tests and part in TEST_DIRS:
             return True
-    return any(path.name.endswith(suffix) for suffix in SKIP_SUFFIXES)
+    name = path.name.lower()
+    return any(name.endswith(suffix) for suffix in SKIP_SUFFIXES)
 
 
 def indexable_language(
@@ -106,7 +140,7 @@ def indexable_language(
     cap.
     """
     rel = Path(relative_path)
-    language = LANGUAGE_BY_EXT.get(rel.suffix)
+    language = LANGUAGE_BY_EXT.get(rel.suffix.lower())
     if language is None or _is_skipped(rel, include_tests):
         return None
     path = root / rel

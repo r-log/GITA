@@ -1,0 +1,17 @@
+kind = "clean"
+tags = ["feature"]
+title = "Add format_price for receipts"
+body = "Formats integer cents as a currency string."
+notes = "Correct for negatives, zero and large values."
+
+[[edits]]
+file = "shop/orders.py"
+append = '''
+
+
+def format_price(cents: int, currency: str = "EUR") -> str:
+    """Format integer cents, e.g. 123456 -> 'EUR 1,234.56'."""
+    sign = "-" if cents < 0 else ""
+    whole, frac = divmod(abs(cents), 100)
+    return f"{sign}{currency} {whole:,}.{frac:02d}"
+'''

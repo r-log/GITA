@@ -17,6 +17,9 @@ dependencies = [
     "tree-sitter-python>=0.21",
     "tree-sitter-typescript>=0.21",
     "tree-sitter-javascript>=0.21",
+    "tree-sitter-c>=0.23",
+    "tree-sitter-cpp>=0.23",
+    "tree-sitter-c-sharp>=0.23",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
@@ -57,7 +60,7 @@ line-length = 100
 target-version = "py312"
 # Fixture repos contain deliberate bugs and line numbers the golden
 # checklists cite; never lint or reformat them.
-extend-exclude = ["tests/fixtures"]
+extend-exclude = ["tests/fixtures", "evals/pr_review/base_repo"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

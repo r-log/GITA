@@ -230,3 +230,28 @@ class TestTsJsdocExtraction:
         assert "signature" in fn
         assert "docstring" in fn
         assert "decorators" in fn
+
+
+# ---------------------------------------------------------------------------
+# .tsx — TypeScript with JSX, parsed with the TSX grammar
+# ---------------------------------------------------------------------------
+def test_tsx_component_file():
+    source = (
+        'import React from "react";\n'
+        'import { Button } from "./Button";\n'
+        "\n"
+        "/** The app shell. */\n"
+        "export function App(props: { title: string }): JSX.Element {\n"
+        "  return <div><Button label={props.title} /></div>;\n"
+        "}\n"
+        "\n"
+        "export class Store {\n"
+        "  get(key: string) { return key; }\n"
+        "}\n"
+    )
+    s = parse_file(Path("App.tsx"), source, "tsx")
+    app = next(f for f in s.functions if f.name == "App")
+    assert app.docstring == "The app shell."
+    assert [c.name for c in s.classes] == ["Store"]
+    assert {f.name for f in s.functions} == {"App", "get"}
+    assert len(s.imports) == 2

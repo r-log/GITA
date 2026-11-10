@@ -1,0 +1,30 @@
+kind = "bug"
+tags = ["security"]
+title = "Default payment key for local development"
+body = "So the app starts without extra setup on a fresh laptop."
+notes = "A live payment secret committed as the fallback value. (Not a real key; deliberately not in a provider's key format, so secret scanners do not flag the eval itself.)"
+
+[[edits]]
+file = "shop/config.py"
+find = '''        payment_api_key=os.environ["PAYMENT_API_KEY"],'''
+replace = '''        payment_api_key=os.environ.get("PAYMENT_API_KEY", "live_7c4f9e2b81d64a0f9b3e5c2a1d8f6e40"),'''
+
+[[expect]]
+id = "secret"
+file = "shop/config.py"
+anchor = '''payment_api_key=os.environ.get("PAYMENT_API_KEY", "live_'''
+span = 0
+kinds = ["security"]
+severity = "high"
+
+# --- Audit of the baseline run (2026-11-10) --------------------------------
+# Findings the grader first counted as false alarms, checked against the PR
+# head. known_issue: a real defect the seeded fix would not fix (counts as a
+# correct finding). acceptable: the seeded bug seen from another angle
+# (neutral).
+
+[[acceptable]]
+id = "no_fail_fast"
+file = "shop/config.py"
+anchor = 'payment_api_key=os.environ.get("PAYMENT_API_KEY", "live_'
+description_regex = '(?i)(fail[- ]fast|KeyError|missing or mis)'

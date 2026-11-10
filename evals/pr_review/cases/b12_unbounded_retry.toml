@@ -1,0 +1,59 @@
+kind = "bug"
+tags = ["logic"]
+title = "Keep retrying transient provider errors"
+body = "The provider has been flaky; don't give up after three attempts."
+notes = "Retries forever on a persistent transient error (hangs the request and hammers the provider)."
+
+[[edits]]
+file = "shop/payments.py"
+find = '''    for attempt in range(1, max_attempts + 1):
+        try:
+            return client.create_charge(amount=amount_cents, source=card_token)
+        except TransientPaymentError:
+            if attempt == max_attempts:
+                raise
+            time.sleep(min(8.0, 0.5 * 2**attempt) * random.uniform(0.5, 1.0))
+    raise AssertionError("unreachable")'''
+replace = '''    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return client.create_charge(amount=amount_cents, source=card_token)
+        except TransientPaymentError:
+            time.sleep(min(8.0, 0.5 * 2**attempt) * random.uniform(0.5, 1.0))'''
+
+[[expect]]
+id = "unbounded"
+file = "shop/payments.py"
+anchor = "    while True:"
+span = 6
+kinds = ["bug", "design"]
+severity = "medium"
+
+# --- Audit of the baseline run (2026-11-10) --------------------------------
+# Findings the grader first counted as false alarms, checked against the PR
+# head. known_issue: a real defect the seeded fix would not fix (counts as a
+# correct finding). acceptable: the seeded bug seen from another angle
+# (neutral).
+
+[[known_issue]]
+id = "no_idempotency_key"
+file = "shop/payments.py"
+anchor = "            return client.create_charge(amount=amount_cents, source=card_token)"
+description_regex = '(?i)idempoten'
+evidence = """create_charge is retried without an idempotency key, so a timeout after
+the provider processed the charge leads to a second charge. Present in the
+base (up to 3 attempts); restoring the cap doesn't fix it."""
+
+[[acceptable]]
+id = "max_attempts_ignored"
+file = "shop/payments.py"
+anchor = "def charge(client, amount_cents: int, card_token: str, *, max_attempts: int = 3) -> str:"
+span = 8
+description_regex = 'max_attempts'
+
+[[acceptable]]
+id = "backoff_overflow"
+file = "shop/payments.py"
+anchor = "            time.sleep(min(8.0, 0.5 * 2**attempt) * random.uniform(0.5, 1.0))"
+description_regex = '(?i)overflow'

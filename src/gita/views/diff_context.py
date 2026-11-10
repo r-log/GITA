@@ -38,6 +38,17 @@ logger = logging.getLogger(__name__)
 # ``_WINDOW_RADIUS`` lines around each changed range.
 _WHOLE_FILE_MAX_LINES = 300
 _WINDOW_RADIUS = 30
+_DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
+_TEST_DIRS = frozenset({"tests", "test", "spec", "specs", "__tests__"})
+# Context around changes, per kind of file: (show whole files up to this
+# many lines, window radius). Product code gets the most; a test or a doc
+# change is reviewed with the lines around it, not the whole file.
+_CONTEXT_BY_ROLE = {
+    "source": (_WHOLE_FILE_MAX_LINES, _WINDOW_RADIUS),
+    "other": (_WHOLE_FILE_MAX_LINES, _WINDOW_RADIUS),
+    "test": (0, 10),
+    "doc": (0, 3),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +120,22 @@ def language_for(path: str) -> str | None:
     return LANGUAGE_BY_EXT.get(PurePosixPath(path).suffix.lower())
 
 
+def file_role(path: str, language: str | None) -> str:
+    """ "doc", "test", "source" (a language we parse) or "other" (build files, config)."""
+    lowered = path.lower()
+    parts = lowered.split("/")
+    name = parts[-1]
+    if lowered.endswith(_DOC_SUFFIXES):
+        return "doc"
+    if (
+        any(p in _TEST_DIRS for p in parts[:-1])
+        or name.startswith("test_")
+        or name.rsplit(".", 1)[0].endswith(("_test", "test", ".spec", ".test"))
+    ):
+        return "test"
+    return "source" if language is not None else "other"
+
+
 def _extract_symbols_with_lines(structure: dict) -> list[SymbolInDiff]:
     symbols: list[SymbolInDiff] = []
     for cls in structure.get("classes", []):
@@ -147,16 +174,19 @@ def _symbols_near_changes(
 
 
 def context_windows(
-    line_count: int, changed_ranges: list[ChangedLineRange]
+    line_count: int,
+    changed_ranges: list[ChangedLineRange],
+    *,
+    whole_max: int = _WHOLE_FILE_MAX_LINES,
+    radius: int = _WINDOW_RADIUS,
 ) -> list[tuple[int, int]]:
     """Head-line ranges to show: the whole file, or merged windows."""
     if line_count <= 0:
         return []
-    if line_count <= _WHOLE_FILE_MAX_LINES or not changed_ranges:
-        return [(1, min(line_count, _WHOLE_FILE_MAX_LINES))]
+    if line_count <= whole_max or not changed_ranges:
+        return [(1, min(line_count, whole_max))] if whole_max else []
     windows = sorted(
-        (max(1, r.start - _WINDOW_RADIUS), min(line_count, r.end + _WINDOW_RADIUS))
-        for r in changed_ranges
+        (max(1, r.start - radius), min(line_count, r.end + radius)) for r in changed_ranges
     )
     merged: list[tuple[int, int]] = [windows[0]]
     for start, end in windows[1:]:
@@ -228,7 +258,10 @@ async def diff_context_view(
         if head is not None:
             ctx.head_content = head
             ctx.head_line_count = count_lines(head)
-            ctx.context_windows = context_windows(ctx.head_line_count, hunk.changed_ranges)
+            whole_max, radius = _CONTEXT_BY_ROLE[file_role(hunk.file_path, language)]
+            ctx.context_windows = context_windows(
+                ctx.head_line_count, hunk.changed_ranges, whole_max=whole_max, radius=radius
+            )
             ctx.symbols_near_changes = _head_symbols(
                 hunk.file_path, head, language, hunk.changed_ranges
             )

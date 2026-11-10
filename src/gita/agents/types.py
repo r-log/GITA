@@ -66,6 +66,10 @@ class PRReviewResult:
     # Changed files the model was not shown in full (binary, patch too
     # large, over the file cap or prompt budget).
     unreviewed_files: list[str] = field(default_factory=list)
+    # Which model reviewed the change, at which tier, and why (agents/routing.py).
+    model: str | None = None
+    tier: str | None = None
+    route_reasons: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -28,7 +28,7 @@ from gita.indexer.diff import (
     read_head_sha,
 )
 from gita.indexer.embeddings import EmbeddingClient, prepare_embedding_input
-from gita.indexer.imports import discover_package_roots, resolve_import
+from gita.indexer.imports import ImportContext, build_import_context, resolve_import
 from gita.indexer.parsers import parse_file
 from gita.indexer.walker import indexable_language, iter_files
 
@@ -180,7 +180,7 @@ def _build_edges(
     repo_id,
     root_path: Path,
     code_rows: list[CodeIndex],
-    package_roots: list[Path],
+    context: ImportContext,
 ) -> tuple[list[ImportEdge], int]:
     """Build import edge rows for a list of CodeIndex rows.
 
@@ -201,7 +201,8 @@ def _build_edges(
                 source_file,
                 root_path,
                 row.language,
-                package_roots=package_roots,
+                package_roots=context.package_roots,
+                headers=context.headers,
             )
             dst_file: str | None = None
             if resolved is not None:
@@ -231,7 +232,7 @@ async def _full_index(
     repo: Repo,
     root_path: Path,
     head_sha: str | None,
-    package_roots: list[Path],
+    context: ImportContext,
     include_tests: bool,
     embedding_client: EmbeddingClient | None,
 ) -> IngestResult:
@@ -261,7 +262,7 @@ async def _full_index(
 
     files_embedded = await _attach_embeddings(code_rows, embedding_client)
 
-    edge_rows, edges_resolved = _build_edges(repo.id, root_path, code_rows, package_roots)
+    edge_rows, edges_resolved = _build_edges(repo.id, root_path, code_rows, context)
     session.add_all(edge_rows)
 
     repo.head_sha = head_sha
@@ -289,7 +290,7 @@ async def _incremental_index(
     repo: Repo,
     root_path: Path,
     head_sha: str | None,
-    package_roots: list[Path],
+    context: ImportContext,
     changes: list[FileChange],
     include_tests: bool,
     embedding_client: EmbeddingClient | None,
@@ -351,7 +352,7 @@ async def _incremental_index(
         .scalars()
         .all()
     )
-    edge_rows, edges_resolved = _build_edges(repo.id, root_path, all_rows, package_roots)
+    edge_rows, edges_resolved = _build_edges(repo.id, root_path, all_rows, context)
     session.add_all(edge_rows)
 
     repo.head_sha = head_sha
@@ -433,7 +434,10 @@ async def index_repository(
         default_branch=resolved_default_branch,
     )
     head_sha = read_head_sha(root_path)
-    package_roots = discover_package_roots(root_path)
+    context = build_import_context(
+        root_path,
+        ((f.relative_path, f.language) for f in iter_files(root_path, include_tests=include_tests)),
+    )
 
     # Decide: full or incremental?
     use_full = force_full or repo.head_sha is None
@@ -462,7 +466,7 @@ async def index_repository(
                 repo,
                 root_path,
                 head_sha,
-                package_roots,
+                context,
                 changes,
                 include_tests,
                 embedding_client,
@@ -478,7 +482,7 @@ async def index_repository(
         repo,
         root_path,
         head_sha,
-        package_roots,
+        context,
         include_tests,
         embedding_client,
     )

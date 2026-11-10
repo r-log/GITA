@@ -2,6 +2,7 @@ from gita.llm.client import (
     FakeLLMClient,
     LLMClient,
     LLMError,
+    LLMIncompleteError,
     LLMRefusalError,
     LLMRequestError,
     LLMResponse,
@@ -20,6 +21,7 @@ __all__ = [
     "LLMResponse",
     "LLMSchemaError",
     "LLMTransientError",
+    "LLMIncompleteError",
     "LLMTruncatedError",
     "OpenRouterClient",
 ]

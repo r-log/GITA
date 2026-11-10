@@ -32,6 +32,7 @@ from gita.agents.pr_reviewer import (
     parse_pr_files,
     run_pr_review,
 )
+from gita.agents.routing import ModelTiers
 from gita.agents.test_generator import preview_repo
 from gita.agents.types import OnboardingResult
 from gita.cli.formatters import (
@@ -312,6 +313,8 @@ async def cmd_review_pr(args: argparse.Namespace) -> int:
     )
 
     model = args.model or settings.ai_default_model
+    # --model reviews with that one model; otherwise the configured tiers route.
+    tiers = ModelTiers.single(args.model) if args.model else ModelTiers.from_settings(settings)
 
     async with GithubClient(auth=auth) as gh:
         print(f"Fetching PR #{pr_number} from {repo_full}...")
@@ -337,6 +340,7 @@ async def cmd_review_pr(args: argparse.Namespace) -> int:
                 diff_hunks,
                 llm=llm,
                 head_contents=head_contents,
+                models=tiers,
             )
         except RepoNotFoundError:
             print(
