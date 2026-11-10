@@ -2,31 +2,39 @@
   "variant": "indexed",
   "reviews": 12,
   "errors": 4,
+  "caught": {
+    "all": {
+      "caught": 5,
+      "of": 13
+    },
+    "code": {
+      "caught": 4,
+      "of": 7
+    },
+    "repo": {
+      "caught": 0,
+      "of": 1
+    },
+    "domain": {
+      "caught": 1,
+      "of": 5
+    }
+  },
+  "findings": 20,
+  "findings_not_yet_judged": 0,
   "located": {
-    "all": 0.231,
-    "code": 0.286,
+    "all": 0.308,
+    "code": 0.429,
     "repo": 0.0,
     "domain": 0.2,
-    "chance_all": 0.118,
-    "chance_code": 0.101
+    "chance_all": 0.122,
+    "chance_code": 0.108
   },
   "located_n": {
     "all": 13,
     "code": 7,
     "repo": 1,
     "domain": 5
-  },
-  "caught_adjudicated": {
-    "all": {
-      "caught": 1,
-      "pending": 2,
-      "of": 13
-    },
-    "code": {
-      "caught": 1,
-      "pending": 1,
-      "of": 7
-    }
   },
   "mean_findings": 1.667,
   "request_changes": 0.083,

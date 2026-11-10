@@ -469,6 +469,51 @@
    ]
   },
   {
+   "id": "pr533",
+   "pr": 533,
+   "title": "Place the misc file's remaining session members beside their peers and delete it",
+   "base": "2fd796b74d1b7a2140c1e6bc51d34e7f5a05beb1",
+   "head": "42e4e4abed2dff833c5882a06e10072455236555",
+   "bugs": [
+    {
+     "id": "fix740",
+     "fix_pr": 740,
+     "fix_title": "[session] Read the client's skipped movement time and relay it, with the relay on its own 4.3.4 opcode",
+     "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
+     "fix_head": "c5b4d0974f15bdc17c0dd88d656f86aa0e7f6646",
+     "share": 0.68,
+     "truth": [
+      {
+       "file": "src/game/WorldHandlers/MovementHandler.cpp",
+       "lines": [
+        661,
+        662,
+        664,
+        666,
+        667,
+        668,
+        669,
+        670,
+        671,
+        672,
+        673,
+        674,
+        675,
+        676,
+        677,
+        678,
+        679,
+        680,
+        681,
+        683,
+        684
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "pr603",
    "pr": 603,
    "title": "[Maps] An aura whose caster is a player on another map is updated by the world thread after the map phase",
@@ -540,6 +585,32 @@
    ]
   },
   {
+   "id": "pr653",
+   "pr": 653,
+   "title": "[Data] ObjectMgr no longer reaches the online players",
+   "base": "b587616a713f2518b99bc3f062d5828c0cfaf5ce",
+   "head": "5c53cf0f47585e14d74746a650dd82ac42d32dc0",
+   "bugs": [
+    {
+     "id": "fix737",
+     "fix_pr": 737,
+     "fix_title": "[social] Delete an expired mail's item rows when the expiry run deletes the mail",
+     "fix_base": "458afd0bf58338d253be13f96a8900b9c491cd41",
+     "fix_head": "03c4471f4802ac1101e555adce125e12b4a84027",
+     "share": 1.0,
+     "truth": [
+      {
+       "file": "src/game/WorldHandlers/Mail.cpp",
+       "lines": [
+        569,
+        570
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "pr656",
    "pr": 656,
    "title": "[Data] The spell-disable check reads its unit through a subject the entities implement",
@@ -554,6 +625,26 @@
      "fix_head": "c87cd5d788592eadbd33f5d9ba00950e00569056",
      "share": 0.91,
      "truth": [
+      {
+       "file": "src/game/WorldHandlers/DisableMgr.cpp",
+       "lines": [
+        365
+       ]
+      },
+      {
+       "file": "src/game/WorldHandlers/DisableMgr.h",
+       "lines": [
+        84,
+        85
+       ]
+      },
+      {
+       "file": "src/game/Object/Creature.cpp",
+       "lines": [
+        74,
+        2713
+       ]
+      },
       {
        "file": "src/game/spells/pipeline/SpellCheckTarget.cpp",
        "lines": [

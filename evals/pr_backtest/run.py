@@ -423,43 +423,37 @@ def _explain(per_bug: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
-def _adjudications() -> dict[tuple, bool]:
+def _adjudications() -> dict[tuple, str]:
+    """(variant, case, rep, finding index) -> the defect it describes, or ""."""
     path = EVAL_DIR / "adjudications.toml"
     if not path.exists():
         return {}
     return {
-        (a["variant"], a["case"], a["rep"], a["bug"], a["finding"]): a["describes"]
-        for a in tomllib.loads(path.read_text()).get("adjudication", [])
+        (a["variant"], a["case"], a["rep"], a["finding"]): a["describes"]
+        for a in tomllib.loads(path.read_text()).get("finding", [])
     }
 
 
 def summarize(variant_dir: Path, variant: str) -> dict:
     rows = [r for r in _read_jsonl(variant_dir / "results.jsonl") if r.get("status") == "ok"]
     adjudicated = _adjudications()
-    tally: dict[str, list[float]] = {
-        k: [] for k in ("all", "code", "repo", "domain", "chance_all", "chance_code")
-    }
-    caught = {"all": [0, 0, 0], "code": [0, 0, 0]}  # caught, pending, total
+    groups = ("all", "code", "repo", "domain")
+    tally: dict[str, list[float]] = {k: [] for k in (*groups, "chance_all", "chance_code")}
+    caught: dict[str, list[int]] = {g: [0, 0] for g in groups}  # caught, of
+    findings = unjudged = 0
     for r in rows:
+        key = (VARIANTS[variant], r["prompt_id"], r["rep"])
+        verdicts = {i: adjudicated.get((*key, i)) for i in range(len(r["meta"]["findings_detail"]))}
+        findings += len(verdicts)
+        unjudged += sum(1 for v in verdicts.values() if v is None)
         for b in r["meta"]["per_bug"]:
             for group in ("all", b["visible"]):
-                if group in tally:
-                    tally[group].append(float(b["located"]))
+                tally[group].append(float(b["located"]))
+                caught[group][1] += 1
+                caught[group][0] += any(v == b["bug"] for v in verdicts.values())
             tally["chance_all"].append(b["chance"])
             if b["visible"] == "code":
                 tally["chance_code"].append(b["chance"])
-            verdicts = [
-                adjudicated.get((VARIANTS[variant], r["prompt_id"], r["rep"], b["bug"], i))
-                for i in b["hits"]
-            ]
-            for group in ("all", "code"):
-                if group == "code" and b["visible"] != "code":
-                    continue
-                caught[group][2] += 1
-                if any(v is True for v in verdicts):
-                    caught[group][0] += 1
-                elif any(v is None for v in verdicts):
-                    caught[group][1] += 1
 
     def mean(xs: list[float]) -> float | None:
         return round(sum(xs) / len(xs), 3) if xs else None
@@ -470,11 +464,13 @@ def summarize(variant_dir: Path, variant: str) -> dict:
         "variant": VARIANTS[variant],
         "reviews": len(rows),
         "errors": len(_read_jsonl(variant_dir / "errors.jsonl")),
+        # A finding describes the defect (read by hand), wherever it points.
+        "caught": {g: {"caught": c, "of": n} for g, (c, n) in caught.items()},
+        "findings": findings,
+        "findings_not_yet_judged": unjudged,
+        # A finding cites a line the fix changed (automatic), and what chance gives.
         "located": {k: mean(v) for k, v in tally.items()},
         "located_n": {k: len(v) for k, v in tally.items() if not k.startswith("chance")},
-        "caught_adjudicated": {
-            g: {"caught": c, "pending": p, "of": n} for g, (c, p, n) in caught.items()
-        },
         "mean_findings": mean([r["grade"]["findings"] for r in rows]),
         "request_changes": mean([float(r["meta"]["verdict"] == "request_changes") for r in rows]),
         "cost_usd_total": round(sum(costs), 4) if costs else None,

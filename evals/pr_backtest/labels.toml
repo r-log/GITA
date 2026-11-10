@@ -118,3 +118,19 @@ bug = "fix734"
 visible = "repo"
 origin = "moved"
 note = "A deleted creature spawn stays in its map's active list: the PR moved the list into a store with no removal, but the deletion path that should remove it (ObjectMgr) isn't in the diff."
+
+# Added when the miner followed renames (after the first full run; these
+# two PRs have not been reviewed yet).
+[[label]]
+case = "pr533"
+bug = "fix740"
+visible = "domain"
+origin = "moved"
+note = "The client's skipped-movement-time packet should be read and relayed on its own 4.3.4 opcode: client protocol."
+
+[[label]]
+case = "pr653"
+bug = "fix737"
+visible = "code"
+origin = "moved"
+note = "The expiry run deletes an expired mail and its item instances but not its mail_items rows; the PR moved the whole routine into Mail.cpp, so it is in the diff."

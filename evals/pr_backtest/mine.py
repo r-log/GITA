@@ -14,8 +14,9 @@ For every merged PR whose branch is ``fix/...``:
    are blamed instead: the defect is the code that was missing there.
 3. If at least half of the fix's product-code lines (outside tests) come
    from one earlier PR, that PR introduced the defect: a case.
-4. Ground truth is where those lines sat in the introducing PR's head, so
-   a reviewer of that PR could have pointed at them.
+4. Ground truth is where those lines sat in the introducing PR's head
+   (following renames in between), so a reviewer of that PR could have
+   pointed at them.
 
 Several fixes of the same PR become one case with several expected bugs.
 The output is data only: whether each defect was visible from the code at
@@ -27,6 +28,7 @@ from __future__ import annotations
 import argparse
 import collections
 import difflib
+import functools
 import json
 import re
 import subprocess
@@ -114,19 +116,40 @@ def _blamed_lines(repo: Path, fix: dict, owner: dict[str, int]) -> list[dict]:
     return out
 
 
-def _map_to_head(repo: Path, intro: dict, fix: dict, path: str, lines: list[int]) -> list[int]:
-    """Where lines of ``path`` at the fix's base sat in the introducing PR's head."""
+@functools.lru_cache(maxsize=256)
+def _renames(repo: Path, older: str, newer: str) -> dict[str, str]:
+    """Path at ``newer`` -> its path at ``older``, for files git sees as renamed."""
+    out = _git(repo, "diff", "--name-status", "-M50%", older, newer)
+    return {
+        parts[2]: parts[1]
+        for parts in (line.split("\t") for line in out.splitlines())
+        if parts[0].startswith("R") and len(parts) == 3
+    }
+
+
+def _map_to_head(
+    repo: Path, intro: dict, fix: dict, path: str, lines: list[int]
+) -> tuple[str, list[int]]:
+    """Where lines of ``path`` at the fix's base sat in the introducing PR's head.
+
+    Follows a rename in between: a file moved after the PR merged is found
+    under the path the PR's reviewer saw.
+    """
+    head_path = path
     head = _show(repo, intro["head"], path)
+    if head is None:
+        head_path = _renames(repo, intro["head"], fix["base"]).get(path, path)
+        head = _show(repo, intro["head"], head_path)
     later = _show(repo, fix["base"], path)
     if head is None or later is None:
-        return []
+        return head_path, []
     a, b = head.splitlines(), later.splitlines()
     mapping: dict[int, int] = {}
     for tag, i1, _i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
         if tag == "equal":
             for k in range(j2 - j1):
                 mapping[j1 + k + 1] = i1 + k + 1
-    return sorted({mapping[n] for n in lines if n in mapping})
+    return head_path, sorted({mapping[n] for n in lines if n in mapping})
 
 
 def mine(repo: Path) -> list[dict]:
@@ -155,9 +178,9 @@ def mine(repo: Path) -> list[dict]:
                 by_file[b["file"]].append(b["line"])
         truth = []
         for path, lines in sorted(by_file.items()):
-            mapped = _map_to_head(repo, intro, fix, path, lines)
+            head_path, mapped = _map_to_head(repo, intro, fix, path, lines)
             if mapped:
-                truth.append({"file": path, "lines": mapped})
+                truth.append({"file": head_path, "lines": mapped})
         if not truth:
             continue
         case = cases.setdefault(
