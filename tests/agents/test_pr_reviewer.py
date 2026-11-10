@@ -248,10 +248,10 @@ class TestCoverage:
             DiffHunk(
                 file_path="src/myapp/huge.py",
                 status="added",
-                additions=5000,
+                additions=12000,
                 deletions=0,
-                patch="@@ -0,0 +1,5000 @@\n" + "+x = 1\n" * 5000,
-                changed_ranges=[ChangedLineRange(start=1, count=5000)],
+                patch="@@ -0,0 +1,12000 @@\n" + "+x = 1\n" * 12000,
+                changed_ranges=[ChangedLineRange(start=1, count=12000)],
             ),
         ]
         llm = FakeLLMClient(responses=[_findings_response(findings=[]), _summary_response()])
@@ -488,8 +488,9 @@ class TestReviewAgainstPRHead:
 
         assert [f.file for f in result.findings] == ["src/myapp/payments.py"]
         assert result.verdict == "request_changes"
-        # The model saw numbered head content for the new file.
-        assert "FILE AFTER THIS PR (2 lines)" in llm.calls[0]["user"]
+        # The model saw the new file once, numbered (not diff + file).
+        assert "NEW FILE (2 lines, all added)" in llm.calls[0]["user"]
+        assert "DIFF:" not in llm.calls[0]["user"]
         assert '    2:     return db.execute(f"SELECT' in llm.calls[0]["user"]
 
     async def test_long_file_shows_numbered_windows_only(
@@ -528,3 +529,68 @@ class TestReviewAgainstPRHead:
         assert "x_900" not in user
         # Line 900 was never shown, so the citation can't be checked: dropped.
         assert result.findings == [] and result.dropped_findings == 1
+
+
+class TestPromptBudget:
+    """Large real PRs: the budget goes to code a finding can cite."""
+
+    @staticmethod
+    def _ctx(path, status, additions, *, patch_chars=100, head=None, language="python"):
+        from gita.views.diff_context import FileContext, context_windows, count_lines
+
+        patch = "@@ -1,1 +1,1 @@\n" + "+" + "x" * patch_chars
+        hunk = DiffHunk(
+            file_path=path,
+            status=status,
+            additions=additions,
+            deletions=0 if status == "added" else 3,
+            patch=patch,
+            changed_ranges=[ChangedLineRange(start=1, count=max(additions, 1))],
+        )
+        n = count_lines(head) if head is not None else None
+        return FileContext(
+            file_path=path,
+            diff_hunk=hunk,
+            indexed=False,
+            language=language,
+            head_content=head,
+            head_line_count=n,
+            context_windows=context_windows(n, hunk.changed_ranges) if n else [],
+        )
+
+    def test_source_code_gets_the_budget_before_docs_and_tests(self):
+        from gita.agents.pr_reviewer.recipe import build_review_prompt
+
+        files = [
+            self._ctx("design/architecture.md", "modified", 400, patch_chars=30_000, language=None),
+            self._ctx("src/tests/HandlerTest.cpp", "modified", 300, patch_chars=30_000),
+            self._ctx("src/game/Handlers.cpp", "added", 600, patch_chars=30_000),
+        ]
+        prompt = build_review_prompt(_pr_info(), files, nonce="n", budget_chars=40_000)
+        assert prompt.reviewed_paths == ["src/game/Handlers.cpp"]
+        assert prompt.unreviewed_paths == ["design/architecture.md", "src/tests/HandlerTest.cpp"]
+
+    def test_new_file_is_shown_once_numbered(self):
+        from gita.agents.pr_reviewer.recipe import build_review_prompt
+
+        head = "int a;\nint b;\n"
+        prompt = build_review_prompt(
+            _pr_info(), [self._ctx("src/a.cpp", "added", 2, head=head)], nonce="n"
+        )
+        assert "NEW FILE (2 lines, all added)" in prompt.text
+        assert "DIFF:" not in prompt.text and "+xxxx" not in prompt.text
+
+    def test_deleted_file_is_listed_not_shown(self):
+        from gita.agents.pr_reviewer.recipe import build_review_prompt
+
+        gone = self._ctx("src/old.cpp", "removed", 0, patch_chars=50_000)
+        prompt = build_review_prompt(_pr_info(), [gone], nonce="n")
+        assert "file deleted" in prompt.text and "xxxx" not in prompt.text
+        assert prompt.reviewed_paths == ["src/old.cpp"]
+
+    def test_a_file_too_big_for_its_share_is_not_shown_in_part(self):
+        from gita.agents.pr_reviewer.recipe import _FILE_BLOCK_CAP_CHARS, build_review_prompt
+
+        big = self._ctx("src/big.py", "modified", 9000, patch_chars=_FILE_BLOCK_CAP_CHARS)
+        prompt = build_review_prompt(_pr_info(), [big], nonce="n")
+        assert prompt.unreviewed_paths == ["src/big.py"] and "xxxx" not in prompt.text

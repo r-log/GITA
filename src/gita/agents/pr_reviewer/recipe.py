@@ -49,12 +49,15 @@ _REVIEW_MAX_TOKENS = 4096
 _SUMMARY_MAX_TOKENS = 1024
 _MAX_FILES_PER_REVIEW = 20
 _FILE_CONTEXT_CAP_CHARS = 8_000
-# A single file's patch above this is not shown in part: half a diff
-# invites confident findings about the half that's missing.
-_PATCH_CAP_CHARS = 20_000
 _PR_BODY_CAP_CHARS = 4_000
 # Total budget for the per-file blocks of the review prompt (~35k tokens).
 _PROMPT_BUDGET_CHARS = 140_000
+# One file's block may take at most this share of the budget. A file over
+# it is not shown in part: half a diff invites confident findings about the
+# half that's missing.
+_FILE_BLOCK_CAP_CHARS = int(_PROMPT_BUDGET_CHARS * 0.4)
+_DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
+_TEST_DIRS = frozenset({"tests", "test", "spec", "specs", "__tests__"})
 
 _BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 
@@ -105,15 +108,47 @@ def _numbered_windows(content: str, windows: list[tuple[int, int]]) -> str:
     return "\n".join(out)
 
 
+def _review_priority(ctx: FileContext) -> tuple[int, int, str]:
+    """Order in which files get the prompt budget: code a finding can cite first.
+
+    On a large PR the budget runs out, and what runs out last should be
+    what matters least: added source code before tests, build files and
+    docs, and patches that only delete (moved-out code, which no finding
+    can cite) last. Within a tier, the most added lines first.
+    """
+    hunk = ctx.diff_hunk
+    path = ctx.file_path.lower()
+    parts = path.split("/")
+    name = parts[-1]
+    if hunk.additions == 0:
+        tier = 4
+    elif path.endswith(_DOC_SUFFIXES):
+        tier = 3
+    elif (
+        any(p in _TEST_DIRS for p in parts[:-1])
+        or name.startswith("test_")
+        or (name.rsplit(".", 1)[0].endswith(("_test", "test", ".spec", ".test")))
+    ):
+        tier = 2
+    elif ctx.language is not None:
+        tier = 0
+    else:
+        tier = 1
+    return (tier, -hunk.additions, ctx.file_path)
+
+
 def _render_file_block(ctx: FileContext) -> str:
     """Render one changed file's diff + context (unfenced)."""
     hunk = ctx.diff_hunk
-    lines: list[str] = [
-        f"=== {hunk.file_path} ({hunk.status}, +{hunk.additions}/-{hunk.deletions}) ===",
-        "",
-        "DIFF:",
-        hunk.patch or "",
-    ]
+    header = f"=== {hunk.file_path} ({hunk.status}, +{hunk.additions}/-{hunk.deletions}) ==="
+    if hunk.status == "removed":
+        # No line of a deleted file can be cited: say it's gone, spend nothing.
+        return f"{header}\n(file deleted; its {hunk.deletions} lines are not shown)"
+    # A new file's diff is the file itself: show it once, numbered.
+    new_file = hunk.status == "added" and ctx.head_content is not None
+    lines: list[str] = [header]
+    if not new_file:
+        lines += ["", "DIFF:", hunk.patch or ""]
 
     if ctx.symbols_near_changes:
         lines.append("")
@@ -133,11 +168,13 @@ def _render_file_block(ctx: FileContext) -> str:
     if ctx.head_content is not None and ctx.context_windows:
         lines.append("")
         whole = ctx.context_windows == [(1, ctx.head_line_count)]
-        lines.append(
-            f"FILE AFTER THIS PR ({ctx.head_line_count} lines"
-            + ("" if whole else ", windows around the changes")
-            + "):"
-        )
+        if new_file:
+            title = f"NEW FILE ({ctx.head_line_count} lines, all added)"
+        else:
+            title = f"FILE AFTER THIS PR ({ctx.head_line_count} lines" + (
+                ")" if whole else ", windows around the changes)"
+            )
+        lines.append(title + ":")
         lines.append(_numbered_windows(ctx.head_content, ctx.context_windows))
     elif ctx.base_content:
         base = ctx.base_content[:_FILE_CONTEXT_CAP_CHARS]
@@ -167,9 +204,10 @@ def build_review_prompt(
 ) -> _ReviewPrompt:
     """Assemble the review prompt and record which files made it in.
 
-    A file is unreviewed when it has no patch (binary, or too large for
-    GitHub to return one), its patch exceeds ``_PATCH_CAP_CHARS``, or
-    including it would exceed ``budget_chars``.
+    Files take the budget in ``_review_priority`` order. A file is
+    unreviewed when it has no patch (binary, or too large for GitHub to
+    return one), its block exceeds ``_FILE_BLOCK_CAP_CHARS``, or including
+    it would exceed ``budget_chars``. A deleted file is listed, not shown.
     """
     body = pr_info.body or ""
     if len(body) > _PR_BODY_CAP_CHARS:
@@ -184,19 +222,22 @@ def build_review_prompt(
     prompt = _ReviewPrompt(text="")
     blocks: list[str] = []
     used = 0
-    for ctx in files:
-        patch = ctx.diff_hunk.patch
-        if not patch or len(patch) > _PATCH_CAP_CHARS:
+    for ctx in sorted(files, key=_review_priority):
+        if not ctx.diff_hunk.patch and ctx.diff_hunk.status != "removed":
             prompt.unreviewed_paths.append(ctx.file_path)
             continue
         block = fence(_render_file_block(ctx), nonce=nonce, source="changed_file")
-        if used + len(block) > budget_chars:
+        if len(block) > _FILE_BLOCK_CAP_CHARS or used + len(block) > budget_chars:
             prompt.unreviewed_paths.append(ctx.file_path)
             continue
         blocks.append(block)
         used += len(block)
         prompt.reviewed_paths.append(ctx.file_path)
 
+    # Report coverage in the PR's own file order, whatever order filled the budget.
+    position = {ctx.file_path: i for i, ctx in enumerate(files)}
+    prompt.unreviewed_paths.sort(key=position.__getitem__)
+    prompt.reviewed_paths.sort(key=position.__getitem__)
     prompt.text = (
         f"Untrusted blocks in this message are delimited by "
         f"<untrusted_{nonce}> ... </untrusted_{nonce}>.\n\n"
