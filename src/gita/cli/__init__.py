@@ -39,6 +39,7 @@ from gita.cli.commands import (  # noqa: E402
     cmd_generate_tests,
     cmd_history_sync,
     cmd_index,
+    cmd_mcp,
     cmd_onboard,
     cmd_query_concept,
     cmd_query_history,
@@ -132,6 +133,13 @@ def _build_parser() -> argparse.ArgumentParser:
     hist_sync.add_argument("--name", help="Repo name (defaults to the directory name)")
     hist_sync.add_argument(
         "--full", action="store_true", help="Rebuild from scratch instead of reading new merges"
+    )
+
+    mcp_p = sub.add_parser(
+        "mcp", help="Serve the repository's memory to coding agents over MCP (stdio)"
+    )
+    mcp_p.add_argument(
+        "--repo", default=None, help="Repo name (default: the tracked clone containing the cwd)"
     )
 
     sub.add_parser("repos", help="List indexed repos")
@@ -401,6 +409,7 @@ _HANDLERS = {
     ("query", "concept"): cmd_query_concept,
     ("auto-test-gen", "preview"): cmd_auto_test_gen_preview,
     ("history", "sync"): cmd_history_sync,
+    "mcp": cmd_mcp,
 }
 
 

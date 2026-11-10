@@ -98,6 +98,32 @@ async def cmd_history_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_mcp(args: argparse.Namespace) -> int:
+    """Serve the repository's memory to coding agents over MCP (stdio)."""
+    from gita.history.queries import repo_for_directory
+    from gita.mcp_server import build_server
+
+    name = args.repo
+    if name is None:
+        async with SessionLocal() as session:
+            repos = (
+                (await session.execute(select(Repo).where(Repo.history_synced_sha.isnot(None))))
+                .scalars()
+                .all()
+            )
+        repo = repo_for_directory(Path.cwd(), list(repos))
+        if repo is None:
+            print(
+                "error: no tracked repository contains this directory; pass --repo NAME "
+                "or run `gita history sync <clone>` first",
+                file=sys.stderr,
+            )
+            return 2
+        name = repo.name
+    await build_server(name, SessionLocal).run_stdio_async()
+    return 0
+
+
 async def cmd_index(args: argparse.Namespace) -> int:
     import time
 
