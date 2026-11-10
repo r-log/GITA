@@ -1,4 +1,4 @@
-# Every finding of every review, read against the case's later-fixed
+# Every finding of every review (keyed by run: the results directory), read against the case's later-fixed
 # defects after the run. `describes` is the defect the finding describes
 # (wherever it points), or "" for none of them. A defect counts as CAUGHT in
 # a review when one of its findings describes it; LOCATED (cites a line the
@@ -7,7 +7,7 @@
 # this backtest measures recall only.
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr206"
 rep = 0
 finding = 0
@@ -15,7 +15,7 @@ describes = ""
 note = "m_gameTime vs time(NULL) at startup: not a mined defect"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr206"
 rep = 0
 finding = 1
@@ -23,7 +23,7 @@ describes = "fix208"
 note = "localTm keeps tm_isdst of now when passed to mktime: the defect fix #208 repaired. Rated low, cited where the struct is built"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr31"
 rep = 0
 finding = 0
@@ -31,7 +31,7 @@ describes = ""
 note = "not about the leading-zero handling of S"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr31"
 rep = 0
 finding = 1
@@ -39,7 +39,7 @@ describes = ""
 note = "not about the leading-zero handling of S"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr31"
 rep = 0
 finding = 2
@@ -47,7 +47,7 @@ describes = ""
 note = "not about the leading-zero handling of S"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr31"
 rep = 0
 finding = 3
@@ -55,7 +55,7 @@ describes = ""
 note = "not about the leading-zero handling of S"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr39"
 rep = 0
 finding = 0
@@ -63,7 +63,7 @@ describes = "fix40"
 note = "the staging stream arms the cipher and promotes on ANY first packet, not only CMSG_AUTH_CONTINUED_SESSION"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr39"
 rep = 0
 finding = 1
@@ -71,7 +71,7 @@ describes = "fix40"
 note = "CMSG_AUTH_CONTINUED_SESSION accepted without checking its length: the fix added CONTINUED_SESSION_SIZE"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr39"
 rep = 0
 finding = 2
@@ -79,7 +79,7 @@ describes = "fix40"
 note = "SendResumeComms runs before the promotion can fail: the ordering half the fix moved inside the promotion"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr411"
 rep = 0
 finding = 0
@@ -87,7 +87,7 @@ describes = ""
 note = "column-index comment; not the DELETE without guid"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr451"
 rep = 0
 finding = 0
@@ -95,7 +95,7 @@ describes = "fix507"
 note = "the loop reads 8 tab pairs while the SELECT has 6, so name/level/class/zone become tab data; cited 5 lines above the changed lines"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr520"
 rep = 0
 finding = 0
@@ -103,7 +103,7 @@ describes = ""
 note = "includes, coupling, README; not auto-accept"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr520"
 rep = 0
 finding = 1
@@ -111,7 +111,7 @@ describes = ""
 note = "includes, coupling, README; not auto-accept"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr520"
 rep = 0
 finding = 2
@@ -119,7 +119,7 @@ describes = ""
 note = "includes, coupling, README; not auto-accept"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr625"
 rep = 0
 finding = 0
@@ -127,7 +127,7 @@ describes = ""
 note = "duplicate ToPlayer call"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr625"
 rep = 0
 finding = 1
@@ -135,7 +135,7 @@ describes = ""
 note = "about the const_cast counting script's regex, not the lootable-flag write"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr656"
 rep = 0
 finding = 0
@@ -143,7 +143,7 @@ describes = "fix736"
 note = "the LOS gate asks whether the spell is disabled for the target, not whether LOS is disabled: the dropped LOS flag"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr691"
 rep = 0
 finding = 0
@@ -151,7 +151,7 @@ describes = "fix735"
 note = "names the hand-written two-text yell serializer the fix replaced, and that it doesn't set up the packet; framed as drift, rated low"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr691"
 rep = 0
 finding = 1
@@ -159,7 +159,7 @@ describes = ""
 note = "the fix did retype this parameter, but the finding is about type consistency, not the broken yell"
 
 [[finding]]
-variant = "indexed"
+run = "baseline"
 case = "pr691"
 rep = 0
 finding = 2
@@ -167,7 +167,7 @@ describes = ""
 note = "linkage of builder classes"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr206"
 rep = 0
 finding = 0
@@ -175,7 +175,7 @@ describes = ""
 note = "m_gameTime vs time(NULL): not a mined defect"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr206"
 rep = 0
 finding = 1
@@ -183,7 +183,7 @@ describes = "fix208"
 note = "tm_isdst carried into mktime: the defect; cited 24 lines from the changed lines"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr31"
 rep = 0
 finding = 0
@@ -191,7 +191,7 @@ describes = ""
 note = "not about the leading-zero handling of S"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr31"
 rep = 0
 finding = 1
@@ -199,7 +199,7 @@ describes = ""
 note = "not about the leading-zero handling of S"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr31"
 rep = 0
 finding = 2
@@ -207,7 +207,7 @@ describes = ""
 note = "not about the leading-zero handling of S"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr39"
 rep = 0
 finding = 0
@@ -215,7 +215,7 @@ describes = "fix40"
 note = "any opcode arms the cipher and promotes; CMSG_AUTH_CONTINUED_SESSION not checked"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr39"
 rep = 0
 finding = 1
@@ -223,7 +223,7 @@ describes = "fix40"
 note = "SendResumeComms before the promotion can fail"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr411"
 rep = 0
 finding = 0
@@ -231,7 +231,7 @@ describes = ""
 note = "column-index comment"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr451"
 rep = 0
 finding = 0
@@ -239,7 +239,7 @@ describes = "fix507"
 note = "8 tabs read, 6 selected: name/level/class/zone read as tab data"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr520"
 rep = 0
 finding = 0
@@ -247,7 +247,7 @@ describes = ""
 note = "includes and doc blocks"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr520"
 rep = 0
 finding = 1
@@ -255,7 +255,7 @@ describes = ""
 note = "includes and doc blocks"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr625"
 rep = 0
 finding = 0
@@ -263,7 +263,7 @@ describes = ""
 note = "about the counting script's regex"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr656"
 rep = 0
 finding = 0
@@ -271,7 +271,7 @@ describes = "fix736"
 note = "the refactor drops the LOS flag at this call"
 
 [[finding]]
-variant = "diff-only"
+run = "v1"
 case = "pr691"
 rep = 0
 finding = 0

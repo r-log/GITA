@@ -61,6 +61,7 @@ from gita.agents.onboarding.schemas import FindingsResponse, LLMFinding
 from gita.agents.pr_reviewer import parse_pr_files, run_pr_review
 from gita.agents.pr_reviewer.bridge import build_pr_review_decision
 from gita.agents.pr_reviewer.schemas import ReviewSummaryResponse
+from gita.agents.routing import ModelTiers
 from gita.config import settings
 from gita.github.client import PRInfo
 from gita.indexer.ingest import index_repository
@@ -155,10 +156,11 @@ class RecordingLLM:
                 finish_reason=response.finish_reason,
             )
         )
-        if self.requested_model and not model_matches(self.requested_model, response.model):
-            raise ServedModelMismatch(
-                f"requested {self.requested_model!r}, served {response.model!r}"
-            )
+        # Checked against the model this call asked for (routing picks one
+        # per call); off for fakes and replays, which have no requested model.
+        expected = kwargs.get("model") or self.requested_model
+        if self.requested_model and not model_matches(expected, response.model):
+            raise ServedModelMismatch(f"requested {expected!r}, served {response.model!r}")
         return response
 
 
@@ -241,6 +243,15 @@ def fake_llm(case: Case, mode: str) -> FakeLLMClient:
 # ---------------------------------------------------------------------------
 # Environment: a dedicated, freshly indexed database
 # ---------------------------------------------------------------------------
+def parse_tiers(spec: str) -> ModelTiers:
+    """``small=a,standard=b,large=c`` -> ModelTiers; all three are required."""
+    parts = dict(item.split("=", 1) for item in spec.split(",") if item)
+    missing = {"small", "standard", "large"} - set(parts)
+    if missing:
+        raise SystemExit(f"--tiers needs small=, standard= and large= (missing {sorted(missing)})")
+    return ModelTiers(small=parts["small"], standard=parts["standard"], large=parts["large"])
+
+
 def _eval_db_url(suffix: str = "eval") -> str:
     base, _, name = settings.database_url.rpartition("/")
     return f"{base}/{name}_{suffix}"
@@ -372,6 +383,7 @@ async def run_case(
     sessions: async_sessionmaker[AsyncSession],
     make_llm,
     timeout_s: float,
+    models: ModelTiers | None = None,
 ) -> Outcome:
     files = case.pr_files_json()
     hunks = parse_pr_files(files)
@@ -382,7 +394,13 @@ async def run_case(
         async with sessions() as session:
             result = await asyncio.wait_for(
                 run_pr_review(
-                    session, REPO_NAME, pr, hunks, llm=llm, head_contents=dict(case.after)
+                    session,
+                    REPO_NAME,
+                    pr,
+                    hunks,
+                    llm=llm,
+                    head_contents=dict(case.after),
+                    models=models,
                 ),
                 timeout=timeout_s,
             )
@@ -426,6 +444,9 @@ async def run_case(
         "wall_s": round(wall_s, 3),
         "meta": {
             "verdict": result.verdict,
+            "tier": result.tier,
+            "routed_model": result.model,
+            "route_reasons": result.route_reasons,
             "findings": len(result.findings),
             "dropped_by_guardrails": result.dropped_findings,
             "unreviewed_files": result.unreviewed_files,
@@ -546,6 +567,11 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--model", default=None, help="OpenRouter model id (default: AI_DEFAULT_MODEL)"
     )
+    parser.add_argument(
+        "--tiers",
+        default=None,
+        help="route each review: small=MODEL,standard=MODEL,large=MODEL (overrides --model)",
+    )
     parser.add_argument("--reps", type=int, default=1)
     parser.add_argument("--cases", default="", help="comma-separated case ids (default: all)")
     parser.add_argument("--concurrency", type=int, default=4)
@@ -594,7 +620,8 @@ async def main(argv: list[str] | None = None) -> int:
     (variant_dir / "traces").mkdir(parents=True, exist_ok=True)
     done = {(r["prompt_id"], r["rep"]) for r in _read_jsonl(variant_dir / "results.jsonl")}
 
-    model = args.model or settings.ai_default_model
+    models = parse_tiers(args.tiers) if args.tiers else None
+    model = models.standard if models else (args.model or settings.ai_default_model)
     client: OpenRouterClient | None = None
     recorded: dict[tuple[str, int], str] = {}
     if args.fake:
@@ -641,7 +668,12 @@ async def main(argv: list[str] | None = None) -> int:
     async def worker(case: Case, rep: int) -> None:
         async with semaphore:
             outcome = await run_case(
-                case, rep, sessions=sessions, make_llm=make_llm, timeout_s=args.timeout_s
+                case,
+                rep,
+                sessions=sessions,
+                make_llm=make_llm,
+                timeout_s=args.timeout_s,
+                models=models,
             )
         if outcome.error is not None:
             _append_jsonl(variant_dir / "errors.jsonl", outcome.error)

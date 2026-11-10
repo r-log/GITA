@@ -4,6 +4,7 @@
     python -m evals.pr_backtest.run --clone ~/mangos --fake oracle          # grader check
     python -m evals.pr_backtest.run --clone ~/mangos --variant baseline --model anthropic/claude-fable-5.2 --reps 2
     python -m evals.pr_backtest.run --clone ~/mangos --variant v1 ...      # same, without the index
+    python -m evals.pr_backtest.run --clone ~/mangos --out routed --tiers small=A,standard=B,large=C
 
 Cases come from ``mine.py`` (``cases.json``): a merged PR, and the lines a
 later fix PR changed, located in that PR's head. Each review runs through
@@ -49,11 +50,13 @@ from evals.pr_review.run import (
     _read_jsonl,
     _usage_totals,
     migrated_database,
+    parse_tiers,
 )
 from gita.agents.onboarding.schemas import FindingsResponse, LLMFinding
 from gita.agents.pr_reviewer import parse_pr_files, run_pr_review
 from gita.agents.pr_reviewer.bridge import build_pr_review_decision
 from gita.agents.pr_reviewer.schemas import ReviewSummaryResponse
+from gita.agents.routing import ModelTiers
 from gita.config import settings
 from gita.db.models import Repo
 from gita.github.client import PRInfo
@@ -295,6 +298,7 @@ async def run_case(
     llm: RecordingLLM,
     prepared: dict,
     timeout_s: float,
+    models: ModelTiers | None = None,
 ) -> Outcome:
     files, contents = prepared[case.id]
     pr = PRInfo(
@@ -322,6 +326,7 @@ async def run_case(
                     parse_pr_files(files),
                     llm=llm,
                     head_contents=contents,
+                    models=models,
                 ),
                 timeout=timeout_s,
             )
@@ -372,6 +377,9 @@ async def run_case(
         "meta": {
             "variant": VARIANTS[variant],
             "verdict": result.verdict,
+            "tier": result.tier,
+            "routed_model": result.model,
+            "route_reasons": result.route_reasons,
             "dropped_by_guardrails": result.dropped_findings,
             "unreviewed_files": result.unreviewed_files,
             "prompt_chars": sum(len(c.system) + len(c.user) for c in llm.calls[:1]),
@@ -424,12 +432,12 @@ def _explain(per_bug: list[dict]) -> str:
 # Summary
 # ---------------------------------------------------------------------------
 def _adjudications() -> dict[tuple, str]:
-    """(variant, case, rep, finding index) -> the defect it describes, or ""."""
+    """(run, case, rep, finding index) -> the defect it describes, or ""."""
     path = EVAL_DIR / "adjudications.toml"
     if not path.exists():
         return {}
     return {
-        (a["variant"], a["case"], a["rep"], a["finding"]): a["describes"]
+        (a["run"], a["case"], a["rep"], a["finding"]): a["describes"]
         for a in tomllib.loads(path.read_text()).get("finding", [])
     }
 
@@ -442,7 +450,7 @@ def summarize(variant_dir: Path, variant: str) -> dict:
     caught: dict[str, list[int]] = {g: [0, 0] for g in groups}  # caught, of
     findings = unjudged = 0
     for r in rows:
-        key = (VARIANTS[variant], r["prompt_id"], r["rep"])
+        key = (variant_dir.name, r["prompt_id"], r["rep"])
         verdicts = {i: adjudicated.get((*key, i)) for i in range(len(r["meta"]["findings_detail"]))}
         findings += len(verdicts)
         unjudged += sum(1 for v in verdicts.values() if v is None)
@@ -492,6 +500,12 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--clone", type=Path, required=True, help="full clone of the repository")
     parser.add_argument("--variant", default="baseline", choices=sorted(VARIANTS))
     parser.add_argument("--model", default=None)
+    parser.add_argument(
+        "--tiers", default=None, help="route each review: small=MODEL,standard=MODEL,large=MODEL"
+    )
+    parser.add_argument(
+        "--out", default=None, help="results directory name (default: the variant's)"
+    )
     parser.add_argument("--reps", type=int, default=1)
     parser.add_argument("--cases", default="")
     parser.add_argument("--concurrency", type=int, default=3)
@@ -504,7 +518,8 @@ async def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    out = args.runs_dir / (f"_checks/{args.fake}-{args.variant}" if args.fake else args.variant)
+    run_name = args.out or args.variant
+    out = args.runs_dir / (f"_checks/{args.fake}-{run_name}" if args.fake else run_name)
     if args.regrade:
         regrade(out, args.clone.resolve())
     if args.summarize or args.regrade:
@@ -522,7 +537,8 @@ async def main(argv: list[str] | None = None) -> int:
         await ensure_indexed(sessions, clone, case, args.variant)
         prepared[case.id] = pr_files(clone, case.base, case.head)
 
-    model = args.model or settings.ai_default_model
+    models = parse_tiers(args.tiers) if args.tiers else None
+    model = models.standard if models else (args.model or settings.ai_default_model)
     client = None
     if not args.fake:
         client = OpenRouterClient(
@@ -547,6 +563,7 @@ async def main(argv: list[str] | None = None) -> int:
                 llm=llm,
                 prepared=prepared,
                 timeout_s=args.timeout_s,
+                models=models,
             )
         if outcome.error is not None:
             _append_jsonl(out / "errors.jsonl", outcome.error)
