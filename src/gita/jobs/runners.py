@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gita.agents.decisions import (
@@ -29,12 +28,14 @@ from gita.agents.decisions import (
     WriteMode,
     execute_decision,
 )
+from gita.agents.dedupe import check_signature
 from gita.agents.pr_reviewer import (
     PRReviewError,
     build_pr_review_decision,
     parse_pr_files,
     run_pr_review,
 )
+from gita.agents.pr_reviewer.bridge import pr_review_idempotency_key
 from gita.agents.test_generator import (
     TestGenerationArtifact,
     build_test_generation_decisions,
@@ -54,42 +55,30 @@ from gita.views._common import RepoNotFoundError, resolve_repo
 
 logger = logging.getLogger(__name__)
 
-# Evidence tag prefix for SHA-based skip.
-_SHA_EVIDENCE_PREFIX = "head_sha:"
-
-
 # ---------------------------------------------------------------------------
-# SHA-based skip (prevents redundant re-reviews)
+# "Already reviewed this commit?" (before any LLM call)
 # ---------------------------------------------------------------------------
-async def _check_sha_already_reviewed(
+async def _already_reviewed(
     session: AsyncSession,
     repo_full_name: str,
+    pr_number: int,
     head_sha: str,
+    *,
+    live: bool,
 ) -> bool:
-    """Return True if a prior review exists for this repo + SHA.
+    """True if this commit's review is already recorded in this partition.
 
-    Looks for an ``agent_actions`` row where:
-    - ``repo_name`` matches (case-insensitive)
-    - ``agent`` is ``pr_reviewer``
-    - ``evidence`` JSONB array contains ``"head_sha:<sha>"``
-
-    Uses Postgres ``@>`` containment operator on the JSONB column.
+    Uses the same identity the review Decision will carry, so this is the
+    dedupe check moved ahead of the LLM calls. A shadow-mode review does
+    not count for a live run.
     """
-    repo_lower = repo_full_name.strip().lower()
-    sha_tag = f"{_SHA_EVIDENCE_PREFIX}{head_sha}"
-
-    # Use raw SQL for the JSONB containment — asyncpg needs the
-    # literal cast on the right-hand side, not a bound parameter.
-    # CAST(...) syntax instead of :: to avoid SQLAlchemy's :param parser.
-    stmt = text(
-        "SELECT id FROM agent_actions "
-        "WHERE repo_name = :repo "
-        "AND agent = 'pr_reviewer' "
-        "AND evidence @> CAST(:sha_json AS JSONB) "
-        "LIMIT 1"
-    ).bindparams(repo=repo_lower, sha_json=f'["{sha_tag}"]')
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none() is not None
+    probe = Decision(
+        action="comment",
+        target={"repo": repo_full_name, "issue": pr_number},
+        payload={},
+        idempotency_key=pr_review_idempotency_key(pr_number, head_sha),
+    )
+    return await check_signature(session, probe, agent="pr_reviewer", live=live) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -230,11 +219,15 @@ async def run_pr_review_job(
     # Use the live head SHA from the PR (more accurate than the webhook's).
     actual_sha = pr_info.head_sha or head_sha
 
-    # --- SHA-based skip (before LLM calls) ---
+    # --- Already reviewed this commit? (before LLM calls) ---
     if actual_sha:
         async with SessionLocal() as session:
-            already = await _check_sha_already_reviewed(
-                session, repo_full_name, actual_sha
+            already = await _already_reviewed(
+                session,
+                repo_full_name,
+                pr_number,
+                actual_sha,
+                live=mode != WriteMode.SHADOW,
             )
         if already:
             logger.info(
@@ -287,12 +280,11 @@ async def run_pr_review_job(
 
     # --- Build decision and execute ---
     decision = build_pr_review_decision(
-        result, repo_full_name=repo_full_name, pr_number=pr_number
+        result,
+        repo_full_name=repo_full_name,
+        pr_number=pr_number,
+        head_sha=actual_sha,
     )
-
-    # Inject head SHA into evidence for future SHA-based skip lookups.
-    if actual_sha:
-        decision.evidence.append(f"{_SHA_EVIDENCE_PREFIX}{actual_sha}")
 
     async with GithubClient(auth=auth) as gh, SessionLocal() as session:
         decision_result = await execute_decision(

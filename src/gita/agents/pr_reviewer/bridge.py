@@ -132,22 +132,33 @@ def _render_review_body(result: PRReviewResult) -> str:
     return "\n".join(lines)
 
 
+def pr_review_idempotency_key(pr_number: int, head_sha: str | None) -> str | None:
+    """Identity of "the review of this commit of this PR"."""
+    return f"pr-review:{pr_number}:{head_sha}" if head_sha else None
+
+
 def build_pr_review_decision(
     result: PRReviewResult,
     repo_full_name: str,
     pr_number: int,
+    *,
+    head_sha: str | None = None,
 ) -> Decision:
     """Wrap a PRReviewResult as a ``comment`` Decision on the PR.
 
-    Uses the existing ``comment`` action dispatch — the PR number goes
-    into ``target.issue`` because GitHub treats PR comments and issue
-    comments as the same endpoint (``POST /issues/{n}/comments``).
+    The PR number goes into ``target.issue`` because GitHub treats PR
+    comments and issue comments as the same endpoint. With ``head_sha``
+    the decision's identity is the reviewed commit, so the same commit is
+    never reviewed twice and a new commit always is — regardless of how
+    similar the two comment bodies are.
     """
     evidence = [
         f"pr_reviewer verdict: {result.verdict}",
         f"{len(result.findings)} findings produced",
         f"confidence: {result.confidence:.2f}",
     ]
+    if head_sha:
+        evidence.append(f"head_sha:{head_sha}")
     for finding in result.findings[:3]:
         evidence.append(
             f"{finding.severity} {finding.kind} at "
@@ -160,4 +171,5 @@ def build_pr_review_decision(
         payload={"body": _render_review_body(result)},
         evidence=evidence,
         confidence=result.confidence,
+        idempotency_key=pr_review_idempotency_key(pr_number, head_sha),
     )

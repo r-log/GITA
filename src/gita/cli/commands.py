@@ -372,7 +372,10 @@ async def cmd_review_pr(args: argparse.Namespace) -> int:
 
     # --- Posting flow ---
     decision = build_pr_review_decision(
-        result, repo_full_name=repo_full, pr_number=pr_number
+        result,
+        repo_full_name=repo_full,
+        pr_number=pr_number,
+        head_sha=pr_info.head_sha,
     )
 
     print()

@@ -26,6 +26,7 @@ NOTES-week9.md as Option B.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
@@ -553,28 +554,30 @@ def derive_importable_names(
 async def _has_prior_test_gen_attempt(
     session: AsyncSession, repo_full_name: str, target_file: str
 ) -> bool:
-    """True if any prior ``test_generator`` action mentions ``target_file``.
+    """True if a prior ``test_generator`` action mentions ``target_file``.
 
     The bridge embeds ``"purpose: add tests for `<target_file>`"`` into
-    the ``create_branch`` evidence array (and some other actions), so
-    an exact JSONB ``@>`` containment lookup against that string is a
-    cheap, deterministic way to detect prior attempts — executed,
-    downgraded, or anything else that wrote a row.
-
-    Lookup is case-insensitive on ``repo_name`` to match how the rest
-    of the code stores it (lowered when written by webhook flows).
+    the ``create_branch`` evidence array, so a JSONB ``@>`` containment
+    lookup finds prior attempts. Only attempts in the current write
+    mode's partition count: a shadow run (nothing reached GitHub) must not
+    stop the live trigger from ever firing for that file.
     """
+    from gita.config import settings
+
     repo_lower = repo_full_name.strip().lower()
     evidence_marker = f"purpose: add tests for `{target_file}`"
     stmt = _sql_text(
         "SELECT id FROM agent_actions "
         "WHERE LOWER(repo_name) = :repo "
         "AND agent = 'test_generator' "
+        "AND live = :live "
         "AND evidence @> CAST(:evidence_json AS JSONB) "
         "LIMIT 1"
     ).bindparams(
         repo=repo_lower,
-        evidence_json=f'["{evidence_marker}"]',
+        live=settings.write_mode != "shadow",
+        # json.dumps, not an f-string: paths can contain quotes/backslashes.
+        evidence_json=json.dumps([evidence_marker]),
     )
     result = await session.execute(stmt)
     return result.scalar_one_or_none() is not None

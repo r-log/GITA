@@ -261,15 +261,20 @@ class TestLowConfidenceDowngrade:
         assert client.calls[0].action == "comment"
         assert "confidence" in (result.downgrade_reason or "").lower()
 
-    async def test_low_confidence_comment_in_full_mode(self):
+    async def test_low_confidence_comment_is_held_not_replaced(self):
+        """Below the bar a comment is not posted. It used to be "downgraded"
+        to a meta-comment ("Intended action: comment ...") that replaced
+        the content with noise on a public PR."""
         client = FakeActionClient()
         # comment threshold is 0.3; 0.1 is below
         decision = _make_decision(action="comment", confidence=0.1)
         result = await execute_decision(
             decision, mode=WriteMode.FULL, client=client
         )
-        assert result.outcome == Outcome.DOWNGRADED_LOW_CONFIDENCE
-        assert client.calls[0].action == "comment"
+        assert result.outcome == Outcome.HELD_LOW_CONFIDENCE
+        assert result.executed is False
+        assert "below threshold" in result.downgrade_reason
+        assert client.calls == []
 
     async def test_low_confidence_in_comment_mode(self):
         client = FakeActionClient()

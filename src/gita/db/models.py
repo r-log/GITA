@@ -125,10 +125,11 @@ class ImportEdge(Base):
 class AgentAction(Base):
     """Persistent record of every decision that passes the write gate.
 
-    Primary purpose is automatic dedupe: before executing a Decision, the
-    framework hashes its identifying payload into a ``signature`` and
-    checks whether ``(repo_name, agent, action, signature)`` already has a
-    row. If so, the decision short-circuits with ``Outcome.DEDUPED``.
+    Primary purpose is idempotency: before executing a Decision, the
+    framework computes its identity (``signature``) and reserves
+    ``(repo_name, agent, action, signature, live)``. An existing row
+    short-circuits the decision with ``Outcome.DEDUPED``; see
+    ``gita.agents.dedupe``.
 
     Secondary purpose is audit trail — ``evidence`` carries the reasoning
     chain the agent produced, and ``external_id`` holds the GitHub ID of
@@ -151,6 +152,11 @@ class AgentAction(Base):
     evidence: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list
     )
+    # False for shadow-mode observations (nothing reached GitHub). Dedupe
+    # checks never let a shadow row suppress a live side effect.
+    live: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true", default=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -161,6 +167,7 @@ class AgentAction(Base):
             "agent",
             "action",
             "signature",
+            "live",
             name="uq_agent_actions_signature",
         ),
         Index("ix_agent_actions_repo_name", "repo_name"),

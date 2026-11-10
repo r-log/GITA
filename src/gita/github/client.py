@@ -37,6 +37,22 @@ _ACCEPT = "application/vnd.github+json"
 _API_VERSION = "2022-11-28"
 _USER_AGENT = "gita/0.1.0"
 
+# Actions ``GithubClient.execute`` dispatches. Must match the decision
+# gate's thresholds and the dedupe signature shapes (a test enforces it).
+SUPPORTED_ACTIONS: frozenset[str] = frozenset(
+    {
+        "comment",
+        "create_issue",
+        "close_issue",
+        "edit_issue",
+        "add_label",
+        "remove_label",
+        "create_branch",
+        "update_file",
+        "open_pr",
+    }
+)
+
 # Refresh installation tokens this many seconds before their real expiry
 # to avoid racing the clock on a slow API call.
 _TOKEN_REFRESH_SKEW = timedelta(minutes=5)

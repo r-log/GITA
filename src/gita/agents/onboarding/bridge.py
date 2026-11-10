@@ -207,6 +207,8 @@ def build_onboarding_comment_decision(
         payload={"body": _render_comment_body(result)},
         evidence=evidence,
         confidence=result.confidence,
+        # One onboarding comment per issue, however the text varies.
+        idempotency_key=f"onboarding:{issue_number}",
     )
 
 

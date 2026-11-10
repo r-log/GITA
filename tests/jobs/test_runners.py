@@ -1,166 +1,91 @@
-"""Tests for the agent runner functions.
+"""Tests for the "already reviewed this commit?" check in the PR runner.
 
-Focuses on:
-1. **SHA-based skip** — DB-integrated tests against ``agent_actions``.
-2. **Runner error paths** — missing credentials, missing index.
-
-The full LLM pipeline is tested by golden tests. These tests use the
-test DB but mock external calls (LLM, GitHub API).
+The check runs before any LLM call and uses the same identity the review
+Decision carries (``pr-review:{pr}:{head_sha}``), in the partition of the
+current write mode.
 """
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gita.db.models import AgentAction
-from gita.jobs.runners import (
-    _SHA_EVIDENCE_PREFIX,
-    _check_sha_already_reviewed,
-)
+from gita.agents.dedupe import record_action
+from gita.agents.pr_reviewer.bridge import build_pr_review_decision
+from gita.agents.types import PRReviewResult
+from gita.jobs.runners import _already_reviewed
+
+SHA_A, SHA_B = "a" * 40, "b" * 40
 
 
-# ---------------------------------------------------------------------------
-# SHA-based skip: _check_sha_already_reviewed
-# ---------------------------------------------------------------------------
-class TestCheckShaAlreadyReviewed:
+def _review(verdict: str = "approve", summary: str = "No issues found.") -> PRReviewResult:
+    return PRReviewResult(
+        repo_name="amass",
+        pr_number=42,
+        pr_title="t",
+        summary=summary,
+        verdict=verdict,
+        findings=[],
+        confidence=0.9,
+    )
+
+
+async def _record(session: AsyncSession, *, head_sha: str, live: bool, agent: str = "pr_reviewer"):
+    decision = build_pr_review_decision(
+        _review(), repo_full_name="r-log/AMASS", pr_number=42, head_sha=head_sha
+    )
+    await record_action(
+        session,
+        decision,
+        agent=agent,
+        outcome="executed" if live else "shadow_logged",
+        live=live,
+    )
+
+
+class TestAlreadyReviewed:
     async def test_no_prior_review(self, db_session: AsyncSession):
-        """First review of a PR — no skip."""
-        result = await _check_sha_already_reviewed(
-            db_session, "r-log/AMASS", "abc123"
-        )
-        assert result is False
+        assert not await _already_reviewed(db_session, "r-log/AMASS", 42, SHA_A, live=True)
 
-    async def test_prior_review_with_matching_sha(self, db_session: AsyncSession):
-        """Prior review exists with same SHA — should skip."""
-        row = AgentAction(
-            repo_name="r-log/amass",
-            agent="pr_reviewer",
-            action="comment",
-            signature="fakesig123",
-            outcome="executed",
-            confidence=0.8,
-            evidence=[
-                "pr_reviewer verdict: approve",
-                f"{_SHA_EVIDENCE_PREFIX}abc123",
-            ],
-        )
-        db_session.add(row)
-        await db_session.flush()
+    async def test_same_commit_already_reviewed(self, db_session: AsyncSession):
+        await _record(db_session, head_sha=SHA_A, live=True)
+        assert await _already_reviewed(db_session, "r-log/AMASS", 42, SHA_A, live=True)
 
-        result = await _check_sha_already_reviewed(
-            db_session, "r-log/AMASS", "abc123"
-        )
-        assert result is True
+    async def test_new_commit_is_not_reviewed_yet(self, db_session: AsyncSession):
+        await _record(db_session, head_sha=SHA_A, live=True)
+        assert not await _already_reviewed(db_session, "r-log/AMASS", 42, SHA_B, live=True)
 
-    async def test_prior_review_with_different_sha(self, db_session: AsyncSession):
-        """Prior review exists but with a different SHA — no skip."""
-        row = AgentAction(
-            repo_name="r-log/amass",
-            agent="pr_reviewer",
-            action="comment",
-            signature="fakesig456",
-            outcome="executed",
-            confidence=0.8,
-            evidence=[
-                "pr_reviewer verdict: approve",
-                f"{_SHA_EVIDENCE_PREFIX}different_sha",
-            ],
-        )
-        db_session.add(row)
-        await db_session.flush()
+    async def test_repo_name_is_case_insensitive(self, db_session: AsyncSession):
+        await _record(db_session, head_sha=SHA_A, live=True)
+        assert await _already_reviewed(db_session, "R-LOG/amass", 42, SHA_A, live=True)
 
-        result = await _check_sha_already_reviewed(
-            db_session, "r-log/AMASS", "abc123"
-        )
-        assert result is False
+    async def test_other_pr_not_matched(self, db_session: AsyncSession):
+        await _record(db_session, head_sha=SHA_A, live=True)
+        assert not await _already_reviewed(db_session, "r-log/AMASS", 43, SHA_A, live=True)
 
-    async def test_case_insensitive_repo(self, db_session: AsyncSession):
-        """Repo name matching is case-insensitive."""
-        row = AgentAction(
-            repo_name="r-log/amass",
-            agent="pr_reviewer",
-            action="comment",
-            signature="fakesig789",
-            outcome="executed",
-            confidence=0.8,
-            evidence=[f"{_SHA_EVIDENCE_PREFIX}sha999"],
-        )
-        db_session.add(row)
-        await db_session.flush()
+    async def test_other_agent_not_matched(self, db_session: AsyncSession):
+        await _record(db_session, head_sha=SHA_A, live=True, agent="onboarding")
+        assert not await _already_reviewed(db_session, "r-log/AMASS", 42, SHA_A, live=True)
 
-        result = await _check_sha_already_reviewed(
-            db_session, "R-Log/AMASS", "sha999"
-        )
-        assert result is True
-
-    async def test_different_agent_not_matched(self, db_session: AsyncSession):
-        """Only pr_reviewer rows count — onboarding rows are ignored."""
-        row = AgentAction(
-            repo_name="r-log/amass",
-            agent="onboarding",
-            action="comment",
-            signature="fakesig_onboard",
-            outcome="executed",
-            confidence=0.8,
-            evidence=[f"{_SHA_EVIDENCE_PREFIX}abc123"],
-        )
-        db_session.add(row)
-        await db_session.flush()
-
-        result = await _check_sha_already_reviewed(
-            db_session, "r-log/AMASS", "abc123"
-        )
-        assert result is False
-
-    async def test_shadow_logged_still_counts(self, db_session: AsyncSession):
-        """Shadow-mode reviews should still prevent re-reviews."""
-        row = AgentAction(
-            repo_name="r-log/amass",
-            agent="pr_reviewer",
-            action="comment",
-            signature="fakesig_shadow",
-            outcome="shadow_logged",
-            confidence=0.7,
-            evidence=[f"{_SHA_EVIDENCE_PREFIX}sha_shadow"],
-        )
-        db_session.add(row)
-        await db_session.flush()
-
-        result = await _check_sha_already_reviewed(
-            db_session, "r-log/AMASS", "sha_shadow"
-        )
-        assert result is True
-
-    async def test_evidence_without_sha_not_matched(self, db_session: AsyncSession):
-        """Rows without the SHA evidence tag don't match."""
-        row = AgentAction(
-            repo_name="r-log/amass",
-            agent="pr_reviewer",
-            action="comment",
-            signature="fakesig_nosha",
-            outcome="executed",
-            confidence=0.8,
-            evidence=["pr_reviewer verdict: approve", "3 findings"],
-        )
-        db_session.add(row)
-        await db_session.flush()
-
-        result = await _check_sha_already_reviewed(
-            db_session, "r-log/AMASS", "abc123"
-        )
-        assert result is False
+    async def test_shadow_review_does_not_block_live_review(self, db_session: AsyncSession):
+        """Observing in shadow, then switching writes on, must still post."""
+        await _record(db_session, head_sha=SHA_A, live=False)
+        assert not await _already_reviewed(db_session, "r-log/AMASS", 42, SHA_A, live=True)
+        assert await _already_reviewed(db_session, "r-log/AMASS", 42, SHA_A, live=False)
 
 
-# ---------------------------------------------------------------------------
-# SHA evidence tag format
-# ---------------------------------------------------------------------------
-class TestShaEvidenceTag:
-    def test_prefix_format(self):
-        """The prefix is stable — changing it would break existing lookups."""
-        assert _SHA_EVIDENCE_PREFIX == "head_sha:"
+class TestReviewIdentity:
+    def test_identical_bodies_on_different_commits_are_different_reviews(self):
+        """The bug: identity was the first 200 chars of the body, so a clean
+        review of commit C deduplicated against the clean review of commit A."""
+        from gita.agents.dedupe import compute_signature
 
-    def test_tag_construction(self):
-        sha = "deadbeef1234"
-        tag = f"{_SHA_EVIDENCE_PREFIX}{sha}"
-        assert tag == "head_sha:deadbeef1234"
-        assert tag.startswith(_SHA_EVIDENCE_PREFIX)
-        assert tag[len(_SHA_EVIDENCE_PREFIX):] == sha
+        a = build_pr_review_decision(_review(), "r-log/AMASS", 42, head_sha=SHA_A)
+        c = build_pr_review_decision(_review(), "r-log/AMASS", 42, head_sha=SHA_B)
+        assert a.payload["body"] == c.payload["body"]
+        assert compute_signature(a) != compute_signature(c)
+
+    def test_same_commit_different_wording_is_the_same_review(self):
+        from gita.agents.dedupe import compute_signature
+
+        a = build_pr_review_decision(_review(summary="Looks fine."), "r-log/AMASS", 42, head_sha=SHA_A)
+        b = build_pr_review_decision(_review(summary="All good."), "r-log/AMASS", 42, head_sha=SHA_A)
+        assert compute_signature(a) == compute_signature(b)

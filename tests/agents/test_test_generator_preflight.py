@@ -303,6 +303,39 @@ class TestIsFeasibleRejections:
 
 
 class TestIsFeasiblePriorAttemptDedupe:
+    @pytest.fixture(autouse=True)
+    def _live_mode(self, monkeypatch):
+        # The seeded rows are executed (live) actions.
+        monkeypatch.setattr("gita.config.settings.write_mode", "full")
+
+    async def test_shadow_attempt_does_not_block_live_generation(
+        self, db_session, monkeypatch
+    ):
+        repo = await _make_repo(db_session)
+        await _make_file(
+            db_session, repo, "src/utils.py", structure={"functions": [{"name": "go"}]}
+        )
+        db_session.add(
+            AgentAction(
+                repo_name="owner/repo",
+                agent="test_generator",
+                action="create_branch",
+                signature="sig-shadow",
+                outcome="shadow_logged",
+                confidence=0.95,
+                evidence=["purpose: add tests for `src/utils.py`"],
+                live=False,
+            )
+        )
+        await db_session.flush()
+
+        live = await is_feasible(db_session, repo.id, "owner/repo", "src/utils.py")
+        assert live.proceed is True
+
+        monkeypatch.setattr("gita.config.settings.write_mode", "shadow")
+        shadow = await is_feasible(db_session, repo.id, "owner/repo", "src/utils.py")
+        assert shadow.proceed is False
+
     async def test_prior_attempt_blocks(self, db_session):
         repo = await _make_repo(db_session)
         await _make_file(
