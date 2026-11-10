@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -33,9 +34,8 @@ class Repo(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    github_full_name: Mapped[str | None] = mapped_column(
-        String(255), unique=True, nullable=True
-    )
+    # Unique case-insensitively (see __table_args__): lookups lower() it.
+    github_full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     root_path: Mapped[str] = mapped_column(Text, nullable=False)
     head_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     indexed_at: Mapped[datetime | None] = mapped_column(
@@ -64,6 +64,15 @@ class Repo(Base):
     )
     edges: Mapped[list["ImportEdge"]] = relationship(
         back_populates="repo", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_repos_github_full_name_lower",
+            func.lower(github_full_name),
+            unique=True,
+            postgresql_where=github_full_name.isnot(None),
+        ),
     )
 
 
@@ -95,6 +104,20 @@ class CodeIndex(Base):
         UniqueConstraint("repo_id", "file_path", name="uq_code_index_repo_file"),
         Index("ix_code_index_repo_id", "repo_id"),
         Index("ix_code_index_language", "language"),
+        # Full-text search for concept_view ('simple': no stemming, which
+        # suits identifiers). Queries must use the same expression.
+        Index(
+            "ix_code_index_content_fts",
+            text("to_tsvector('simple', COALESCE(content, ''))"),
+            postgresql_using="gin",
+        ),
+        # Cosine-similarity search over file embeddings.
+        Index(
+            "ix_code_index_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
     )
 
 

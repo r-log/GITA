@@ -9,8 +9,9 @@ Three tricky things this module handles:
    asyncio. asyncpg on Windows requires Proactor.
 
 3. **Bootstrap the test database at module load time** — before any pytest
-   plugin code runs. At that point no event loop exists yet, ``asyncio.run``
-   works cleanly, and SQLAlchemy/asyncpg aren't locked to a foreign loop.
+   plugin code runs — by running the Alembic migrations. At that point no
+   event loop exists yet, so ``asyncio.run`` (ours and alembic's) works
+   cleanly and SQLAlchemy/asyncpg aren't locked to a foreign loop.
 
 Speed: both the engine and the event loop are session-scoped, so we create
 the ``github_assistant_test`` DB once per session, open one engine once per
@@ -27,6 +28,7 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from collections.abc import AsyncIterator  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
 
 import pytest_asyncio  # noqa: E402
 from sqlalchemy import text  # noqa: E402
@@ -39,7 +41,6 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
 
 from gita.config import settings  # noqa: E402
-from gita.db.models import Base  # noqa: E402
 
 # Do not collect the fake Python files inside tests/fixtures/ as pytest tests.
 collect_ignore_glob = ["fixtures/**"]
@@ -49,8 +50,8 @@ _TEST_DB_URL = settings.database_url.rsplit("/", 1)[0] + f"/{TEST_DB_NAME}"
 _ADMIN_DB_URL = settings.database_url.rsplit("/", 1)[0] + "/postgres"
 
 
-async def _bootstrap_test_db() -> None:
-    """Drop + recreate the test database, create all tables."""
+async def _recreate_test_db() -> None:
+    """Drop and recreate the empty test database."""
     admin = create_async_engine(
         _ADMIN_DB_URL, isolation_level="AUTOCOMMIT", poolclass=NullPool
     )
@@ -61,18 +62,29 @@ async def _bootstrap_test_db() -> None:
         await conn.execute(text(f'CREATE DATABASE "{TEST_DB_NAME}"'))
     await admin.dispose()
 
-    engine = create_async_engine(_TEST_DB_URL, echo=False, poolclass=NullPool)
-    async with engine.begin() as conn:
-        # Enable pgvector extension before creating tables — the code_index
-        # table has a vector(1536) column that requires it.
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        await conn.run_sync(Base.metadata.create_all)
-    await engine.dispose()
+
+def _migrate_test_db() -> None:
+    """Build the schema with the real migrations, not ``create_all``.
+
+    The suite then exercises exactly the schema production gets —
+    indexes and constraints that only exist in migrations included — and
+    a migration that doesn't apply fails every test run.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    root = _Path(__file__).resolve().parent.parent
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", _TEST_DB_URL)
+    cfg.attributes["configure_logger"] = False
+    command.upgrade(cfg, "head")
 
 
 # Module-level bootstrap. Runs once, at conftest import time, before any
-# pytest-asyncio loop is active.
-asyncio.run(_bootstrap_test_db())
+# pytest-asyncio loop is active (alembic's env.py runs its own loop).
+asyncio.run(_recreate_test_db())
+_migrate_test_db()
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -111,8 +123,6 @@ async def db_session(test_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 # Available to any test via pytest's conftest inheritance. Used by the views
 # tests and the agent tests.
 # ---------------------------------------------------------------------------
-from pathlib import Path as _Path  # noqa: E402
-
 from gita.indexer.ingest import index_repository as _index_repository  # noqa: E402
 
 _SYNTH_REPO_PATH = (
