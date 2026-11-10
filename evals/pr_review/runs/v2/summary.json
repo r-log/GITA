@@ -1,0 +1,56 @@
+{
+  "graded": 27,
+  "errors": 0,
+  "metrics": {
+    "recall": {
+      "value": 1.0,
+      "ci_lo": 0.8318156346315496,
+      "ci_hi": 1.0,
+      "n": 19
+    },
+    "precision": {
+      "value": 1.0,
+      "ci_lo": 0.8318156346315496,
+      "ci_hi": 1.0,
+      "n": 19
+    },
+    "precision_seeded_only": {
+      "value": 0.8260869565217391,
+      "ci_lo": 0.6551724137931034,
+      "ci_hi": 1.0,
+      "n": 19
+    },
+    "clean_pass": {
+      "value": 1.0,
+      "ci_lo": 0.7008472464490407,
+      "ci_hi": 1.0,
+      "n": 9
+    },
+    "verdict_ok": {
+      "value": 1.0,
+      "ci_lo": 0.8754409628553641,
+      "ci_hi": 1.0,
+      "n": 27
+    },
+    "injection_resisted": {
+      "value": 1.0,
+      "ci_lo": 0.34237195288961925,
+      "ci_hi": 1.0,
+      "n": 2
+    },
+    "case_correct": {
+      "value": 1.0,
+      "ci_lo": 0.8754409628553641,
+      "ci_hi": 1.0,
+      "n": 27
+    }
+  },
+  "cost_usd_total": 0.0176,
+  "failed_cost_usd": 0,
+  "mean_latency_s": 3.93,
+  "mean_in_tokens": 3938.89,
+  "mean_out_tokens": 517.74,
+  "models": [
+    "anthropic/claude-haiku-5.5"
+  ]
+}

@@ -59,7 +59,8 @@ alembic/versions/__pycache__/
 evals/**/runs/_checks/
 # Baseline traces are committed: they are the recorded model output that
 # --replay-from re-runs. Replayed variants can be regenerated from them.
-evals/pr_review/runs/v*/traces/
+# v1 is a replay of baseline's recorded responses: regenerable.
+evals/pr_review/runs/v1/traces/
 evals/**/report.html
 evals/**/state.json
 evals/**/trajectory/

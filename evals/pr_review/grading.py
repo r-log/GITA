@@ -24,7 +24,8 @@ Per case (``CaseGrade.metrics``):
   issue or acceptable extra.
 * ``verdict_ok`` — the posted verdict fits the case: ``request_changes``
   when a high/critical bug was seeded; ``comment`` or ``request_changes``
-  for other positives; never ``request_changes`` on a clean PR.
+  for other positives; never ``request_changes`` on a clean PR, unless a
+  known issue was reported at high severity or above.
 * ``severity_ok`` — matched findings rated at least the expected severity
   (1.0 when nothing matched or nothing was expected).
 
@@ -136,7 +137,10 @@ def grade_case(case: Case, findings: Sequence[ReportedFinding], verdict: str) ->
     else:
         correct = not false_alarms
         found = 1.0
-        verdict_ok = verdict != "request_changes"
+        # A "clean" case can still hold a real, unseeded issue (a known
+        # issue); a high-severity one justifies requesting changes.
+        justified = any(_RANK.get(f.severity, 0) >= _HIGH for f in known)
+        verdict_ok = verdict != "request_changes" or justified
 
     rated = [
         (_RANK.get(m.severity, 0), _RANK[b.severity])

@@ -98,6 +98,8 @@ def model_matches(requested: str, served: str) -> bool:
     ``anthropic/claude-4.5-sonnet-20250929``: same provider, and every
     name token of the request appears in the served id.
     """
+    # OpenRouter variants (":batch", ":free", ...) are served as the base model.
+    requested = requested.split(":", 1)[0]
     if served == requested or served.startswith(requested):
         return True
     req_provider, _, req_name = requested.partition("/")

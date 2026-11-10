@@ -34,3 +34,10 @@ id = "makedirs_outside_export_dir"
 file = "shop/api.py"
 anchor = "    os.makedirs(os.path.dirname(path), exist_ok=True)"
 description_regex = '(?i)(makedirs|director)'
+
+# Added after the Sonnet run (v3): the dot check dropped with basename().
+[[acceptable]]
+id = "dot_check_dropped"
+file = "shop/api.py"
+anchor = "    if not report_name:"
+description_regex = '(?i)(hidden|starts? with|"\."|\.\.|dot)'

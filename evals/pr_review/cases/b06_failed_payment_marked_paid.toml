@@ -51,7 +51,9 @@ severity = "high"
 [[known_issue]]
 id = "double_charge"
 file = "shop/api.py"
-anchor = '"SELECT total_cents FROM orders WHERE id = ? AND user_id = ?"'
+# Widened after the Sonnet run (v3), which cited the charge, not the lookup.
+anchor = "def checkout("
+span = 15
 description_regex = '(?i)(already[- ]paid|status|second time|twice)'
 evidence = """checkout never reads the order's status, so calling it again on a paid
 order (retry, double click) charges the card again and overwrites charge_id.

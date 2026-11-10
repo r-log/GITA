@@ -1,0 +1,47 @@
+{
+  "variant": "indexed",
+  "reviews": 15,
+  "errors": 0,
+  "caught": {
+    "all": {
+      "caught": 3,
+      "of": 16
+    },
+    "code": {
+      "caught": 3,
+      "of": 9
+    },
+    "repo": {
+      "caught": 0,
+      "of": 1
+    },
+    "domain": {
+      "caught": 0,
+      "of": 6
+    }
+  },
+  "findings": 5,
+  "findings_not_yet_judged": 0,
+  "located": {
+    "all": 0.188,
+    "code": 0.333,
+    "repo": 0.0,
+    "domain": 0.0,
+    "chance_all": 0.02,
+    "chance_code": 0.029
+  },
+  "located_n": {
+    "all": 16,
+    "code": 9,
+    "repo": 1,
+    "domain": 6
+  },
+  "mean_findings": 0.333,
+  "request_changes": 0.0,
+  "cost_usd_total": 1.6412,
+  "failed_cost_usd": 0,
+  "mean_prompt_chars": 103326.4,
+  "models": [
+    "anthropic/claude-sonnet-5.5"
+  ]
+}

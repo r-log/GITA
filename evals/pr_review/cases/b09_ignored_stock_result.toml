@@ -47,7 +47,9 @@ active user can add items to another user's order."""
 [[known_issue]]
 id = "unvalidated_quantity"
 file = "shop/api.py"
-anchor = "        db.decrement_stock(conn, product_id, quantity)"
+# Widened after the Haiku run (v2), which cited the handler's signature.
+anchor = "def add_to_cart("
+span = 3
 description_regex = '(?i)(negative|not validated)'
 evidence = """quantity isn't validated: decrement_stock(conn, 1, -3) returns True and
 raises stock from 5 to 8 (checked). Checking decrement_stock's result doesn't fix it."""

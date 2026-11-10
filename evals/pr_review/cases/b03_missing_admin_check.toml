@@ -22,3 +22,14 @@ anchor = "def delete_product(conn: sqlite3.Connection, user: User | None, produc
 span = 3
 kinds = ["security", "bug", "missing"]
 severity = "high"
+
+# Added after the Sonnet run (v3).
+[[known_issue]]
+id = "reports_missing_as_deleted"
+file = "shop/api.py"
+anchor = "def delete_product("
+span = 4
+description_regex = '(?i)(nonexistent|rowcount|result is ignored|as if it succeeded)'
+evidence = """delete_product returns {"deleted": product_id} whether or not a row was
+deleted (the DELETE's rowcount is ignored); get_product raises LookupError for
+the same id."""

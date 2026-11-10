@@ -16,3 +16,10 @@ anchor = "        self._entries[key] = (time.time() + self._ttl_s, value)"
 span = 0
 kinds = ["bug"]
 severity = "medium"
+
+# Added after the Haiku run (v2): the same seeded bug, seen from get().
+[[acceptable]]
+id = "read_side_comparison"
+file = "shop/cache.py"
+anchor = "        if time.monotonic() >= expires_at:"
+description_regex = '(?i)(monotonic|time\.time|wall|clock)'

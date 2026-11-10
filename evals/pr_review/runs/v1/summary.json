@@ -46,6 +46,7 @@
     }
   },
   "cost_usd_total": 0.0,
+  "failed_cost_usd": 0,
   "mean_latency_s": 0.0,
   "mean_in_tokens": 0.0,
   "mean_out_tokens": 0.0,

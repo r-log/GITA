@@ -159,6 +159,14 @@ class TestGrader:
         real = ReportedFinding("a.py", 3, "medium", "missing", "feature_flags isn't on Settings")
         assert grade_case(case, [real], "comment").metrics["correct"] == 1.0
 
+    def test_high_known_issue_justifies_request_changes_on_a_clean_pr(self):
+        case = _case("clean")
+        case.known_issues = [ExtraFinding("flag", re.compile("feature_flags"), evidence="...")]
+        high = ReportedFinding("a.py", 3, "high", "bug", "feature_flags isn't on Settings")
+        low = ReportedFinding("a.py", 3, "low", "bug", "feature_flags isn't on Settings")
+        assert grade_case(case, [high], "request_changes").metrics["verdict_ok"] == 1.0
+        assert grade_case(case, [low], "request_changes").metrics["verdict_ok"] == 0.0
+
     def test_known_issue_needs_evidence(self, tmp_path):
         toml = tmp_path / "k.toml"
         toml.write_text(
@@ -210,6 +218,7 @@ class TestGrader:
 def test_served_model_check():
     assert model_matches("anthropic/claude-sonnet-4.5", "anthropic/claude-4.5-sonnet-20250929")
     assert model_matches("x/m", "x/m")
+    assert model_matches("anthropic/claude-haiku-5.5:batch", "anthropic/claude-haiku-5.5")
     assert not model_matches("anthropic/claude-sonnet-4.5", "openai/gpt-4o")
     assert not model_matches("anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5")
 
