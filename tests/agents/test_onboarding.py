@@ -236,7 +236,7 @@ class TestErrors:
 class TestNoGithubIO:
     async def test_agent_does_not_import_github_client(self, indexed_synth_py):
         """The onboarding module must not depend on the GitHub client.
-        Writes are a Day 7 concern, orchestrated outside the agent."""
+        Writes are orchestrated outside the agent (bridges + decisions)."""
         import sys
 
         session, repo = indexed_synth_py

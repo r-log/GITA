@@ -1,4 +1,4 @@
-"""Tests for the test-generator preflight gates (Week 9).
+"""Tests for the test-generator preflight gates.
 
 Stage A (``has_existing_tests``) is sync, filesystem-only — uses
 ``tmp_path``-driven mini-repos. Stage B (``is_feasible``) is async
@@ -392,7 +392,7 @@ class TestIsFeasiblePriorAttemptDedupe:
 
 
 # ---------------------------------------------------------------------------
-# Stage A — TS/JS coverage (Week 10 Day 2)
+# Stage A — TS/JS coverage
 #
 # Mirrors the Python checks above. Sibling and mirror-layout name
 # patterns differ (`.test.<ext>` / `.spec.<ext>`); the content grep
@@ -537,7 +537,7 @@ class TestHasExistingTestsUnknownLanguage:
 
 
 # ---------------------------------------------------------------------------
-# Stage B — TS/JS coverage (Week 10 Day 2)
+# Stage B — TS/JS coverage
 # ---------------------------------------------------------------------------
 class TestIsFeasibleTypeScriptOptIn:
     async def test_typescript_passes_when_recipe_supports_it(self, db_session):
@@ -646,7 +646,7 @@ class TestIsFeasibleJavaScriptOptIn:
 
 
 # ---------------------------------------------------------------------------
-# preview_repo — TS/JS surface (Week 10 Day 2)
+# preview_repo — TS/JS surface
 # ---------------------------------------------------------------------------
 class TestPreviewRepoIncludesTSJS:
     async def test_preview_scans_typescript_files(self, db_session, tmp_path: Path):

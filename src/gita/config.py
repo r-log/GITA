@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # concept_view falls back to keyword-only FTS.
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
 
-    # Auto-test-generation post-reindex trigger (Week 9). Both must be
+    # Auto-test-generation post-reindex trigger. Both must be
     # true for any auto-trigger work to fire:
     #   - this env-level kill switch (default OFF for safety)
     #   - the per-repo ``Repo.auto_test_generation`` column (default OFF)

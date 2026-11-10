@@ -1,4 +1,4 @@
-"""Tests for the post-reindex auto-test-generation trigger (Week 9).
+"""Tests for the post-reindex auto-test-generation trigger.
 
 Covers ``_maybe_enqueue_test_gen_jobs`` end-to-end. Each test sets up
 a tmp_path mini-repo on disk so Stage A can scan it, an indexed Repo
@@ -396,7 +396,7 @@ class TestCapAndEnqueue:
         tmp_path: Path,
         opt_in_env,
     ):
-        """Week 10: enqueued job picks up the repo's default_branch
+        """The enqueued job picks up the repo's default_branch
         instead of a hardcoded 'main' (so master/develop repos work)."""
         repo = await _make_repo(db_session)
         _write(tmp_path / "src" / "foo.py")

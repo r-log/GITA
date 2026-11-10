@@ -1,6 +1,6 @@
-"""Issue-flow golden test — the Week 3 Day 5 acceptance bar.
+"""Issue-flow golden test.
 
-This is the integration test that proves the Week 3 contract chain works
+This is the integration test that proves the contract chain works
 end-to-end without touching real GitHub:
 
     real_llm → run_onboarding → build_onboarding_issue_decisions
@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 
 run_onboarding = pytest.importorskip(
-    "gita.agents.onboarding", reason="onboarding agent lands on Day 5"
+    "gita.agents.onboarding", reason="onboarding agent unavailable"
 ).run_onboarding
 
 from gita.agents.decisions import (  # noqa: E402
@@ -55,10 +55,9 @@ FALLBACK_ISSUE = 9999
 class _RecordingClient:
     """Mock ActionClient that captures every execute() call.
 
-    Week 3 Day 3's real ``GithubClient`` is not used here — this test
-    proves the gate layer + bridge layer talk to *any* ActionClient-shape
-    correctly, without touching the network. The Day 7 live flip has its
-    own separate proof against the real GithubClient.
+    The real ``GithubClient`` is not used here — this test proves the gate
+    and bridge layers talk to *any* ActionClient-shaped object correctly,
+    without touching the network.
     """
 
     def __init__(self) -> None:
@@ -104,8 +103,8 @@ async def test_onboarding_issue_flow_across_write_modes(
     """End-to-end: onboarding → bridge → gate → mock client under each mode.
 
     Structural typing: the mock satisfies the ActionClient protocol even
-    though it's not a GithubClient. This is the whole point of Day 1's
-    Protocol-based framework — the gate doesn't care which client lands.
+    though it's not a GithubClient — the gate doesn't care which client
+    it is given.
     """
     assert FIXTURE.is_dir(), f"fixture missing at {FIXTURE}"
     client: ActionClient = recording_client  # structural typing check

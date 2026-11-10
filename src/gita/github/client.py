@@ -1,9 +1,9 @@
 """Minimal GitHub App client.
 
-Week 2 shipped ``comment`` only. Week 3 expands the dispatch to cover the
-write path onboarding needs: ``create_issue``, ``close_issue``,
-``edit_issue``, ``add_label``, ``remove_label``. Every other action still
-raises ``NotImplementedError`` so unknown dispatch shapes fail loud.
+Implements the ``ActionClient`` protocol for the actions in
+``SUPPORTED_ACTIONS``; anything else raises ``NotImplementedError`` so an
+unknown dispatch shape fails loudly. Also provides the read calls agents
+need (PR metadata and files, refs, file contents).
 
 Architecture:
 - ``GithubClient`` is instantiated once per process and reused.
@@ -29,6 +29,7 @@ from urllib.parse import quote
 
 import httpx
 
+from gita import __version__
 from gita.agents.decisions import Decision
 from gita.github.auth import GithubAppAuth
 
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 _GITHUB_API = "https://api.github.com"
 _ACCEPT = "application/vnd.github+json"
 _API_VERSION = "2022-11-28"
-_USER_AGENT = "gita/0.1.0"
+_USER_AGENT = f"gita/{__version__}"
 
 # Actions ``GithubClient.execute`` dispatches. Must match the decision
 # gate's thresholds and the dedupe signature shapes (a test enforces it).
@@ -509,9 +510,8 @@ class GithubClient:
     # -----------------------------------------------------------------
     # Contents API write helpers
     #
-    # Private — dispatched by ``execute()`` in Week 8 Day 2 when the
-    # corresponding action types (``create_branch``, ``update_file``,
-    # ``open_pr``) land in the Decision framework.
+    # Private — dispatched by ``execute()`` for the code-writing actions
+    # (``create_branch``, ``update_file``, ``open_pr``).
     # -----------------------------------------------------------------
     async def _create_ref(
         self,

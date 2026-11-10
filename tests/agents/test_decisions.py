@@ -115,7 +115,7 @@ class TestThresholds:
             get_threshold("create_issue", {"comment": 0.3})
 
     def test_code_actions_default_to_higher_threshold(self):
-        """Week 8: ``create_branch`` / ``update_file`` / ``open_pr`` sit
+        """``create_branch`` / ``update_file`` / ``open_pr`` sit
         above the comment/issue gate because generated code has a larger
         blast radius than generated prose."""
         for action in ("create_branch", "update_file", "open_pr"):
@@ -467,7 +467,7 @@ class TestDedupeFullMode:
 
 class TestDedupeCommentModeDowngrade:
     async def test_create_issue_downgrade_records_and_dedupes(self, db_session: AsyncSession):
-        """Week 3 acceptance regression: a downgraded create_issue in comment
+        """Regression: a downgraded create_issue in comment
         mode must dedupe against itself on a second run."""
         client = FakeActionClient()
         decision = Decision(

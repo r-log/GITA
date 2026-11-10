@@ -162,11 +162,8 @@ class LLMClient(Protocol):
     validation failure it must raise ``LLMSchemaError``.
 
     ``temperature`` defaults to ``0.0`` so structured-output calls are as
-    deterministic as the model allows. Week 3 Day 4 observed that
-    title-based dedupe signatures miss when the LLM rephrases equivalent
-    milestones between runs; dropping the temperature is the cheapest fix
-    that tightens variance without blocking exploratory prompts from
-    overriding per-call.
+    deterministic as the model allows: run-to-run rephrasing of equivalent
+    output makes reviews noisier to compare. Callers can override per call.
     """
 
     async def call(

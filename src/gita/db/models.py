@@ -40,15 +40,14 @@ class Repo(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    # Per-repo opt-in for the post-reindex auto-test-generation trigger
-    # (Week 9). Defaults to False so no existing repo gets surprise PRs;
+    # Per-repo opt-in for the post-reindex auto-test-generation trigger.
+    # Defaults to False so no existing repo gets surprise PRs;
     # flipped on via ``gita index --auto-test-gen``.
     auto_test_generation: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
-    # Remote default branch (e.g. "main", "master", "develop"). Used by
-    # the auto-test-generation trigger (Week 10) so PRs target the
-    # right base branch instead of a hardcoded "main".
+    # Remote default branch (e.g. "main", "master", "develop"). Only pushes
+    # to it reindex, and auto-generated test PRs target it.
     # Discovered via ``discover_default_branch`` at index time;
     # overridable via ``gita index --default-branch BRANCH``.
     default_branch: Mapped[str] = mapped_column(

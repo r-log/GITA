@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gita"
 version = "0.1.0"
-description = "GitHub Assistant v2 — repo indexer and query layer (Week 1 foundation)"
+description = "A GitHub App that reviews pull requests, onboards contributors and generates tests, with model output gated by deterministic checks."
 requires-python = ">=3.12"
-readme = { text = "GITA v2 — see .claude/plans/ for the current plan.", content-type = "text/markdown" }
+readme = "README.md"
 
 dependencies = [
     "sqlalchemy[asyncio]>=2.0.30",

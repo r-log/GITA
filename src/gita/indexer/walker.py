@@ -1,4 +1,4 @@
-"""File discovery + allowlist for the Week 1 ingest pipeline.
+"""File discovery + allowlist for the ingest pipeline.
 
 ``iter_files(root)`` yields ``(path, language)`` tuples for every source file
 under ``root`` that survives the filter. Filter rules:
@@ -9,8 +9,8 @@ under ``root`` that survives the filter. Filter rules:
 - Must NOT match a skipped suffix (``SKIP_SUFFIXES``) — catches minified JS,
   type-only declaration files, protobuf stubs, and lockfiles.
 - Must be < ``MAX_FILE_SIZE`` bytes (default 200 KB).
-- Tests/specs are excluded by default in Week 1 — that's a Week 1 decision per
-  the plan; flip ``include_tests`` if you need them.
+- Tests/specs are excluded by default (the agents analyse product code);
+  pass ``include_tests=True`` to index them.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Golden-agent test for the seeded_buggy fixture.
 
-Skipped at collection time until ``gita.agents.onboarding`` lands on Day 5.
+Skipped at collection time if ``gita.agents.onboarding`` is unavailable.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 run_onboarding = pytest.importorskip(
-    "gita.agents.onboarding", reason="onboarding agent lands on Day 5"
+    "gita.agents.onboarding", reason="onboarding agent unavailable"
 ).run_onboarding
 
 from gita.indexer.ingest import index_repository  # noqa: E402

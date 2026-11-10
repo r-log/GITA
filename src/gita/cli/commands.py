@@ -529,7 +529,7 @@ async def cmd_onboard(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# --post-to flow (Week 2 Day 7 bridge — single comment)
+# --post-to flow (single comment)
 # ---------------------------------------------------------------------------
 async def _run_post_flow(
     result: OnboardingResult,
@@ -598,7 +598,7 @@ async def _run_post_flow(
 
 
 # ---------------------------------------------------------------------------
-# --create-issues flow (Week 3 Day 4 bridge — one Decision per milestone)
+# --create-issues flow (one Decision per milestone)
 # ---------------------------------------------------------------------------
 async def _run_create_issues_flow(
     result: OnboardingResult,
@@ -686,7 +686,7 @@ async def _run_create_issues_flow(
 
 
 # ---------------------------------------------------------------------------
-# Generate-tests command (Week 8 Day 5)
+# Generate-tests command
 # ---------------------------------------------------------------------------
 def _parse_target_repo_required(value: str) -> str:
     if value.count("/") != 1 or not all(value.split("/")):
@@ -819,7 +819,7 @@ def _print_decision_summary_dict(index: int, dec: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# auto-test-gen preview command (Week 10)
+# auto-test-gen preview command
 # ---------------------------------------------------------------------------
 async def cmd_auto_test_gen_preview(args: argparse.Namespace) -> int:
     """Preview what the auto-test-generation trigger would do for a repo.

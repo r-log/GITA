@@ -1,6 +1,6 @@
 """Golden snapshot test against a local clone of r-log/AMASS.
 
-This is the Day 6 feel-test in automated form. We run the real ingest
+A snapshot test against a real-world repository. We run the real ingest
 pipeline against a real repo and assert aggregate invariants — NOT exact
 counts, because AMASS moves. Counts have a tolerance so normal development
 doesn't break the test; a catastrophic regression still will.
@@ -24,8 +24,7 @@ from gita.indexer.ingest import index_repository
 from gita.views.neighborhood import neighborhood_view
 from gita.views.symbol import symbol_view
 
-_DEFAULT_AMASS_PATH = Path("C:/Users/Roko/Documents/PYTHON/AMAS/electrician-log-mvp")
-AMASS_PATH = Path(os.environ.get("GITA_AMASS_PATH", str(_DEFAULT_AMASS_PATH)))
+AMASS_PATH = Path(os.environ.get("GITA_AMASS_PATH", "/nonexistent"))
 
 pytestmark = pytest.mark.skipif(
     not AMASS_PATH.is_dir(),

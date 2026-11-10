@@ -172,7 +172,7 @@ class TestResolveImportDispatcher:
 
 
 # ---------------------------------------------------------------------------
-# Package-root discovery (Week 2 P1 fix)
+# Package-root discovery
 # ---------------------------------------------------------------------------
 class TestDiscoverPackageRoots:
     def test_flat_repo_returns_only_repo_root(self, tmp_path):
@@ -274,7 +274,7 @@ class TestDiscoverPackageRoots:
 
 
 # ---------------------------------------------------------------------------
-# Absolute imports via package_roots (Week 2 P1 fix)
+# Absolute imports via package_roots
 # ---------------------------------------------------------------------------
 class TestPythonImportsWithPackageRoots:
     def test_absolute_import_resolves_via_src_layout(self, tmp_path):

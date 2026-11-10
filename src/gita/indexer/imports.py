@@ -9,10 +9,9 @@ and returns an absolute path to the resolved target file, or ``None`` if the
 import points outside the repo (stdlib, npm package, installed package, etc.).
 
 Unresolved imports are NOT an error — we still store them in ``import_edges``
-with ``dst_file=NULL`` so that Week 2+ can improve resolution without a
-reindex.
+with ``dst_file=NULL`` so resolution can improve without a reindex.
 
-**Package-root discovery (Week 2 P1 fix):** real Python projects rarely put
+**Package-root discovery:** real Python projects rarely put
 their package at the repo root. ``src/``-layouts, ``backend/``-layouts, and
 deeply nested apps are normal. ``discover_package_roots`` walks the
 ``__init__.py`` chain to find every "topmost package directory" and treats

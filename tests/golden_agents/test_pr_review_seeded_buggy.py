@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 run_pr_review = pytest.importorskip(
-    "gita.agents.pr_reviewer.recipe", reason="pr_reviewer lands in Week 4"
+    "gita.agents.pr_reviewer.recipe", reason="pr_reviewer unavailable"
 ).run_pr_review
 
 from gita.agents.pr_reviewer.diff_parser import (  # noqa: E402

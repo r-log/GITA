@@ -1,4 +1,4 @@
-"""PR reviewer agent — Week 4.
+"""PR reviewer agent.
 
 Submodules:
 - ``diff_parser``  — parse GitHub PR file diffs into structured hunks

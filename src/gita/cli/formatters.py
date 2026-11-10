@@ -70,7 +70,7 @@ def fmt_repos(rows: list[tuple[Repo, int, int]]) -> str:
     lines = [f"{'NAME':<30} {'FILES':>6} {'INDEXED':<20} {'AUTOTG':<7} ROOT"]
     for repo, file_count, _ in rows:
         indexed = repo.indexed_at.strftime("%Y-%m-%d %H:%M") if repo.indexed_at else "-"
-        # Week 9 — auto_test_generation flag visibility in the repo
+        # auto_test_generation flag visibility in the repo
         # listing so the user can see at a glance which repos are
         # opted in to the post-reindex trigger.
         autotg = "yes" if getattr(repo, "auto_test_generation", False) else "no"

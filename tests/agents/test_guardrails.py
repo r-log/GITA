@@ -386,7 +386,7 @@ class TestStructuralConfidence:
         assert structural_confidence(0, 0, 0.7) == 0.7
 
     def test_one_out_of_seven_filtered(self):
-        """The Day 6 AMASS scenario: 7 findings, 1 dropped."""
+        """A real-repo scenario: 7 findings, 1 dropped."""
         result = structural_confidence(7, 6, 0.87)
         expected = 0.87 * (6 / 7)
         assert result == pytest.approx(expected, abs=0.01)

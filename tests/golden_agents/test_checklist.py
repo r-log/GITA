@@ -2,7 +2,7 @@
 
 These don't touch the onboarding agent — they build a fake ``OnboardingResult``
 and assert that ``check_output`` correctly catches / passes each rule.
-Covers the checklist's own failure modes so Day 6 doesn't have to.
+Covers the checklist's own failure modes.
 """
 
 from __future__ import annotations

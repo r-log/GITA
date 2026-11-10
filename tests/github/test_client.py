@@ -733,7 +733,7 @@ class TestGetPrFiles:
 
 
 # ---------------------------------------------------------------------------
-# Contents API — write helpers (Week 8 Day 1)
+# Contents API — write helpers
 # ---------------------------------------------------------------------------
 class TestCreateRef:
     async def test_posts_to_git_refs_endpoint(self, client, capture):
@@ -869,7 +869,7 @@ class TestCreatePull:
 
 
 # ---------------------------------------------------------------------------
-# Contents API — read methods (Week 8 Day 1)
+# Contents API — read methods
 # ---------------------------------------------------------------------------
 class TestGetRef:
     async def test_returns_typed_ref_info(self, client, capture):
@@ -930,7 +930,7 @@ class TestGetContents:
 
 
 # ---------------------------------------------------------------------------
-# execute(create_branch / update_file / open_pr)  —  Week 8 Day 2 dispatch
+# execute(create_branch / update_file / open_pr) dispatch
 # ---------------------------------------------------------------------------
 def _create_branch_decision(
     repo: str = "owner/repo",

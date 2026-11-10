@@ -1,4 +1,4 @@
-"""Pre-flight gates for the auto-test-generation trigger (Week 9).
+"""Pre-flight gates for the auto-test-generation trigger.
 
 Two purely deterministic checks that run **before** any LLM call,
 GitHub call, or subprocess. The post-reindex auto-trigger applies them
@@ -18,11 +18,10 @@ Stage A is sync (filesystem-only). Stage B is async (DB-only).
 Both return ``PreflightResult``: ``proceed=False`` is terminal —
 the runner enqueues nothing and logs the ``reason``.
 
-**Note on indexing:** test files are deliberately excluded from
-``code_index`` (Week 1 decision in ``walker.py``). A future Week 10+
-could flip ``include_tests=True`` and replace Stage A's filesystem
-walk with an ``ImportEdge`` query — this is recorded in
-NOTES-week9.md as Option B.
+**Note on indexing:** test files are excluded from ``code_index`` by
+default (see ``walker.py``), so Stage A looks at the filesystem. Indexing
+tests (``include_tests=True``) would let Stage A become an
+``ImportEdge`` query instead.
 """
 
 from __future__ import annotations
@@ -542,7 +541,7 @@ async def _has_prior_test_gen_attempt(
 
 
 # ---------------------------------------------------------------------------
-# Preview (Week 10) — calibration tool for the auto-trigger
+# Preview — calibration tool for the auto-trigger
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class FilePreviewResult:

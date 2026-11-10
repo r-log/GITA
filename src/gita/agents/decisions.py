@@ -16,8 +16,7 @@ The framework enforces two invariants *at framework level*, not prompt level:
      to write to GitHub.
    - ``comment`` — execute ``comment`` actions; downgrade every other action
      to a comment.
-   - ``full`` — execute anything that passes its threshold. Not flipped on in
-     Week 2.
+   - ``full`` — execute anything that passes its threshold.
 
 A comment below its threshold is *held*: not posted, not recorded.
 Downgrading a comment to a comment about the comment would replace useful
@@ -76,7 +75,7 @@ class Outcome(StrEnum):
 # ---------------------------------------------------------------------------
 # Keys are action names. The value is the minimum confidence for the action
 # to execute as-requested. Below this, the action auto-downgrades to a comment.
-# Tune after Day 6 once we've seen the first real onboarding outputs.
+# These are configuration, never model output: an agent cannot lower them.
 DEFAULT_THRESHOLDS: dict[str, float] = {
     "comment": 0.3,
     "add_label": 0.5,
@@ -84,7 +83,7 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     "edit_issue": 0.75,
     "create_issue": 0.7,
     "close_issue": 0.8,
-    # Code-writing actions (Week 8): higher bar than any comment path.
+    # Code-writing actions: higher bar than any comment path.
     # Bad tests merged into a real repo are harder to unwind than a
     # misphrased issue, so the gate sits at 0.90 by default.
     "create_branch": 0.9,
@@ -141,8 +140,8 @@ class DecisionResult:
 class ActionClient(Protocol):
     """A client that can execute a Decision.
 
-    The real implementation lands in Day 4 (``gita.github.client``); tests use
-    ``FakeActionClient`` below.
+    The real implementation is ``gita.github.client.GithubClient``; tests
+    use fakes.
     """
 
     async def execute(self, decision: Decision) -> dict[str, Any]:

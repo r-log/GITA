@@ -405,7 +405,7 @@ async def index_repository(
     ``github_full_name`` (e.g. ``"r-log/AMASS"``) is stored on the Repo
     row so webhook-triggered jobs can resolve the repo by its GitHub name.
 
-    ``default_branch`` (Week 10): when provided, written verbatim to the
+    ``default_branch``: when provided, written verbatim to the
     ``Repo.default_branch`` column. When ``None``, the helper
     ``discover_default_branch`` is invoked — symbolic-ref → ``git remote
     show origin`` parse → fallback ``"main"``. Either way the column is

@@ -1,4 +1,4 @@
-"""Tests for the test-generator bridge (Week 8 Day 3).
+"""Tests for the test-generator bridge.
 
 The bridge is pure: given an artifact, return the three Decisions that
 the framework will route (create_branch → update_file → open_pr). All
@@ -199,7 +199,7 @@ class TestFallbackIssue:
 
 
 # ---------------------------------------------------------------------------
-# Integration with the dedupe signatures from Day 2
+# Integration with the dedupe signatures
 # ---------------------------------------------------------------------------
 class TestDedupeSignaturesAreStable:
     def test_same_artifact_produces_same_signatures(self):

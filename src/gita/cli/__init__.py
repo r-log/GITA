@@ -110,7 +110,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Opt this repo IN to the post-reindex auto-test-generation "
-            "trigger (Week 9). Off by default; set once and it persists."
+            "trigger. Off by default; set once and it persists."
         ),
     )
     auto_test_gen_grp.add_argument(
@@ -338,7 +338,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="How many results to return (default 10)",
     )
 
-    # ---- auto-test-gen subcommands (Week 10) ----
+    # ---- auto-test-gen subcommands ----
     atg_p = sub.add_parser(
         "auto-test-gen",
         help="Inspect + control the post-reindex auto-test-generation trigger",

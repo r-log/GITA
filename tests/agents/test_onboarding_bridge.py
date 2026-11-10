@@ -3,17 +3,14 @@
 Two bridges live in ``gita.agents.onboarding``:
 
 1. ``build_onboarding_comment_decision`` — one Decision wrapping the whole
-   OnboardingResult as a single comment. Shipped in Week 2 Day 7 and already
-   covered end-to-end by the first real GitHub post; this file tests the
-   pure function shape only.
+   OnboardingResult as a single comment. This file tests the pure function
+   shape only.
 2. ``build_onboarding_issue_decisions`` — one Decision *per milestone*,
-   creating real issues. This is Week 3 Day 4's new surface — most of this
-   file exists to prove the bridge does the right thing under every
-   OnboardingResult shape the agent can produce.
+   creating real issues. Most of this file proves the bridge does the right
+   thing under every OnboardingResult shape the agent can produce.
 
-Together with Day 2's dedupe integration tests, these are what lets Day 7
-flip ``WRITE_MODE=full`` without holding breath: if the bridge is wrong,
-every downstream test can still be green and we'd still create bad issues.
+These matter before switching to ``WRITE_MODE=full``: if the bridge is
+wrong, every downstream test can be green and bad issues still get created.
 """
 
 from __future__ import annotations
@@ -286,12 +283,12 @@ class TestIssueBodyRenderer:
 
 
 # ---------------------------------------------------------------------------
-# Sanity: the Week 2 comment bridge still works (contract regression)
+# Sanity: the comment bridge still works (contract regression)
 # ---------------------------------------------------------------------------
 class TestCommentBridgeRegression:
     def test_comment_decision_shape_unchanged(self):
-        """The Week 2 comment bridge is still used by Day 7's `--post-to`
-        flow. Make sure Day 4's issue bridge didn't break the shared file."""
+        """The comment bridge (used by `--post-to`) shares a module with the
+        issue bridge; make sure one didn't break the other."""
         result = _result(findings=[_finding()], milestones=[_milestone()])
         decision = build_onboarding_comment_decision(
             result,
@@ -363,7 +360,7 @@ class TestDetailsWrapping:
 
     def test_collapsed_blocks_have_blank_lines_around_summary(self):
         """Without a blank line after <summary>, GitHub's markdown renderer
-        won't parse the inner content. Day 5 acceptance bar."""
+        won't parse the inner content."""
         findings = [_finding(file=f"f{i}.py", line=i + 1) for i in range(_COLLAPSE_THRESHOLD)]
         body = _render_comment_body(_result(findings=findings, milestones=[]))
         lines = body.split("\n")

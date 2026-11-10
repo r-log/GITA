@@ -483,7 +483,7 @@ async def run_reindex_job(
 ) -> dict[str, Any]:
     """Fetch latest code and incrementally re-index.
 
-    1. Resolve the repo by github_full_name (Day 1 fallback)
+    1. Resolve the repo (short name or github_full_name)
     2. ``git fetch origin`` + ``git reset --hard <sha>``
     3. Call ``index_repository()`` (incremental when possible)
     4. Return a summary dict
@@ -551,7 +551,7 @@ async def run_reindex_job(
         after_sha,
     )
 
-    # Post-reindex auto-test-generation trigger (Week 9). Best-effort:
+    # Post-reindex auto-test-generation trigger. Best-effort:
     # the reindex job's "completed" status does not depend on whether
     # any test_gen jobs were enqueued.
     test_gen_summary: dict[str, Any] = {}
@@ -588,7 +588,7 @@ async def run_reindex_job(
 
 
 # ---------------------------------------------------------------------------
-# Post-reindex auto-trigger for test generation (Week 9)
+# Post-reindex auto-trigger for test generation
 # ---------------------------------------------------------------------------
 async def _maybe_enqueue_test_gen_jobs(
     *,
@@ -725,7 +725,7 @@ async def _maybe_enqueue_test_gen_jobs(
 
 
 # ---------------------------------------------------------------------------
-# Test-generation runner (Week 9)
+# Test-generation runner
 # ---------------------------------------------------------------------------
 _PROGRESS_OUTCOMES = {
     Outcome.EXECUTED,
@@ -742,7 +742,7 @@ async def _maybe_enqueue_auto_review(
 ) -> dict[str, Any]:
     """Enqueue ``review_pr`` when test_generator just opened a real PR.
 
-    Closes the autonomous loop (Week 10): push → reindex → test-gen → PR →
+    Closes the autonomous loop: push → reindex → test-gen → PR →
     *review*. Bypasses the webhook path on purpose — the GitHub App's own
     ``pull_request.opened`` delivery is dropped by the bot-sender filter
     in ``gita.web.webhooks`` (Wall 2 of loop prevention). Triggering a
@@ -903,7 +903,7 @@ async def run_test_generation_job(
             }
 
     # If the caller didn't specify a base_branch, use the indexed repo's
-    # stored default_branch (Week 10). This is what makes the auto-trigger
+    # stored default_branch. This is what makes the auto-trigger
     # behave correctly on repos that don't use "main".
     resolved_base_branch = base_branch or repo_default_branch
 

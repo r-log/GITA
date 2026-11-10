@@ -15,7 +15,7 @@ Planted issues:
 
 **Deliberately NOT bugs** (regression tripwires):
 - decorators.py:  split-arg getattr-with-dict-default pattern. Added in
-  Week 3 Day 5 after the Week 2 onboarding agent hallucinated "unclosed
+  after an earlier onboarding agent hallucinated "unclosed
   parenthesis" on an equivalent AMASS file. ``must_not_mention`` bans
   the hallucination markers so any re-emergence fails the gated test.
 """

@@ -11,9 +11,8 @@ Two layers:
    test database. Covers the empty-DB case, the seen-signature case, the
    unique-constraint enforcement, and case-insensitive repo normalization.
 
-Day 2 of Week 3 will bolt these onto ``execute_decision``; Day 1 just proves
-each piece in isolation so the integration doesn't have to debug two bugs at
-once.
+``execute_decision``'s use of these pieces is covered in
+``test_decisions.py`` and ``test_idempotency.py``.
 """
 
 from __future__ import annotations
@@ -581,8 +580,8 @@ class TestRecordAndCheck:
 
 class TestUniqueConstraint:
     async def test_second_record_raises_integrity_error(self, db_session: AsyncSession):
-        """The same signature can only be inserted once. Day 2 uses this as
-        the concurrent-race safety net."""
+        """The same signature can only be inserted once — the reservation
+        that stops concurrent runs from both executing a decision."""
         d = _decision("create_issue", issue=None, payload={"title": "Fix bug"})
         await record_action(db_session, d, agent="onboarding", outcome="executed")
         await db_session.commit()

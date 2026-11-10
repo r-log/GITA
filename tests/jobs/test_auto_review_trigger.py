@@ -1,4 +1,4 @@
-"""Tests for the post-test-gen auto-review trigger (Week 10).
+"""Tests for the post-test-gen auto-review trigger.
 
 Covers ``_maybe_enqueue_auto_review`` directly. Each case feeds in a
 synthetic ``decision_summaries`` list (matching the shape produced by

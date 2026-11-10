@@ -1,12 +1,13 @@
 """Decision bridge — turn a PRReviewResult into a comment Decision.
 
-Posts the review as a single comment on the PR. Week 5 can upgrade to
-inline PR review comments (GitHub's Review API) once we build the
-diff-line-to-file-line mapping.
+Posts the review as a single comment on the PR. Inline comments through
+GitHub's Review API would need a mapping from file lines to diff
+positions; that isn't implemented.
 """
 
 from __future__ import annotations
 
+from gita import __version__
 from gita.agents.decisions import Decision
 from gita.agents.render import inline, quote_lines
 from gita.agents.types import Finding, PRReviewResult
@@ -125,7 +126,7 @@ def _render_review_body(result: PRReviewResult) -> str:
     lines.append("")
     lines.append("---")
     lines.append(
-        f"<sub>\U0001f916 GITA v0.1.0 \u00b7 PR reviewer \u00b7 "
+        f"<sub>\U0001f916 GITA v{__version__} \u00b7 PR reviewer \u00b7 "
         f"confidence {result.confidence:.0%}</sub>"
     )
     return "\n".join(lines)

@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from gita import __version__
 from gita.agents.decisions import Decision
 from gita.agents.render import inline, quote_lines
 from gita.agents.types import Finding, Milestone, OnboardingResult
@@ -163,7 +164,7 @@ def _render_comment_body(result: OnboardingResult) -> str:
     lines.append("")
     lines.append("---")
     lines.append(
-        f"<sub>\U0001f916 GITA v0.1.0 \u00b7 onboarding agent \u00b7 "
+        f"<sub>\U0001f916 GITA v{__version__} \u00b7 onboarding agent \u00b7 "
         f"confidence {result.confidence:.0%}</sub>"
     )
     return "\n".join(lines)
@@ -247,7 +248,7 @@ def _render_issue_body(
 
     lines.append("---")
     lines.append(
-        f"<sub>\U0001f916 GITA v0.1.0 \u00b7 onboarding agent \u00b7 source: `{source_repo}`</sub>"
+        f"<sub>\U0001f916 GITA v{__version__} \u00b7 onboarding agent \u00b7 source: `{source_repo}`</sub>"
     )
     return "\n".join(lines)
 

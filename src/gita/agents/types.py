@@ -1,9 +1,7 @@
 """Structured types returned by agents.
 
-These live in their own module so the checklist infrastructure can import
-them before the actual onboarding agent lands on Day 5. The dataclass fields
-are meant to stay stable across Week 2 — if the agent discovers it needs
-different shape, we revise here and everything else follows.
+They live in their own module so the bridges, guardrails and golden-test
+checklists can share them without importing the agents themselves.
 """
 
 from __future__ import annotations
