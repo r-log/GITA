@@ -1,0 +1,54 @@
+{
+  "harness_sha": "9e91a4827ddfc641a416d8ddf2e3af6b343da8e6932cd8807d74183eeea833be",
+  "metrics": [
+    {
+      "id": "correct",
+      "label": "case correct",
+      "kind": "binary"
+    },
+    {
+      "id": "found",
+      "label": "bugs found",
+      "kind": "float",
+      "scale": 1
+    },
+    {
+      "id": "false_alarms",
+      "label": "false alarms",
+      "kind": "float",
+      "scale": 5,
+      "better": "lower"
+    },
+    {
+      "id": "verdict_ok",
+      "label": "verdict ok",
+      "kind": "binary"
+    },
+    {
+      "id": "severity_ok",
+      "label": "severity ok",
+      "kind": "float",
+      "scale": 1
+    }
+  ],
+  "perf_fields": [
+    {
+      "id": "cost_usd",
+      "label": "cost",
+      "unit": "$"
+    },
+    {
+      "id": "in_tokens",
+      "label": "in tok"
+    },
+    {
+      "id": "out_tokens",
+      "label": "out tok"
+    },
+    {
+      "id": "latency_s",
+      "label": "latency",
+      "unit": "s"
+    }
+  ]
+}

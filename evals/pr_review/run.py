@@ -348,6 +348,18 @@ async def run_case(
             "llm_calls": len(llm.calls),
             "notes": case.notes,
             "grading": grade.record(),
+            # Verified findings, kept so --regrade can re-score without model calls.
+            "findings_detail": [
+                {
+                    "file": f.file,
+                    "line": f.line,
+                    "severity": f.severity,
+                    "kind": f.kind,
+                    "description": f.description,
+                    "fix_sketch": f.fix_sketch,
+                }
+                for f in result.findings
+            ],
         },
     }
     return Outcome(row=row, trace=_trace(case, llm.calls, review_body))
@@ -379,6 +391,32 @@ def _read_jsonl(path: Path) -> list[dict]:
 def _append_jsonl(path: Path, row: dict) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def regrade(variant_dir: Path, cases: list[Case]) -> None:
+    """Re-score stored results with the current grader; no model calls."""
+    by_id = {c.id: c for c in cases}
+    path = variant_dir / "results.jsonl"
+    rows = _read_jsonl(path)
+    for row in rows:
+        detail = row["meta"].get("findings_detail")
+        case = by_id.get(row["prompt_id"])
+        if detail is None or case is None:
+            raise SystemExit(
+                f"cannot regrade {row['prompt_id']} rep{row['rep']}: no stored findings"
+            )
+        findings = [
+            ReportedFinding(d["file"], d["line"], d["severity"], d["kind"], d["description"])
+            for d in detail
+        ]
+        grade = grade_case(case, findings, row["meta"]["verdict"])
+        row["grade"] = grade.metrics
+        row["explanation"] = {"correct": grade.explanation}
+        row["meta"]["grading"] = grade.record()
+    tmp = path.with_suffix(".jsonl.tmp")
+    tmp.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+    tmp.replace(path)
+    print(f"regraded {len(rows)} rows in {variant_dir}")
 
 
 def summarize(variant_dir: Path) -> dict:
@@ -426,9 +464,17 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fake", choices=("oracle", "null"), help="harness check, no LLM calls")
     parser.add_argument("--runs-dir", type=Path, default=RUNS_DIR)
     parser.add_argument("--approve-harness", action="store_true")
+    parser.add_argument(
+        "--regrade", action="store_true", help="re-score stored results only (no model calls)"
+    )
     args = parser.parse_args(argv)
 
     cases = load_cases(only={c for c in args.cases.split(",") if c} or None)
+    if args.regrade:
+        variant_dir = args.runs_dir / (f"_checks/{args.fake}" if args.fake else args.variant)
+        regrade(variant_dir, load_cases())
+        summarize(variant_dir)
+        return 0
     args.runs_dir.mkdir(parents=True, exist_ok=True)
     state_path = args.runs_dir / "_state.json"
     state = json.loads(state_path.read_text()) if state_path.exists() else {}

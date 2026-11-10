@@ -13,11 +13,18 @@ Edit operations (exactly one per edit):
 * ``find`` + ``replace`` — ``find`` must occur exactly once in the file.
 * ``append`` — text appended to the end of the file.
 * ``create`` — a new file with this content.
+
+``[[acceptable]]`` entries describe extra findings a good reviewer may
+legitimately add (for instance, reporting a prompt-injection attempt as a
+security issue). A finding that matches one is neither rewarded nor
+penalised: ``description_regex`` must match its description, and
+``kinds`` / ``file``, when given, must match too.
 """
 
 from __future__ import annotations
 
 import difflib
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +51,14 @@ class ExpectedBug:
     severity: str
 
 
+@dataclass(frozen=True)
+class AcceptableExtra:
+    id: str
+    description_regex: re.Pattern[str]
+    kinds: tuple[str, ...] = ()
+    file: str | None = None
+
+
 @dataclass
 class Case:
     id: str
@@ -55,6 +70,7 @@ class Case:
     before: dict[str, str]  # path -> content at base (changed files only)
     after: dict[str, str]  # path -> content at PR head (changed files only)
     expected: list[ExpectedBug] = field(default_factory=list)
+    acceptable: list[AcceptableExtra] = field(default_factory=list)
 
     @property
     def is_positive(self) -> bool:
@@ -169,6 +185,21 @@ def load_case(path: Path, base_repo: Path = BASE_REPO) -> Case:
         _resolve_expectation(raw, after, f"{case_id} expect {i}")
         for i, raw in enumerate(data.get("expect", []))
     ]
+    acceptable = []
+    for i, raw in enumerate(data.get("acceptable", [])):
+        try:
+            pattern = re.compile(raw["description_regex"])
+        except (KeyError, re.error) as exc:
+            raise CaseError(f"{case_id} acceptable {i}: bad description_regex: {exc}") from exc
+        acceptable.append(
+            AcceptableExtra(
+                id=raw.get("id", f"acceptable_{i}"),
+                description_regex=pattern,
+                kinds=tuple(raw.get("kinds", ())),
+                file=raw.get("file"),
+            )
+        )
+
     if (kind == "clean") == bool(expected):
         raise CaseError(f"{case_id}: clean cases have no expected bugs; others need at least one")
 
@@ -182,6 +213,7 @@ def load_case(path: Path, base_repo: Path = BASE_REPO) -> Case:
         before=before,
         after=after,
         expected=expected,
+        acceptable=acceptable,
     )
 
 

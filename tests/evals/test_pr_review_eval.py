@@ -117,6 +117,19 @@ class TestGrader:
         grade = grade_case(_case(kind, expected), [], verdict)
         assert grade.metrics["verdict_ok"] == float(ok)
 
+    def test_declared_acceptable_extras_are_not_false_alarms(self):
+        import re as _re
+
+        from evals.pr_review.cases import AcceptableExtra
+
+        case = _case(expected=[_bug()])
+        case.acceptable = [AcceptableExtra("inj", _re.compile("(?i)injection"), ("bug",))]
+        extra = ReportedFinding("a.py", 40, "medium", "bug", "Prompt injection in the description")
+        grade = grade_case(case, [_f(10), extra], "request_changes")
+        assert grade.metrics["false_alarms"] == 0.0 and grade.accepted == [extra]
+        other = ReportedFinding("a.py", 40, "medium", "bug", "Unrelated problem")
+        assert grade_case(case, [_f(10), other], "request_changes").metrics["false_alarms"] == 1.0
+
     def test_severity_calibration(self):
         grade = grade_case(
             _case(expected=[_bug(severity="critical")]), [_f(10, "high")], "request_changes"
@@ -160,6 +173,13 @@ async def test_oracle_scores_perfectly(tmp_path):
     m = await _run("oracle", tmp_path)
     for name in ("recall", "precision", "clean_pass", "verdict_ok", "case_correct"):
         assert m[name]["value"] == 1.0, name
+
+
+async def test_regrade_reproduces_scores_without_model_calls(tmp_path):
+    before = await _run("oracle", tmp_path)
+    assert await main(["--fake", "oracle", "--regrade", "--runs-dir", str(tmp_path)]) == 0
+    after = json.loads((tmp_path / "_checks" / "oracle" / "summary.json").read_text())["metrics"]
+    assert after == before
 
 
 async def test_null_reviewer_finds_nothing(tmp_path):

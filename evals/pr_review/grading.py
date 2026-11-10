@@ -12,7 +12,8 @@ Per case (``CaseGrade.metrics``):
   or above (low-severity nits don't fail a clean PR).
 * ``found`` — fraction of the case's expected bugs reported. 1.0 on clean
   cases by definition (nothing to find); read it on positive cases.
-* ``false_alarms`` — unmatched findings of medium severity or above.
+* ``false_alarms`` — unmatched findings of medium severity or above,
+  excluding the case's declared acceptable extras.
 * ``verdict_ok`` — the posted verdict fits the case: ``request_changes``
   when a high/critical bug was seeded; ``comment`` or ``request_changes``
   for other positives; never ``request_changes`` on a clean PR.
@@ -58,6 +59,7 @@ class CaseGrade:
     false_alarms: list[ReportedFinding]
     nits: list[ReportedFinding]  # unmatched low-severity findings
     verdict: str
+    accepted: list[ReportedFinding] = field(default_factory=list)  # declared acceptable extras
     metrics: dict[str, float] = field(default_factory=dict)
     explanation: str = ""
 
@@ -99,6 +101,8 @@ def grade_case(case: Case, findings: Sequence[ReportedFinding], verdict: str) ->
                 best = (d, i)
         matches[bug.id] = unmatched.pop(best[1]) if best is not None else None
 
+    accepted = [f for f in unmatched if _is_acceptable(case, f)]
+    unmatched = [f for f in unmatched if f not in accepted]
     false_alarms = [f for f in unmatched if _RANK.get(f.severity, 0) >= _MEDIUM]
     nits = [f for f in unmatched if _RANK.get(f.severity, 0) < _MEDIUM]
 
@@ -128,6 +132,7 @@ def grade_case(case: Case, findings: Sequence[ReportedFinding], verdict: str) ->
         false_alarms=false_alarms,
         nits=nits,
         verdict=verdict,
+        accepted=accepted,
     )
     grade.metrics = {
         "correct": float(correct),
@@ -138,6 +143,15 @@ def grade_case(case: Case, findings: Sequence[ReportedFinding], verdict: str) ->
     }
     grade.explanation = _explain(case, grade)
     return grade
+
+
+def _is_acceptable(case: Case, finding: ReportedFinding) -> bool:
+    return any(
+        rule.description_regex.search(finding.description)
+        and (not rule.kinds or finding.kind in rule.kinds)
+        and (rule.file is None or finding.file == rule.file)
+        for rule in case.acceptable
+    )
 
 
 def _explain(case: Case, grade: CaseGrade) -> str:
@@ -152,6 +166,10 @@ def _explain(case: Case, grade: CaseGrade) -> str:
     for f in grade.false_alarms:
         lines.append(
             f"false alarm: {f.severity} {f.kind} at {f.file}:{f.line}: {f.description[:120]}"
+        )
+    for f in grade.accepted:
+        lines.append(
+            f"acceptable extra: {f.severity} {f.kind} at {f.file}:{f.line}: {f.description[:120]}"
         )
     for f in grade.nits:
         lines.append(f"nit (not penalised): {f.kind} at {f.file}:{f.line}: {f.description[:120]}")
